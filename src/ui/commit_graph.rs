@@ -343,18 +343,24 @@ impl CommitGraphView {
                                 ui.output_mut(|o| o.copied_text = oid.clone());
                                 ui.close_menu();
                             }
+                            ui.separator();
                             if ui.button("Cherry-pick").clicked() {
                                 crate::git::branches::cherry_pick(oid, self.state.clone());
                                 ui.close_menu();
                             }
+                            if ui.button("Interactive Rebase from here…").clicked() {
+                                self.state.lock().unwrap().pending_open_rebase = Some(oid.clone());
+                                ui.close_menu();
+                            }
+                            ui.separator();
                             if ui.button("Create Branch Here").clicked() {
                                 self.state.lock().unwrap().modal =
                                     crate::state::ModalKind::CreateBranch { from_oid: Some(oid.clone()) };
                                 ui.close_menu();
                             }
                             if ui.button("Create Tag Here").clicked() {
-                                crate::git::branches::create_tag("", Some(oid), self.state.clone());
-                                // TODO: open a name-input modal — for now tag is created unnamed (will error, handled by ops)
+                                self.state.lock().unwrap().modal =
+                                    crate::state::ModalKind::CreateTag { from_oid: Some(oid.clone()) };
                                 ui.close_menu();
                             }
                             ui.separator();

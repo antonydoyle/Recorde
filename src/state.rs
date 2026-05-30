@@ -60,6 +60,34 @@ pub struct StashEntry {
     pub oid: String,
 }
 
+/// Action for a single commit in an interactive rebase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebaseAction {
+    Pick,
+    Squash,
+    Fixup,
+    Drop,
+}
+
+impl RebaseAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pick   => "pick",
+            Self::Squash => "squash",
+            Self::Fixup  => "fixup",
+            Self::Drop   => "drop",
+        }
+    }
+}
+
+/// One commit entry in the interactive rebase todo list.
+#[derive(Debug, Clone)]
+pub struct RebaseEntry {
+    pub oid: String,
+    pub summary: String,
+    pub action: RebaseAction,
+}
+
 /// Which modal dialog is currently open (if any).
 #[derive(Debug, Clone, Default)]
 pub enum ModalKind {
@@ -103,6 +131,8 @@ pub struct AppState {
     /// Commit graph search state.
     pub search_active: bool,
     pub search_query: String,
+    /// Set by the graph context menu to trigger opening the rebase modal.
+    pub pending_open_rebase: Option<String>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;

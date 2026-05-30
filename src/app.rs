@@ -8,6 +8,7 @@ use crate::ui::{
     commit_graph::CommitGraphView,
     detail_panel::DetailPanel,
     diff_view::DiffView,
+    rebase_modal::{RebaseModal, RebaseModalResult},
     sidebar::{Sidebar, SidebarAction},
     staging_panel::StagingPanel,
     status_bar::StatusBar,
@@ -33,6 +34,8 @@ pub struct RecordeApp {
     create_branch_name: String,
     create_branch_checkout: bool,
     create_tag_name: String,
+    // Interactive rebase
+    rebase_modal: Option<RebaseModal>,
 }
 
 impl RecordeApp {
@@ -64,6 +67,7 @@ impl RecordeApp {
             create_branch_name: String::new(),
             create_branch_checkout: true,
             create_tag_name: String::new(),
+            rebase_modal: None,
         }
     }
 
@@ -109,6 +113,32 @@ impl RecordeApp {
             SidebarAction::StashApply(i) => branches::stash_apply(i, self.state.clone()),
             SidebarAction::StashPop(i)   => branches::stash_pop(i, self.state.clone()),
             SidebarAction::StashDrop(i)  => branches::stash_drop(i, self.state.clone()),
+        }
+    }
+
+    /// Build and open the rebase modal for the given upstream commit OID.
+    fn open_rebase_modal(&mut self, upstream_oid: String) {
+        let repo_path = self.state.lock().unwrap().repo_path.clone();
+        let Some(path) = repo_path else { return };
+
+        // Get the upstream commit's summary for display
+        let upstream_summary = (|| -> Option<String> {
+            let repo = git2::Repository::open(&path).ok()?;
+            let oid  = git2::Oid::from_str(&upstream_oid).ok()?;
+            let commit = repo.find_commit(oid).ok()?;
+            commit.summary().map(str::to_owned)
+        })()
+        .unwrap_or_default();
+
+        let entries = crate::git::rebase::load_rebase_entries(&path, &upstream_oid);
+        match entries {
+            Some(e) if !e.is_empty() => {
+                self.rebase_modal = Some(RebaseModal::new(upstream_oid, upstream_summary, e));
+            }
+            _ => {
+                self.state.lock().unwrap().error =
+                    Some("No commits to rebase between this commit and HEAD.".into());
+            }
         }
     }
 
@@ -232,7 +262,48 @@ impl RecordeApp {
 
 impl eframe::App for RecordeApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Check if the graph context menu triggered a rebase open
+        let pending = self.state.lock().unwrap().pending_open_rebase.take();
+        if let Some(oid) = pending {
+            self.open_rebase_modal(oid);
+        }
+
         self.render_modals(ctx);
+
+        // Render the interactive rebase modal (separate from ModalKind to keep mutable form state local)
+        if self.rebase_modal.is_some() {
+            let mut close = false;
+            let mut execute_entries: Option<(String, Vec<crate::state::RebaseEntry>)> = None;
+
+            egui::Window::new("Interactive Rebase")
+                .collapsible(false)
+                .resizable(true)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+                .show(ctx, |ui| {
+                    if let Some(ref mut modal) = self.rebase_modal {
+                        match modal.show(ui) {
+                            Some(RebaseModalResult::Execute) => {
+                                execute_entries = Some((
+                                    modal.upstream_oid.clone(),
+                                    modal.entries.clone(),
+                                ));
+                                close = true;
+                            }
+                            Some(RebaseModalResult::Cancel) => close = true,
+                            None => {}
+                        }
+                    }
+                });
+
+            if close {
+                self.rebase_modal = None;
+            }
+            if let Some((upstream, entries)) = execute_entries {
+                crate::git::rebase::start_rebase(&upstream, entries, self.state.clone());
+            }
+        }
+
         self.status_bar.show(ctx);
 
         let toolbar_action = self.toolbar.show(ctx, &self.config.recent_repos, self.dark_theme);
