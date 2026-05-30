@@ -264,6 +264,7 @@ impl eframe::App for RecordeApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Keep debug overlays off every frame — egui can reset them internally.
         ctx.style_mut(kill_debug_overlays);
+        ctx.options_mut(|o| o.warn_on_id_clash = false);
 
         // Check if the graph context menu triggered a rebase open
         let pending = self.state.lock().unwrap().pending_open_rebase.take();
