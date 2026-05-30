@@ -1,5 +1,6 @@
 use egui::{Color32, Context, RichText, Stroke, Visuals};
 
+use crate::config::Config;
 use crate::git::{branches, operations::load_repo, remote};
 use crate::state::{ModalKind, new_shared_state, SharedState};
 use crate::theme;
@@ -26,18 +27,25 @@ pub struct RecordeApp {
     staging_panel: StagingPanel,
     status_bar: StatusBar,
     right_tab: RightTab,
-    // Ephemeral state for the Create Branch modal form
+    config: Config,
+    dark_theme: bool,
+    // Modal form inputs
     create_branch_name: String,
     create_branch_checkout: bool,
+    create_tag_name: String,
 }
 
 impl RecordeApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_repo: Option<std::path::PathBuf>) -> Self {
-        apply_theme(&cc.egui_ctx);
+        let config = Config::load();
+        let dark_theme = config.dark_theme;
+        apply_theme(&cc.egui_ctx, dark_theme);
 
         let state = new_shared_state();
 
-        if let Some(path) = initial_repo {
+        // Open CLI arg or last-used repo
+        let to_open = initial_repo.or_else(|| config.recent_repos.first().cloned());
+        if let Some(path) = to_open {
             load_repo(path, state.clone());
         }
 
@@ -50,174 +58,172 @@ impl RecordeApp {
             staging_panel: StagingPanel::new(state.clone()),
             status_bar: StatusBar::new(state.clone()),
             right_tab: RightTab::Changes,
+            config,
+            dark_theme,
             state,
             create_branch_name: String::new(),
             create_branch_checkout: true,
+            create_tag_name: String::new(),
         }
     }
 
-    fn handle_toolbar_action(&mut self, action: ToolbarAction) {
+    fn handle_toolbar_action(&mut self, ctx: &Context, action: ToolbarAction) {
         match action {
-            ToolbarAction::OpenRepo(path) => load_repo(path, self.state.clone()),
-            ToolbarAction::Stash => branches::stash_save(self.state.clone()),
+            ToolbarAction::OpenRepo(path) => {
+                self.config.add_recent(path.clone());
+                load_repo(path, self.state.clone());
+            }
+            ToolbarAction::Stash        => branches::stash_save(self.state.clone()),
             ToolbarAction::CreateBranch => {
                 self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None };
             }
             ToolbarAction::Fetch => remote::fetch_all(self.state.clone()),
             ToolbarAction::Pull  => remote::pull_branch(self.state.clone()),
             ToolbarAction::Push  => remote::push_branch(self.state.clone()),
+            ToolbarAction::ToggleTheme => {
+                self.dark_theme = !self.dark_theme;
+                self.config.dark_theme = self.dark_theme;
+                self.config.save();
+                apply_theme(ctx, self.dark_theme);
+            }
+            ToolbarAction::ToggleSearch => {
+                let mut s = self.state.lock().unwrap();
+                s.search_active = !s.search_active;
+                if !s.search_active { s.search_query.clear(); }
+            }
         }
     }
 
     fn handle_sidebar_action(&mut self, action: SidebarAction) {
         match action {
-            SidebarAction::CheckoutBranch(name) => {
-                branches::checkout_branch(&name, self.state.clone());
-            }
-            SidebarAction::OpenCreateBranch { from_oid } => {
-                self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid };
-            }
-            SidebarAction::DeleteBranch(name) => {
-                self.state.lock().unwrap().modal =
-                    ModalKind::ConfirmDeleteBranch { branch_name: name };
-            }
+            SidebarAction::CheckoutBranch(name) =>
+                branches::checkout_branch(&name, self.state.clone()),
+            SidebarAction::OpenCreateBranch { from_oid } =>
+                self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid },
+            SidebarAction::DeleteBranch(name) =>
+                self.state.lock().unwrap().modal = ModalKind::ConfirmDeleteBranch { branch_name: name },
+            SidebarAction::CreateTag(_) =>
+                self.state.lock().unwrap().modal = ModalKind::CreateTag { from_oid: None },
+            SidebarAction::DeleteTag(name) =>
+                self.state.lock().unwrap().modal = ModalKind::ConfirmDeleteTag { tag_name: name },
             SidebarAction::StashApply(i) => branches::stash_apply(i, self.state.clone()),
-            SidebarAction::StashPop(i) => branches::stash_pop(i, self.state.clone()),
-            SidebarAction::StashDrop(i) => branches::stash_drop(i, self.state.clone()),
+            SidebarAction::StashPop(i)   => branches::stash_pop(i, self.state.clone()),
+            SidebarAction::StashDrop(i)  => branches::stash_drop(i, self.state.clone()),
         }
     }
 
     fn render_modals(&mut self, ctx: &Context) {
         let modal_kind = self.state.lock().unwrap().modal.clone();
-
         match modal_kind {
             ModalKind::None => {}
 
             ModalKind::CreateBranch { from_oid } => {
-                egui::Window::new("Create Branch")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                    .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
-                    .show(ctx, |ui| {
-                    ui.set_min_width(320.0);
-                    ui.add_space(4.0);
-
-                    ui.label(
-                        RichText::new("Create Branch")
-                            .color(theme::TEXT_PRIMARY)
-                            .size(15.0)
-                            .strong(),
-                    );
-                    ui.add_space(12.0);
-
+                modal_window(ctx, "Create Branch", |ui| {
                     ui.label(RichText::new("Branch name").color(theme::TEXT_SECONDARY).size(12.0));
                     ui.add_space(4.0);
-                    let name_resp = ui.add(
+                    let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.create_branch_name)
                             .desired_width(f32::INFINITY)
                             .hint_text("e.g. feat/my-feature"),
                     );
-                    name_resp.request_focus();
-
+                    resp.request_focus();
                     if let Some(ref oid) = from_oid {
                         ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(format!("From commit  {}", &oid[..7.min(oid.len())]))
-                                .color(theme::TEXT_MUTED)
-                                .size(11.0),
-                        );
+                        ui.label(RichText::new(format!("From  {}", &oid[..7.min(oid.len())])).color(theme::TEXT_MUTED).size(11.0));
                     }
-
                     ui.add_space(8.0);
-                    ui.checkbox(
-                        &mut self.create_branch_checkout,
-                        RichText::new("Checkout immediately").color(theme::TEXT_SECONDARY).size(12.0),
-                    );
-
+                    ui.checkbox(&mut self.create_branch_checkout,
+                        RichText::new("Checkout immediately").color(theme::TEXT_SECONDARY).size(12.0));
                     ui.add_space(16.0);
+                    let can = !self.create_branch_name.trim().is_empty();
                     ui.horizontal(|ui| {
-                        let can_create = !self.create_branch_name.trim().is_empty();
-                        let confirm = ui
-                            .add_enabled(
-                                can_create,
-                                egui::Button::new(
-                                    RichText::new("Create Branch").color(Color32::WHITE),
-                                )
-                                .fill(theme::ACCENT_BLUE),
-                            )
-                            .clicked();
-
-                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        let cancel = ui.button(RichText::new("Cancel").color(theme::TEXT_SECONDARY)).clicked();
-                        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-
-                        if (confirm || enter) && can_create {
+                        let ok = ui.add_enabled(can, egui::Button::new(
+                            RichText::new("Create Branch").color(Color32::WHITE)).fill(theme::ACCENT_BLUE)).clicked()
+                            || (can && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        let cancel = ui.button(RichText::new("Cancel").color(theme::TEXT_SECONDARY)).clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        if ok {
                             let name = self.create_branch_name.trim().to_string();
-                            let checkout = self.create_branch_checkout;
-                            branches::create_branch(
-                                &name,
-                                from_oid.as_deref(),
-                                checkout,
-                                self.state.clone(),
-                            );
+                            branches::create_branch(&name, from_oid.as_deref(), self.create_branch_checkout, self.state.clone());
                             self.state.lock().unwrap().modal = ModalKind::None;
                             self.create_branch_name.clear();
-                        } else if cancel || escape {
+                        } else if cancel {
                             self.state.lock().unwrap().modal = ModalKind::None;
                             self.create_branch_name.clear();
                         }
                     });
-                    ui.add_space(4.0);
                 });
             }
 
             ModalKind::ConfirmDeleteBranch { branch_name } => {
-                egui::Window::new("Delete Branch")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                    .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
-                    .show(ctx, |ui| {
-                    ui.set_min_width(300.0);
-                    ui.add_space(4.0);
-
-                    ui.label(
-                        RichText::new("Delete Branch")
-                            .color(theme::ACCENT_RED)
-                            .size(15.0)
-                            .strong(),
-                    );
-                    ui.add_space(12.0);
-                    ui.label(
-                        RichText::new(format!("Delete \"{}\"?", branch_name))
-                            .color(theme::TEXT_PRIMARY)
-                            .size(13.0),
-                    );
-                    ui.label(
-                        RichText::new("Unmerged commits on this branch will be lost.")
-                            .color(theme::TEXT_MUTED)
-                            .size(11.5),
-                    );
+                modal_window(ctx, "Delete Branch", |ui| {
+                    ui.label(RichText::new(format!("Delete \"{}\"?", branch_name)).color(theme::TEXT_PRIMARY).size(13.0));
+                    ui.label(RichText::new("Unmerged commits will be lost.").color(theme::TEXT_MUTED).size(11.5));
                     ui.add_space(16.0);
                     ui.horizontal(|ui| {
-                        let confirmed = ui
-                            .add(
-                                egui::Button::new(RichText::new("Delete").color(Color32::WHITE))
-                                    .fill(theme::ACCENT_RED),
-                            )
-                            .clicked();
-                        let cancelled = ui.button(RichText::new("Cancel").color(theme::TEXT_SECONDARY)).clicked();
-                        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-
+                        let confirmed = ui.add(egui::Button::new(RichText::new("Delete").color(Color32::WHITE)).fill(theme::ACCENT_RED)).clicked();
+                        let cancel = ui.button(RichText::new("Cancel").color(theme::TEXT_SECONDARY)).clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape));
                         if confirmed {
                             branches::delete_branch(&branch_name, self.state.clone());
                             self.state.lock().unwrap().modal = ModalKind::None;
-                        } else if cancelled || escape {
+                        } else if cancel {
                             self.state.lock().unwrap().modal = ModalKind::None;
                         }
                     });
+                });
+            }
+
+            ModalKind::CreateTag { from_oid } => {
+                modal_window(ctx, "Create Tag", |ui| {
+                    ui.label(RichText::new("Tag name").color(theme::TEXT_SECONDARY).size(12.0));
                     ui.add_space(4.0);
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.create_tag_name)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("e.g. v1.0.0"),
+                    );
+                    resp.request_focus();
+                    if let Some(ref oid) = from_oid {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(format!("At commit  {}", &oid[..7.min(oid.len())])).color(theme::TEXT_MUTED).size(11.0));
+                    }
+                    ui.add_space(16.0);
+                    let can = !self.create_tag_name.trim().is_empty();
+                    ui.horizontal(|ui| {
+                        let ok = ui.add_enabled(can, egui::Button::new(
+                            RichText::new("Create Tag").color(Color32::WHITE)).fill(theme::ACCENT_BLUE)).clicked()
+                            || (can && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        let cancel = ui.button(RichText::new("Cancel").color(theme::TEXT_SECONDARY)).clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        if ok {
+                            let name = self.create_tag_name.trim().to_string();
+                            branches::create_tag(&name, from_oid.as_deref(), self.state.clone());
+                            self.state.lock().unwrap().modal = ModalKind::None;
+                            self.create_tag_name.clear();
+                        } else if cancel {
+                            self.state.lock().unwrap().modal = ModalKind::None;
+                            self.create_tag_name.clear();
+                        }
+                    });
+                });
+            }
+
+            ModalKind::ConfirmDeleteTag { tag_name } => {
+                modal_window(ctx, "Delete Tag", |ui| {
+                    ui.label(RichText::new(format!("Delete tag \"{}\"?", tag_name)).color(theme::TEXT_PRIMARY).size(13.0));
+                    ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        let confirmed = ui.add(egui::Button::new(RichText::new("Delete").color(Color32::WHITE)).fill(theme::ACCENT_RED)).clicked();
+                        let cancel = ui.button(RichText::new("Cancel").color(theme::TEXT_SECONDARY)).clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        if confirmed {
+                            branches::delete_tag(&tag_name, self.state.clone());
+                            self.state.lock().unwrap().modal = ModalKind::None;
+                        } else if cancel {
+                            self.state.lock().unwrap().modal = ModalKind::None;
+                        }
+                    });
                 });
             }
         }
@@ -226,14 +232,12 @@ impl RecordeApp {
 
 impl eframe::App for RecordeApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // Modals rendered first (float above everything)
         self.render_modals(ctx);
-
         self.status_bar.show(ctx);
 
-        let toolbar_action = self.toolbar.show(ctx);
+        let toolbar_action = self.toolbar.show(ctx, &self.config.recent_repos, self.dark_theme);
         if let Some(action) = toolbar_action {
-            self.handle_toolbar_action(action);
+            self.handle_toolbar_action(ctx, action);
         }
 
         egui::SidePanel::left("sidebar")
@@ -243,9 +247,7 @@ impl eframe::App for RecordeApp {
             .frame(egui::Frame::none())
             .show(ctx, |ui| {
                 let action = self.sidebar.show(ui);
-                if let Some(a) = action {
-                    self.handle_sidebar_action(a);
-                }
+                if let Some(a) = action { self.handle_sidebar_action(a); }
             });
 
         egui::SidePanel::right("detail_panel")
@@ -254,28 +256,23 @@ impl eframe::App for RecordeApp {
             .min_width(200.0)
             .frame(egui::Frame::none())
             .show(ctx, |ui| {
-                // Auto-switch: commit selected → Details tab.
                 let has_commit = self.state.lock().unwrap().selected_commit.is_some();
                 let has_dirty  = self.state.lock().unwrap().dirty_count > 0;
                 if has_commit && self.right_tab == RightTab::Changes {
                     self.right_tab = RightTab::Details;
                 }
 
-                // Tab bar
-                let tab_height = 32.0;
+                let tab_h = 32.0;
                 let tab_rect = egui::Rect::from_min_size(
                     ui.min_rect().min,
-                    egui::Vec2::new(ui.available_width(), tab_height),
+                    egui::Vec2::new(ui.available_width(), tab_h),
                 );
                 ui.painter().rect_filled(tab_rect, 0.0, theme::BG_ELEVATED);
                 ui.painter().line_segment(
-                    [
-                        egui::Pos2::new(tab_rect.min.x, tab_rect.max.y),
-                        egui::Pos2::new(tab_rect.max.x, tab_rect.max.y),
-                    ],
+                    [egui::Pos2::new(tab_rect.min.x, tab_rect.max.y),
+                     egui::Pos2::new(tab_rect.max.x, tab_rect.max.y)],
                     egui::Stroke::new(1.0, theme::BORDER),
                 );
-
                 ui.allocate_ui_at_rect(tab_rect, |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.add_space(8.0);
@@ -284,27 +281,20 @@ impl eframe::App for RecordeApp {
                             (RightTab::Details, "  Details  "),
                         ] {
                             let selected = self.right_tab == *tab;
-                            let text = egui::RichText::new(*label)
-                                .size(12.0)
-                                .color(if selected { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED });
                             let btn = ui.add(
-                                egui::Button::new(text)
-                                    .fill(if selected { theme::BG_SURFACE } else { Color32::TRANSPARENT })
-                                    .stroke(egui::Stroke::new(
-                                        if selected { 1.0 } else { 0.0 },
-                                        theme::BORDER,
-                                    )),
+                                egui::Button::new(RichText::new(*label).size(12.0).color(
+                                    if selected { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED },
+                                ))
+                                .fill(if selected { theme::BG_SURFACE } else { Color32::TRANSPARENT })
+                                .stroke(egui::Stroke::new(if selected { 1.0 } else { 0.0 }, theme::BORDER)),
                             );
-                            if btn.clicked() {
-                                self.right_tab = *tab;
-                            }
+                            if btn.clicked() { self.right_tab = *tab; }
                         }
                     });
                 });
 
-                // Panel content below tab bar
                 let content_rect = egui::Rect::from_min_max(
-                    egui::Pos2::new(ui.min_rect().min.x, ui.min_rect().min.y + tab_height),
+                    egui::Pos2::new(ui.min_rect().min.x, ui.min_rect().min.y + tab_h),
                     ui.max_rect().max,
                 );
                 ui.allocate_ui_at_rect(content_rect, |ui| {
@@ -328,9 +318,43 @@ impl eframe::App for RecordeApp {
     }
 }
 
-fn apply_theme(ctx: &Context) {
-    let mut v = Visuals::dark();
+// ── Shared modal helper ───────────────────────────────────────────────────────
 
+fn modal_window(ctx: &Context, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+        .show(ctx, |ui| {
+            ui.set_min_width(300.0);
+            ui.add_space(4.0);
+            add_contents(ui);
+            ui.add_space(4.0);
+        });
+}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+
+fn apply_theme(ctx: &Context, dark: bool) {
+    if !dark {
+        // Light theme: use egui defaults with minor tweaks
+        let mut v = Visuals::light();
+        v.window_stroke = Stroke::new(1.0, Color32::from_gray(210));
+        v.popup_shadow = egui::Shadow::NONE;
+        v.window_shadow = egui::Shadow::NONE;
+        ctx.set_visuals(v);
+        let mut style = (*ctx.style()).clone();
+        style.debug = egui::style::DebugOptions::default();
+        style.debug.debug_on_hover = false;
+        style.debug.show_interactive_widgets = false;
+        style.spacing.item_spacing = egui::Vec2::new(6.0, 3.0);
+        style.spacing.button_padding = egui::Vec2::new(8.0, 4.0);
+        ctx.set_style(style);
+        return;
+    }
+
+    let mut v = Visuals::dark();
     v.panel_fill = theme::BG_BASE;
     v.window_fill = theme::BG_SURFACE;
     v.faint_bg_color = theme::BG_SURFACE;
@@ -340,33 +364,25 @@ fn apply_theme(ctx: &Context) {
     v.widgets.noninteractive.bg_fill = theme::BG_SURFACE;
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, theme::TEXT_SECONDARY);
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme::BORDER);
-
     v.widgets.inactive.bg_fill = theme::BG_ELEVATED;
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, theme::TEXT_SECONDARY);
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, theme::BORDER);
-
     v.widgets.hovered.bg_fill = Color32::from_rgb(0x35, 0x3A, 0x4A);
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, theme::TEXT_PRIMARY);
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, theme::ACCENT_BLUE);
-
     v.widgets.active.bg_fill = theme::ACCENT_BLUE;
     v.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-
     v.selection.bg_fill = Color32::from_rgba_premultiplied(0x4D, 0x88, 0xFF, 50);
     v.selection.stroke = Stroke::new(1.0, theme::ACCENT_BLUE);
-
     v.window_stroke = Stroke::new(1.0, theme::BORDER);
     v.popup_shadow = egui::Shadow::NONE;
     v.window_shadow = egui::Shadow::NONE;
-
     ctx.set_visuals(v);
 
     let mut style = (*ctx.style()).clone();
     style.spacing.item_spacing = egui::Vec2::new(6.0, 3.0);
     style.spacing.window_margin = egui::Margin::same(0.0);
     style.spacing.button_padding = egui::Vec2::new(8.0, 4.0);
-    // Disable egui's debug overlays — they show "first use of widget id" etc.
-    // even in non-release builds and are not useful to end users.
     style.debug.debug_on_hover = false;
     style.debug.debug_on_hover_with_all_modifiers = false;
     style.debug.hover_shows_next = false;
