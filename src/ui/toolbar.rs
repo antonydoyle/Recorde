@@ -5,11 +5,13 @@ use egui::{Context, RichText};
 use crate::state::SharedState;
 use crate::theme;
 
-/// Actions the toolbar can request from the app.
 pub enum ToolbarAction {
     OpenRepo(PathBuf),
     Stash,
     CreateBranch,
+    Fetch,
+    Pull,
+    Push,
 }
 
 pub struct Toolbar {
@@ -52,64 +54,66 @@ impl Toolbar {
                     }
 
                     ui.add_space(6.0);
-                    ui.add(egui::Separator::default().vertical().spacing(4.0));
+                    sep(ui);
                     ui.add_space(6.0);
 
-                    let has_repo = self.state.lock().unwrap().repo_path.is_some();
-
-                    // New Branch button
-                    if ui
-                        .add_enabled(
-                            has_repo,
-                            egui::Button::new(
-                                RichText::new("⎇  New Branch")
-                                    .color(theme::TEXT_SECONDARY)
-                                    .size(12.0),
-                            )
-                            .fill(theme::BG_SURFACE)
-                            .stroke(egui::Stroke::new(1.0, theme::BORDER)),
+                    let (has_repo, dirty, has_upstream, op_label) = {
+                        let s = self.state.lock().unwrap();
+                        (
+                            s.repo_path.is_some(),
+                            s.dirty_count > 0,
+                            s.ahead_behind.is_some(),
+                            s.remote_op.clone(),
                         )
-                        .clicked()
-                    {
+                    };
+
+                    let busy = op_label.is_some();
+
+                    // ── Branch / stash ───────────────────────────────────
+                    if icon_btn(ui, "⎇  New Branch", has_repo && !busy).clicked() {
                         action = Some(ToolbarAction::CreateBranch);
                     }
-
-                    ui.add_space(4.0);
-
-                    // Stash button
-                    let (dirty, has_stashes) = {
-                        let s = self.state.lock().unwrap();
-                        (s.dirty_count > 0, !s.stashes.is_empty())
-                    };
-
-                    let stash_label = if has_stashes {
-                        RichText::new("⚑  Stash")
-                    } else {
-                        RichText::new("⚑  Stash")
-                    };
-
-                    if ui
-                        .add_enabled(
-                            has_repo && dirty,
-                            egui::Button::new(
-                                stash_label.color(theme::TEXT_SECONDARY).size(12.0),
-                            )
-                            .fill(theme::BG_SURFACE)
-                            .stroke(egui::Stroke::new(1.0, theme::BORDER)),
-                        )
+                    ui.add_space(2.0);
+                    if icon_btn(ui, "⚑  Stash", has_repo && dirty && !busy)
                         .on_hover_text("Stash all uncommitted changes")
                         .clicked()
                     {
                         action = Some(ToolbarAction::Stash);
                     }
 
+                    ui.add_space(6.0);
+                    sep(ui);
+                    ui.add_space(6.0);
+
+                    // ── Remote operations ────────────────────────────────
+                    if icon_btn(ui, "↓  Fetch", has_repo && !busy)
+                        .on_hover_text("Fetch from all remotes")
+                        .clicked()
+                    {
+                        action = Some(ToolbarAction::Fetch);
+                    }
+                    ui.add_space(2.0);
+                    if icon_btn(ui, "⇅  Pull", has_repo && !busy)
+                        .on_hover_text("Fetch + fast-forward current branch")
+                        .clicked()
+                    {
+                        action = Some(ToolbarAction::Pull);
+                    }
+                    ui.add_space(2.0);
+                    if icon_btn(ui, "↑  Push", has_repo && !busy)
+                        .on_hover_text("Push current branch to upstream")
+                        .clicked()
+                    {
+                        action = Some(ToolbarAction::Push);
+                    }
+
                     ui.add_space(8.0);
-                    ui.add(egui::Separator::default().vertical().spacing(4.0));
+                    sep(ui);
                     ui.add_space(8.0);
 
                     // Repo name
-                    let state = self.state.lock().unwrap();
-                    if let Some(ref path) = state.repo_path {
+                    if has_repo {
+                        let path = self.state.lock().unwrap().repo_path.clone().unwrap();
                         let name = path
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
@@ -121,9 +125,33 @@ impl Toolbar {
                                 .strong(),
                         );
                     }
+
+                    // Spinner + progress text (right-aligned)
+                    if let Some(ref label) = op_label {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(10.0);
+                            ui.label(
+                                RichText::new(label).color(theme::TEXT_MUTED).size(11.5),
+                            );
+                            ui.spinner();
+                        });
+                    }
                 });
             });
 
         action
     }
+}
+
+fn icon_btn(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(label).color(theme::TEXT_SECONDARY).size(12.0))
+            .fill(theme::BG_SURFACE)
+            .stroke(egui::Stroke::new(1.0, theme::BORDER)),
+    )
+}
+
+fn sep(ui: &mut egui::Ui) {
+    ui.add(egui::Separator::default().vertical().spacing(4.0));
 }
