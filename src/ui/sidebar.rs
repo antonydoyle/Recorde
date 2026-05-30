@@ -8,6 +8,8 @@ pub enum SidebarAction {
     CheckoutBranch(String),
     OpenCreateBranch { from_oid: Option<String> },
     DeleteBranch(String),
+    CreateTag(String),   // tag name to create at HEAD
+    DeleteTag(String),
     StashApply(usize),
     StashPop(usize),
     StashDrop(usize),
@@ -133,11 +135,27 @@ impl Sidebar {
                 // ── Tags ──────────────────────────────────────────────────
                 section(ui, "TAGS", tags.len(), |ui| {
                     for name in &tags {
-                        tag_row(ui, name);
+                        let resp = tag_row(ui, name);
+                        resp.context_menu(|ui| {
+                            ui.set_min_width(130.0);
+                            if ui.add(egui::Button::new(
+                                RichText::new("Delete Tag").color(theme::ACCENT_RED),
+                            )).clicked() {
+                                action = Some(SidebarAction::DeleteTag(name.to_string()));
+                                ui.close_menu();
+                            }
+                        });
                     }
-                    if tags.is_empty() {
-                        empty_label(ui);
-                    }
+                    // Create tag at HEAD
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        if ui.add(egui::Button::new(
+                            RichText::new("+ Create Tag").color(theme::TEXT_MUTED).size(11.0),
+                        ).fill(Color32::TRANSPARENT).stroke(egui::Stroke::NONE)).clicked() {
+                            action = Some(SidebarAction::CreateTag(String::new()));
+                        }
+                    });
+                    if tags.is_empty() { empty_label(ui); }
                 });
 
                 ui.add_space(4.0);
@@ -247,7 +265,7 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool) -> egui::
     resp
 }
 
-fn tag_row(ui: &mut Ui, name: &str) {
+fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
     ui.horizontal(|ui| {
         ui.add_space(12.0);
         let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(8.0), egui::Sense::hover());
@@ -265,7 +283,7 @@ fn tag_row(ui: &mut Ui, name: &str) {
         ));
         ui.add_space(4.0);
         ui.label(RichText::new(name).color(theme::TEXT_SECONDARY).size(12.0));
-    });
+    }).response
 }
 
 fn empty_label(ui: &mut Ui) {
