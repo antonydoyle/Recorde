@@ -72,6 +72,12 @@ pub enum ModalKind {
     ConfirmDeleteBranch {
         branch_name: String,
     },
+    CreateTag {
+        from_oid: Option<String>,
+    },
+    ConfirmDeleteTag {
+        tag_name: String,
+    },
 }
 
 #[derive(Default)]
@@ -94,6 +100,9 @@ pub struct AppState {
     pub modal: ModalKind,
     /// Label shown while a remote operation (fetch/push/pull) is running.
     pub remote_op: Option<String>,
+    /// Commit graph search state.
+    pub search_active: bool,
+    pub search_query: String,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
