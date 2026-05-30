@@ -24,6 +24,30 @@ pub struct CommitDetail {
     pub changed_files: Vec<ChangedFile>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DiffLine {
+    pub origin: char,              // '+', '-', ' ', '\\'
+    pub content: String,
+    pub old_lineno: Option<u32>,
+    pub new_lineno: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffHunk {
+    pub header: String,            // "@@ -1,4 +1,8 @@ context"
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileDiff {
+    pub commit_oid: String,
+    pub file_path: String,
+    pub hunks: Vec<DiffHunk>,
+    pub is_binary: bool,
+    pub additions: usize,
+    pub deletions: usize,
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub repo_path: Option<std::path::PathBuf>,
@@ -33,6 +57,7 @@ pub struct AppState {
     pub selected_commit: Option<String>,
     pub selected_commit_detail: Option<CommitDetail>,
     pub selected_file: Option<String>,
+    pub current_diff: Option<FileDiff>,
 
     pub head_branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,

@@ -5,6 +5,7 @@ use crate::theme;
 use crate::ui::{
     commit_graph::CommitGraphView,
     detail_panel::DetailPanel,
+    diff_view::DiffView,
     sidebar::Sidebar,
     status_bar::StatusBar,
     toolbar::Toolbar,
@@ -15,6 +16,7 @@ pub struct RecordeApp {
     toolbar: Toolbar,
     sidebar: Sidebar,
     commit_graph_view: CommitGraphView,
+    diff_view: DiffView,
     detail_panel: DetailPanel,
     status_bar: StatusBar,
 }
@@ -33,6 +35,7 @@ impl RecordeApp {
             toolbar: Toolbar::new(state.clone()),
             sidebar: Sidebar::new(state.clone()),
             commit_graph_view: CommitGraphView::new(state.clone()),
+            diff_view: DiffView::new(state.clone()),
             detail_panel: DetailPanel::new(state.clone()),
             status_bar: StatusBar::new(state.clone()),
             state,
@@ -63,10 +66,16 @@ impl eframe::App for RecordeApp {
                 self.detail_panel.show(ui);
             });
 
+        let show_diff = self.state.lock().unwrap().selected_file.is_some();
+
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::BG_BASE))
             .show(ctx, |ui| {
-                self.commit_graph_view.show(ui);
+                if show_diff {
+                    self.diff_view.show(ui);
+                } else {
+                    self.commit_graph_view.show(ui);
+                }
             });
     }
 }

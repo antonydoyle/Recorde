@@ -1,6 +1,7 @@
 use egui::{Color32, FontId, RichText, Ui};
 
-use crate::state::SharedState;
+use crate::git::operations::load_diff;
+use crate::state::{CommitDetail, SharedState};
 use crate::theme;
 
 pub struct DetailPanel {
@@ -16,9 +17,17 @@ impl DetailPanel {
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, theme::BG_SURFACE);
 
-        let state = self.state.lock().unwrap();
+        // Snapshot everything we need, then release the lock.
+        let (selected_commit, detail, selected_file) = {
+            let s = self.state.lock().unwrap();
+            (
+                s.selected_commit.clone(),
+                s.selected_commit_detail.clone(),
+                s.selected_file.clone(),
+            )
+        };
 
-        if state.selected_commit.is_none() {
+        if selected_commit.is_none() {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     RichText::new("Select a commit to view details.")
@@ -29,14 +38,15 @@ impl DetailPanel {
             return;
         }
 
-        let Some(ref detail) = state.selected_commit_detail else {
+        let Some(detail) = detail else {
             ui.centered_and_justified(|ui| {
-                ui.label(
-                    RichText::new("Loading…").color(theme::TEXT_MUTED).size(12.0),
-                );
+                ui.label(RichText::new("Loading…").color(theme::TEXT_MUTED).size(12.0));
             });
             return;
         };
+
+        // Collect any file the user clicks on during this frame.
+        let mut clicked_file: Option<String> = None;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
@@ -54,7 +64,9 @@ impl DetailPanel {
                     );
                     ui.add_space(6.0);
                     if ui
-                        .small_button(RichText::new("Copy").color(theme::TEXT_MUTED).size(10.5))
+                        .small_button(
+                            RichText::new("Copy").color(theme::TEXT_MUTED).size(10.5),
+                        )
                         .clicked()
                     {
                         ui.output_mut(|o| o.copied_text = detail.oid.clone());
@@ -62,8 +74,6 @@ impl DetailPanel {
                 });
 
                 ui.add_space(8.0);
-
-                // --- Author / Date ---
                 meta_row(ui, "Author", &detail.author);
                 meta_row(ui, "Email", &detail.author_email);
                 meta_row(ui, "Date", &theme::relative_time(detail.timestamp));
@@ -107,58 +117,36 @@ impl DetailPanel {
                 ui.add_space(6.0);
 
                 // --- Changed files ---
-                let file_count = detail.changed_files.len();
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
                     ui.label(
-                        RichText::new(format!(
-                            "Changed files  ({})",
-                            file_count
-                        ))
-                        .color(theme::TEXT_MUTED)
-                        .size(10.5)
-                        .strong(),
+                        RichText::new(format!("Changed files  ({})", detail.changed_files.len()))
+                            .color(theme::TEXT_MUTED)
+                            .size(10.5)
+                            .strong(),
                     );
                 });
-
                 ui.add_space(4.0);
 
                 for file in &detail.changed_files {
-                    let (icon, color) = match file.status {
-                        'A' => ("A", theme::ACCENT_GREEN),
-                        'D' => ("D", theme::ACCENT_RED),
-                        'R' => ("R", theme::ACCENT_YELLOW),
-                        'C' => ("C", theme::ACCENT_BLUE),
-                        _ => ("M", theme::ACCENT_YELLOW),
-                    };
+                    let is_sel = selected_file.as_deref() == Some(&file.path);
+                    let (icon, icon_color) = status_icon(file.status);
 
-                    let resp = ui
+                    let row_resp = ui
                         .horizontal(|ui| {
                             ui.add_space(12.0);
                             ui.label(
                                 RichText::new(icon)
                                     .font(FontId::monospace(11.0))
-                                    .color(color),
+                                    .color(icon_color),
                             );
                             ui.add_space(6.0);
 
-                            // Show just the filename, full path as tooltip
-                            let display_name = file
-                                .path
-                                .rsplit('/')
-                                .next()
-                                .unwrap_or(&file.path);
-
-                            let state_ref = &state;
-                            let is_selected = state_ref
-                                .selected_file
-                                .as_deref()
-                                == Some(&file.path);
-
+                            let display = file.path.rsplit('/').next().unwrap_or(&file.path);
                             let label = ui.selectable_label(
-                                is_selected,
-                                RichText::new(display_name)
-                                    .color(if is_selected {
+                                is_sel,
+                                RichText::new(display)
+                                    .color(if is_sel {
                                         theme::ACCENT_BLUE
                                     } else {
                                         theme::TEXT_SECONDARY
@@ -166,21 +154,45 @@ impl DetailPanel {
                                     .size(12.0),
                             );
 
-                            if file.path != *display_name {
+                            if display != file.path {
                                 label.on_hover_text(&file.path);
                             }
                         })
                         .response;
 
-                    // Hover highlight
-                    if resp.hovered() {
+                    // Row hover highlight
+                    if row_resp.hovered() {
                         ui.painter()
-                            .rect_filled(resp.rect, 0.0, Color32::from_white_alpha(6));
+                            .rect_filled(row_resp.rect, 0.0, Color32::from_white_alpha(6));
+                    }
+
+                    if row_resp.interact(egui::Sense::click()).clicked() {
+                        clicked_file = Some(file.path.clone());
                     }
                 }
 
                 ui.add_space(16.0);
             });
+
+        // Handle file click outside the borrow scope.
+        if let Some(path) = clicked_file {
+            {
+                let mut s = self.state.lock().unwrap();
+                s.selected_file = Some(path.clone());
+                s.current_diff = None;
+            }
+            load_diff(&detail.oid, &path, self.state.clone());
+        }
+    }
+}
+
+fn status_icon(status: char) -> (&'static str, egui::Color32) {
+    match status {
+        'A' => ("A", theme::ACCENT_GREEN),
+        'D' => ("D", theme::ACCENT_RED),
+        'R' => ("R", theme::ACCENT_YELLOW),
+        'C' => ("C", theme::ACCENT_BLUE),
+        _ => ("M", theme::ACCENT_YELLOW),
     }
 }
 
