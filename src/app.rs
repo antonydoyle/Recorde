@@ -8,9 +8,13 @@ use crate::ui::{
     detail_panel::DetailPanel,
     diff_view::DiffView,
     sidebar::{Sidebar, SidebarAction},
+    staging_panel::StagingPanel,
     status_bar::StatusBar,
     toolbar::{Toolbar, ToolbarAction},
 };
+
+#[derive(PartialEq, Clone, Copy)]
+enum RightTab { Changes, Details }
 
 pub struct RecordeApp {
     state: SharedState,
@@ -19,7 +23,9 @@ pub struct RecordeApp {
     commit_graph_view: CommitGraphView,
     diff_view: DiffView,
     detail_panel: DetailPanel,
+    staging_panel: StagingPanel,
     status_bar: StatusBar,
+    right_tab: RightTab,
     // Ephemeral state for the Create Branch modal form
     create_branch_name: String,
     create_branch_checkout: bool,
@@ -41,7 +47,9 @@ impl RecordeApp {
             commit_graph_view: CommitGraphView::new(state.clone()),
             diff_view: DiffView::new(state.clone()),
             detail_panel: DetailPanel::new(state.clone()),
+            staging_panel: StagingPanel::new(state.clone()),
             status_bar: StatusBar::new(state.clone()),
+            right_tab: RightTab::Changes,
             state,
             create_branch_name: String::new(),
             create_branch_checkout: true,
@@ -243,7 +251,65 @@ impl eframe::App for RecordeApp {
             .min_width(200.0)
             .frame(egui::Frame::none())
             .show(ctx, |ui| {
-                self.detail_panel.show(ui);
+                // Auto-switch: commit selected → Details tab.
+                let has_commit = self.state.lock().unwrap().selected_commit.is_some();
+                let has_dirty  = self.state.lock().unwrap().dirty_count > 0;
+                if has_commit && self.right_tab == RightTab::Changes {
+                    self.right_tab = RightTab::Details;
+                }
+
+                // Tab bar
+                let tab_height = 32.0;
+                let tab_rect = egui::Rect::from_min_size(
+                    ui.min_rect().min,
+                    egui::Vec2::new(ui.available_width(), tab_height),
+                );
+                ui.painter().rect_filled(tab_rect, 0.0, theme::BG_ELEVATED);
+                ui.painter().line_segment(
+                    [
+                        egui::Pos2::new(tab_rect.min.x, tab_rect.max.y),
+                        egui::Pos2::new(tab_rect.max.x, tab_rect.max.y),
+                    ],
+                    egui::Stroke::new(1.0, theme::BORDER),
+                );
+
+                ui.allocate_ui_at_rect(tab_rect, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.add_space(8.0);
+                        for (tab, label) in &[
+                            (RightTab::Changes, if has_dirty { "  Changes ●  " } else { "  Changes  " }),
+                            (RightTab::Details, "  Details  "),
+                        ] {
+                            let selected = self.right_tab == *tab;
+                            let text = egui::RichText::new(*label)
+                                .size(12.0)
+                                .color(if selected { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED });
+                            let btn = ui.add(
+                                egui::Button::new(text)
+                                    .fill(if selected { theme::BG_SURFACE } else { Color32::TRANSPARENT })
+                                    .stroke(egui::Stroke::new(
+                                        if selected { 1.0 } else { 0.0 },
+                                        theme::BORDER,
+                                    )),
+                            );
+                            if btn.clicked() {
+                                self.right_tab = *tab;
+                            }
+                        }
+                    });
+                });
+
+                // Panel content below tab bar
+                let content_rect = egui::Rect::from_min_max(
+                    egui::Pos2::new(ui.min_rect().min.x, ui.min_rect().min.y + tab_height),
+                    ui.max_rect().max,
+                );
+                ui.allocate_ui_at_rect(content_rect, |ui| {
+                    match self.right_tab {
+                        RightTab::Changes => self.staging_panel.show(ui),
+                        RightTab::Details => self.detail_panel.show(ui),
+                    }
+                });
             });
 
         let show_diff = self.state.lock().unwrap().selected_file.is_some();

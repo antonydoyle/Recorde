@@ -2,10 +2,15 @@ use std::sync::{Arc, Mutex};
 
 use crate::git::graph::CommitGraph;
 
+/// A file in the working directory, with separate staged and unstaged status.
+/// A file may appear in both sections simultaneously (partially staged).
 #[derive(Debug, Clone)]
-pub struct FileStatus {
+pub struct WorkingDirFile {
     pub path: String,
-    pub index_status: char, // 'M', 'A', 'D', '?', etc.
+    /// Status in the index (staged): 'A', 'M', 'D', 'R', or None.
+    pub staged_status: Option<char>,
+    /// Status in the working tree (unstaged): 'M', 'D', '?', or None.
+    pub unstaged_status: Option<char>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,7 +88,7 @@ pub struct AppState {
     pub head_branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub dirty_count: usize,
-    pub working_dir_status: Vec<FileStatus>,
+    pub working_dir_files: Vec<WorkingDirFile>,
     pub stashes: Vec<StashEntry>,
 
     pub modal: ModalKind,
