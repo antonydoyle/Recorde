@@ -1,8 +1,16 @@
+use std::path::PathBuf;
+
 use egui::{Context, RichText};
 
-use crate::git::operations::load_repo;
 use crate::state::SharedState;
 use crate::theme;
+
+/// Actions the toolbar can request from the app.
+pub enum ToolbarAction {
+    OpenRepo(PathBuf),
+    Stash,
+    CreateBranch,
+}
 
 pub struct Toolbar {
     state: SharedState,
@@ -13,7 +21,9 @@ impl Toolbar {
         Self { state }
     }
 
-    pub fn show(&mut self, ctx: &Context) {
+    pub fn show(&mut self, ctx: &Context) -> Option<ToolbarAction> {
+        let mut action = None;
+
         egui::TopBottomPanel::top("toolbar")
             .exact_height(36.0)
             .frame(
@@ -23,27 +33,81 @@ impl Toolbar {
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    // Open repo button
-                    let btn = ui.add(
-                        egui::Button::new(
-                            RichText::new("⊞  Open Repository")
-                                .color(theme::TEXT_PRIMARY)
-                                .size(12.5),
+                    // Open repo
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("⊞  Open Repository")
+                                    .color(theme::TEXT_PRIMARY)
+                                    .size(12.5),
+                            )
+                            .fill(theme::BG_SURFACE)
+                            .stroke(egui::Stroke::new(1.0, theme::BORDER)),
                         )
-                        .fill(theme::BG_SURFACE)
-                        .stroke(egui::Stroke::new(1.0, theme::BORDER)),
-                    );
-                    if btn.clicked() {
+                        .clicked()
+                    {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            load_repo(path, self.state.clone());
+                            action = Some(ToolbarAction::OpenRepo(path));
                         }
+                    }
+
+                    ui.add_space(6.0);
+                    ui.add(egui::Separator::default().vertical().spacing(4.0));
+                    ui.add_space(6.0);
+
+                    let has_repo = self.state.lock().unwrap().repo_path.is_some();
+
+                    // New Branch button
+                    if ui
+                        .add_enabled(
+                            has_repo,
+                            egui::Button::new(
+                                RichText::new("⎇  New Branch")
+                                    .color(theme::TEXT_SECONDARY)
+                                    .size(12.0),
+                            )
+                            .fill(theme::BG_SURFACE)
+                            .stroke(egui::Stroke::new(1.0, theme::BORDER)),
+                        )
+                        .clicked()
+                    {
+                        action = Some(ToolbarAction::CreateBranch);
+                    }
+
+                    ui.add_space(4.0);
+
+                    // Stash button
+                    let (dirty, has_stashes) = {
+                        let s = self.state.lock().unwrap();
+                        (s.dirty_count > 0, !s.stashes.is_empty())
+                    };
+
+                    let stash_label = if has_stashes {
+                        RichText::new("⚑  Stash")
+                    } else {
+                        RichText::new("⚑  Stash")
+                    };
+
+                    if ui
+                        .add_enabled(
+                            has_repo && dirty,
+                            egui::Button::new(
+                                stash_label.color(theme::TEXT_SECONDARY).size(12.0),
+                            )
+                            .fill(theme::BG_SURFACE)
+                            .stroke(egui::Stroke::new(1.0, theme::BORDER)),
+                        )
+                        .on_hover_text("Stash all uncommitted changes")
+                        .clicked()
+                    {
+                        action = Some(ToolbarAction::Stash);
                     }
 
                     ui.add_space(8.0);
                     ui.add(egui::Separator::default().vertical().spacing(4.0));
                     ui.add_space(8.0);
 
-                    // Repo path display
+                    // Repo name
                     let state = self.state.lock().unwrap();
                     if let Some(ref path) = state.repo_path {
                         let name = path
@@ -59,5 +123,7 @@ impl Toolbar {
                     }
                 });
             });
+
+        action
     }
 }

@@ -2,47 +2,57 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::cell::RefCell;
 
-use crate::git::graph::CommitGraph;
-use crate::state::{ChangedFile, CommitDetail, DiffHunk, DiffLine, FileDiff, FileStatus, SharedState};
+use crate::git::{branches, graph::CommitGraph};
+use crate::state::{ChangedFile, CommitDetail, DiffHunk, DiffLine, FileDiff, FileStatus, StashEntry, SharedState};
 
-/// Load a repository: build the commit graph and collect working-dir status.
+/// Load a repository: build the commit graph, working-dir status, and stashes.
 pub fn load_repo(path: PathBuf, state: SharedState) {
     std::thread::spawn(move || {
         let result = load_repo_inner(&path);
         let mut s = state.lock().unwrap();
         match result {
-            Ok((graph, head_branch, dirty_count, status)) => {
+            Ok((graph, head_branch, dirty_count, status, stashes)) => {
                 s.repo_path = Some(path);
                 s.commit_graph = Some(graph);
                 s.head_branch = Some(head_branch);
                 s.dirty_count = dirty_count;
                 s.working_dir_status = status;
+                s.stashes = stashes;
                 s.error = None;
-                // Clear stale selection when a new repo is loaded.
-                s.selected_commit = None;
-                s.selected_commit_detail = None;
+                // Clear stale diff/selection when repo reloads (e.g. after branch switch).
+                // Keep selected_commit so the user's place in history is preserved on refresh.
             }
             Err(e) => s.error = Some(e.message().to_string()),
         }
     });
 }
 
-fn load_repo_inner(
-    path: &Path,
-) -> Result<(CommitGraph, String, usize, Vec<FileStatus>), git2::Error> {
-    let repo = git2::Repository::open(path)?;
+type RepoInnerResult = (CommitGraph, String, usize, Vec<FileStatus>, Vec<StashEntry>);
 
-    let graph = CommitGraph::from_repo(&repo)?;
+fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
+    // Immutable pass: graph + head + status
+    let head_branch;
+    let graph;
+    let dirty_count;
+    let status;
+    {
+        let repo = git2::Repository::open(path)?;
+        graph = CommitGraph::from_repo(&repo)?;
+        head_branch = repo
+            .head()
+            .ok()
+            .and_then(|h| h.shorthand().map(str::to_owned))
+            .unwrap_or_else(|| "HEAD".to_string());
+        (dirty_count, status) = collect_status(&repo)?;
+    }
 
-    let head_branch = repo
-        .head()
-        .ok()
-        .and_then(|h| h.shorthand().map(str::to_owned))
-        .unwrap_or_else(|| "HEAD".to_string());
+    // Mutable pass: stashes
+    let stashes = {
+        let mut repo = git2::Repository::open(path)?;
+        branches::collect_stashes(&mut repo)
+    };
 
-    let (dirty_count, status) = collect_status(&repo)?;
-
-    Ok((graph, head_branch, dirty_count, status))
+    Ok((graph, head_branch, dirty_count, status, stashes))
 }
 
 fn collect_status(repo: &git2::Repository) -> Result<(usize, Vec<FileStatus>), git2::Error> {
