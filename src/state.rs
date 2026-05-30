@@ -92,6 +92,8 @@ pub struct AppState {
     pub stashes: Vec<StashEntry>,
 
     pub modal: ModalKind,
+    /// Label shown while a remote operation (fetch/push/pull) is running.
+    pub remote_op: Option<String>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
