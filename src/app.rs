@@ -1,6 +1,6 @@
 use egui::{Color32, Context, RichText, Stroke, Visuals};
 
-use crate::git::{branches, operations::load_repo};
+use crate::git::{branches, operations::load_repo, remote};
 use crate::state::{ModalKind, new_shared_state, SharedState};
 use crate::theme;
 use crate::ui::{
@@ -63,6 +63,9 @@ impl RecordeApp {
             ToolbarAction::CreateBranch => {
                 self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None };
             }
+            ToolbarAction::Fetch => remote::fetch_all(self.state.clone()),
+            ToolbarAction::Pull  => remote::pull_branch(self.state.clone()),
+            ToolbarAction::Push  => remote::push_branch(self.state.clone()),
         }
     }
 
