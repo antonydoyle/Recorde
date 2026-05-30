@@ -262,6 +262,9 @@ impl RecordeApp {
 
 impl eframe::App for RecordeApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Keep debug overlays off every frame — egui can reset them internally.
+        ctx.style_mut(kill_debug_overlays);
+
         // Check if the graph context menu triggered a rebase open
         let pending = self.state.lock().unwrap().pending_open_rebase.take();
         if let Some(oid) = pending {
@@ -409,57 +412,63 @@ fn modal_window(ctx: &Context, title: &str, add_contents: impl FnOnce(&mut egui:
 
 fn apply_theme(ctx: &Context, dark: bool) {
     if !dark {
-        // Light theme: use egui defaults with minor tweaks
         let mut v = Visuals::light();
         v.window_stroke = Stroke::new(1.0, Color32::from_gray(210));
         v.popup_shadow = egui::Shadow::NONE;
         v.window_shadow = egui::Shadow::NONE;
         ctx.set_visuals(v);
-        let mut style = (*ctx.style()).clone();
-        style.debug = egui::style::DebugOptions::default();
-        style.debug.debug_on_hover = false;
-        style.debug.show_interactive_widgets = false;
-        style.spacing.item_spacing = egui::Vec2::new(6.0, 3.0);
-        style.spacing.button_padding = egui::Vec2::new(8.0, 4.0);
-        ctx.set_style(style);
-        return;
+    } else {
+        let mut v = Visuals::dark();
+        v.panel_fill = theme::BG_BASE;
+        v.window_fill = theme::BG_SURFACE;
+        v.faint_bg_color = theme::BG_SURFACE;
+        v.extreme_bg_color = Color32::from_rgb(0x12, 0x14, 0x18);
+        v.override_text_color = Some(theme::TEXT_PRIMARY);
+        v.widgets.noninteractive.bg_fill = theme::BG_SURFACE;
+        v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, theme::TEXT_SECONDARY);
+        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme::BORDER);
+        v.widgets.inactive.bg_fill = theme::BG_ELEVATED;
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0, theme::TEXT_SECONDARY);
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0, theme::BORDER);
+        v.widgets.hovered.bg_fill = Color32::from_rgb(0x35, 0x3A, 0x4A);
+        v.widgets.hovered.fg_stroke = Stroke::new(1.0, theme::TEXT_PRIMARY);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, theme::ACCENT_BLUE);
+        v.widgets.active.bg_fill = theme::ACCENT_BLUE;
+        v.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+        v.selection.bg_fill = Color32::from_rgba_premultiplied(0x4D, 0x88, 0xFF, 50);
+        v.selection.stroke = Stroke::new(1.0, theme::ACCENT_BLUE);
+        v.window_stroke = Stroke::new(1.0, theme::BORDER);
+        v.popup_shadow = egui::Shadow::NONE;
+        v.window_shadow = egui::Shadow::NONE;
+        ctx.set_visuals(v);
     }
 
-    let mut v = Visuals::dark();
-    v.panel_fill = theme::BG_BASE;
-    v.window_fill = theme::BG_SURFACE;
-    v.faint_bg_color = theme::BG_SURFACE;
-    v.extreme_bg_color = Color32::from_rgb(0x12, 0x14, 0x18);
-    v.override_text_color = Some(theme::TEXT_PRIMARY);
+    ctx.style_mut(|style| {
+        if dark {
+            style.spacing.item_spacing = egui::Vec2::new(6.0, 3.0);
+            style.spacing.window_margin = egui::Margin::same(0.0);
+            style.spacing.button_padding = egui::Vec2::new(8.0, 4.0);
+        } else {
+            style.spacing.item_spacing = egui::Vec2::new(6.0, 3.0);
+            style.spacing.button_padding = egui::Vec2::new(8.0, 4.0);
+        }
+        kill_debug_overlays(style);
+    });
+}
 
-    v.widgets.noninteractive.bg_fill = theme::BG_SURFACE;
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, theme::TEXT_SECONDARY);
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme::BORDER);
-    v.widgets.inactive.bg_fill = theme::BG_ELEVATED;
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, theme::TEXT_SECONDARY);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, theme::BORDER);
-    v.widgets.hovered.bg_fill = Color32::from_rgb(0x35, 0x3A, 0x4A);
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, theme::TEXT_PRIMARY);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, theme::ACCENT_BLUE);
-    v.widgets.active.bg_fill = theme::ACCENT_BLUE;
-    v.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-    v.selection.bg_fill = Color32::from_rgba_premultiplied(0x4D, 0x88, 0xFF, 50);
-    v.selection.stroke = Stroke::new(1.0, theme::ACCENT_BLUE);
-    v.window_stroke = Stroke::new(1.0, theme::BORDER);
-    v.popup_shadow = egui::Shadow::NONE;
-    v.window_shadow = egui::Shadow::NONE;
-    ctx.set_visuals(v);
-
-    let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::Vec2::new(6.0, 3.0);
-    style.spacing.window_margin = egui::Margin::same(0.0);
-    style.spacing.button_padding = egui::Vec2::new(8.0, 4.0);
-    style.debug.debug_on_hover = false;
-    style.debug.debug_on_hover_with_all_modifiers = false;
-    style.debug.hover_shows_next = false;
+/// Zero out every egui debug visualisation flag.
+/// Called both at startup and on every frame to prevent any internal reset.
+fn kill_debug_overlays(style: &mut egui::Style) {
+    style.debug.show_expand_width     = false;
+    style.debug.show_expand_height    = false;
+    style.debug.show_resize           = false;
     style.debug.show_interactive_widgets = false;
-    style.debug.show_expand_width = false;
-    style.debug.show_expand_height = false;
-    style.debug.show_resize = false;
-    ctx.set_style(style);
+    style.debug.show_widget_hits      = false;
+    // Fields that only exist in debug builds
+    #[cfg(debug_assertions)]
+    {
+        style.debug.debug_on_hover                    = false;
+        style.debug.debug_on_hover_with_all_modifiers = false;
+        style.debug.hover_shows_next                  = false;
+    }
 }
