@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 use crate::git::{branches, graph::CommitGraph};
-use crate::state::{ChangedFile, CommitDetail, DiffHunk, DiffLine, FileDiff, FileStatus, StashEntry, SharedState};
+use crate::state::{ChangedFile, CommitDetail, DiffHunk, DiffLine, FileDiff, WorkingDirFile, StashEntry, SharedState};
 
 /// Load a repository: build the commit graph, working-dir status, and stashes.
 pub fn load_repo(path: PathBuf, state: SharedState) {
@@ -11,23 +11,21 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
         let result = load_repo_inner(&path);
         let mut s = state.lock().unwrap();
         match result {
-            Ok((graph, head_branch, dirty_count, status, stashes)) => {
+            Ok((graph, head_branch, dirty_count, files, stashes)) => {
                 s.repo_path = Some(path);
                 s.commit_graph = Some(graph);
                 s.head_branch = Some(head_branch);
                 s.dirty_count = dirty_count;
-                s.working_dir_status = status;
+                s.working_dir_files = files;
                 s.stashes = stashes;
                 s.error = None;
-                // Clear stale diff/selection when repo reloads (e.g. after branch switch).
-                // Keep selected_commit so the user's place in history is preserved on refresh.
             }
             Err(e) => s.error = Some(e.message().to_string()),
         }
     });
 }
 
-type RepoInnerResult = (CommitGraph, String, usize, Vec<FileStatus>, Vec<StashEntry>);
+type RepoInnerResult = (CommitGraph, String, usize, Vec<WorkingDirFile>, Vec<StashEntry>);
 
 fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
     // Immutable pass: graph + head + status
@@ -55,30 +53,130 @@ fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
     Ok((graph, head_branch, dirty_count, status, stashes))
 }
 
-fn collect_status(repo: &git2::Repository) -> Result<(usize, Vec<FileStatus>), git2::Error> {
+fn collect_status(repo: &git2::Repository) -> Result<(usize, Vec<WorkingDirFile>), git2::Error> {
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true)
-        .recurse_untracked_dirs(false)
+        .recurse_untracked_dirs(true)
         .exclude_submodules(true);
 
     let statuses = repo.statuses(Some(&mut opts))?;
-    let mut files = Vec::new();
+    let mut files: Vec<WorkingDirFile> = Vec::new();
 
     for entry in statuses.iter() {
         let path = entry.path().unwrap_or("").to_string();
         let s = entry.status();
-        let ch = if s.contains(git2::Status::INDEX_NEW) { 'A' }
-            else if s.contains(git2::Status::INDEX_MODIFIED) { 'M' }
-            else if s.contains(git2::Status::INDEX_DELETED) { 'D' }
-            else if s.contains(git2::Status::WT_MODIFIED) { 'm' }
-            else if s.contains(git2::Status::WT_DELETED) { 'd' }
-            else if s.contains(git2::Status::WT_NEW) { '?' }
-            else { ' ' };
-        files.push(FileStatus { path, index_status: ch });
+
+        let staged = if s.contains(git2::Status::INDEX_NEW) { Some('A') }
+            else if s.contains(git2::Status::INDEX_MODIFIED) { Some('M') }
+            else if s.contains(git2::Status::INDEX_DELETED) { Some('D') }
+            else if s.contains(git2::Status::INDEX_RENAMED) { Some('R') }
+            else { None };
+
+        let unstaged = if s.contains(git2::Status::WT_NEW) { Some('?') }
+            else if s.contains(git2::Status::WT_MODIFIED) { Some('M') }
+            else if s.contains(git2::Status::WT_DELETED) { Some('D') }
+            else { None };
+
+        if staged.is_some() || unstaged.is_some() {
+            files.push(WorkingDirFile { path, staged_status: staged, unstaged_status: unstaged });
+        }
     }
 
     let dirty = files.len();
     Ok((dirty, files))
+}
+
+/// Load the diff for a working-directory file (not a commit diff).
+/// `staged = true`  → diff between index (staged) and HEAD.
+/// `staged = false` → diff between working tree and index.
+pub fn load_workdir_diff(file_path: &str, staged: bool, state: SharedState) {
+    let fp = file_path.to_string();
+    let rp = state.lock().unwrap().repo_path.clone();
+    let Some(path) = rp else { return };
+
+    state.lock().unwrap().current_diff = None;
+
+    std::thread::spawn(move || {
+        let result = compute_workdir_diff(&path, &fp, staged);
+        let mut s = state.lock().unwrap();
+        if s.selected_file.as_deref() == Some(&fp) {
+            match result {
+                Ok(diff) => s.current_diff = Some(diff),
+                Err(e) => s.error = Some(e.message().to_string()),
+            }
+        }
+    });
+}
+
+fn compute_workdir_diff(repo_path: &Path, file_path: &str, staged: bool) -> Result<FileDiff, git2::Error> {
+    let repo = git2::Repository::open(repo_path)?;
+    let mut opts = git2::DiffOptions::new();
+    opts.pathspec(file_path);
+
+    let diff = if staged {
+        // index vs HEAD (what would be committed)
+        let head_tree = repo.head().ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .and_then(|c| c.tree().ok());
+        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?
+    } else {
+        // workdir vs index (unstaged changes)
+        repo.diff_index_to_workdir(None, Some(&mut opts))?
+    };
+
+    parse_diff(diff, "", file_path)
+}
+
+fn parse_diff(diff: git2::Diff, commit_oid: &str, file_path: &str) -> Result<FileDiff, git2::Error> {
+    let is_binary = Rc::new(RefCell::new(false));
+    let is_binary_cb = Rc::clone(&is_binary);
+    let hunks_rc: Rc<RefCell<Vec<(String, Vec<DiffLine>)>>> = Rc::new(RefCell::new(Vec::new()));
+    let hunks_hunk = Rc::clone(&hunks_rc);
+    let hunks_line = Rc::clone(&hunks_rc);
+
+    diff.foreach(
+        &mut |_, _| true,
+        Some(&mut |_, _| { *is_binary_cb.borrow_mut() = true; true }),
+        Some(&mut |_, hunk| {
+            let header = std::str::from_utf8(hunk.header()).unwrap_or("").trim_end().to_string();
+            hunks_hunk.borrow_mut().push((header, Vec::new()));
+            true
+        }),
+        Some(&mut |_, _, line| {
+            let mut h = hunks_line.borrow_mut();
+            if let Some(last) = h.last_mut() {
+                let content = std::str::from_utf8(line.content())
+                    .unwrap_or("")
+                    .trim_end_matches(['\n', '\r'])
+                    .to_string();
+                last.1.push(DiffLine {
+                    origin: line.origin(),
+                    content,
+                    old_lineno: line.old_lineno(),
+                    new_lineno: line.new_lineno(),
+                });
+            }
+            true
+        }),
+    )?;
+
+    let raw = Rc::try_unwrap(hunks_rc).unwrap().into_inner();
+    let hunks: Vec<DiffHunk> = raw.into_iter()
+        .map(|(header, lines)| DiffHunk { header, lines })
+        .collect();
+
+    let additions = hunks.iter().flat_map(|h| h.lines.iter()).filter(|l| l.origin == '+').count();
+    let deletions = hunks.iter().flat_map(|h| h.lines.iter()).filter(|l| l.origin == '-').count();
+    let binary = *is_binary.borrow();
+
+    Ok(FileDiff {
+        commit_oid: commit_oid.to_string(),
+        file_path: file_path.to_string(),
+        hunks,
+        is_binary: binary,
+        additions,
+        deletions,
+    })
 }
 
 /// Load the full detail for a single commit (changed files + message body).
@@ -197,63 +295,6 @@ fn compute_diff(repo_path: &Path, commit_oid: &str, file_path: &str) -> Result<F
         Some(&mut opts),
     )?;
 
-    // Use Rc<RefCell<>> to share data across multiple closures in foreach.
-    let is_binary = Rc::new(RefCell::new(false));
-    let is_binary_bin = Rc::clone(&is_binary);
-
-    // Collect (hunk_header, lines) pairs.
-    let hunks_rc: Rc<RefCell<Vec<(String, Vec<DiffLine>)>>> = Rc::new(RefCell::new(Vec::new()));
-    let hunks_hunk = Rc::clone(&hunks_rc);
-    let hunks_line = Rc::clone(&hunks_rc);
-
-    diff.foreach(
-        &mut |_, _| true,
-        Some(&mut |_, _| {
-            *is_binary_bin.borrow_mut() = true;
-            true
-        }),
-        Some(&mut |_, hunk| {
-            let header = std::str::from_utf8(hunk.header())
-                .unwrap_or("")
-                .trim_end()
-                .to_string();
-            hunks_hunk.borrow_mut().push((header, Vec::new()));
-            true
-        }),
-        Some(&mut |_, _, line| {
-            let mut hunks = hunks_line.borrow_mut();
-            if let Some(last) = hunks.last_mut() {
-                let content = std::str::from_utf8(line.content())
-                    .unwrap_or("")
-                    .trim_end_matches(['\n', '\r'])
-                    .to_string();
-                last.1.push(DiffLine {
-                    origin: line.origin(),
-                    content,
-                    old_lineno: line.old_lineno(),
-                    new_lineno: line.new_lineno(),
-                });
-            }
-            true
-        }),
-    )?;
-
-    let raw_hunks = Rc::try_unwrap(hunks_rc).unwrap().into_inner();
-    let hunks: Vec<DiffHunk> = raw_hunks
-        .into_iter()
-        .map(|(header, lines)| DiffHunk { header, lines })
-        .collect();
-
-    let additions = hunks.iter().flat_map(|h| h.lines.iter()).filter(|l| l.origin == '+').count();
-    let deletions = hunks.iter().flat_map(|h| h.lines.iter()).filter(|l| l.origin == '-').count();
-    let binary = *is_binary.borrow();
-
-    Ok(FileDiff {
-        commit_oid: commit_oid.to_string(),
-        file_path: file_path.to_string(),
-        hunks,
-        is_binary: binary,
-        additions,
-        deletions,
-    })
+    parse_diff(diff, commit_oid, file_path)
 }
+
