@@ -365,5 +365,14 @@ fn apply_theme(ctx: &Context) {
     style.spacing.item_spacing = egui::Vec2::new(6.0, 3.0);
     style.spacing.window_margin = egui::Margin::same(0.0);
     style.spacing.button_padding = egui::Vec2::new(8.0, 4.0);
+    // Disable egui's debug overlays — they show "first use of widget id" etc.
+    // even in non-release builds and are not useful to end users.
+    style.debug.debug_on_hover = false;
+    style.debug.debug_on_hover_with_all_modifiers = false;
+    style.debug.hover_shows_next = false;
+    style.debug.show_interactive_widgets = false;
+    style.debug.show_expand_width = false;
+    style.debug.show_expand_height = false;
+    style.debug.show_resize = false;
     ctx.set_style(style);
 }
