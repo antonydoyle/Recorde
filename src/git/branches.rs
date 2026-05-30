@@ -1,0 +1,178 @@
+use std::path::Path;
+
+use crate::state::SharedState;
+
+// ── Re-exported reload helper ────────────────────────────────────────────────
+
+/// Reload the graph + status for the currently open repo.
+/// Spawns its own thread — safe to call from any thread.
+pub fn reload_repo(state: SharedState) {
+    let path = state.lock().unwrap().repo_path.clone();
+    if let Some(path) = path {
+        crate::git::operations::load_repo(path, state);
+    }
+}
+
+// ── Checkout ─────────────────────────────────────────────────────────────────
+
+pub fn checkout_branch(branch_name: &str, state: SharedState) {
+    let name = branch_name.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+
+    std::thread::spawn(move || match do_checkout(&path, &name) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+    });
+}
+
+fn do_checkout(path: &Path, name: &str) -> Result<(), git2::Error> {
+    let repo = git2::Repository::open(path)?;
+    let branch = repo.find_branch(name, git2::BranchType::Local)?;
+    let obj = branch.get().peel(git2::ObjectType::Commit)?;
+    let mut opts = git2::build::CheckoutBuilder::new();
+    opts.safe();
+    repo.checkout_tree(&obj, Some(&mut opts))?;
+    repo.set_head(&format!("refs/heads/{}", name))?;
+    Ok(())
+}
+
+// ── Create branch ─────────────────────────────────────────────────────────────
+
+/// Create a new branch. `from_oid` = commit to branch from (None = HEAD).
+pub fn create_branch(name: &str, from_oid: Option<&str>, checkout: bool, state: SharedState) {
+    let name = name.to_string();
+    let from_oid = from_oid.map(str::to_owned);
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+
+    std::thread::spawn(move || {
+        match do_create(&path, &name, from_oid.as_deref(), checkout) {
+            Ok(()) => reload_repo(state),
+            Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+        }
+    });
+}
+
+fn do_create(path: &Path, name: &str, from_oid: Option<&str>, checkout: bool) -> Result<(), git2::Error> {
+    let repo = git2::Repository::open(path)?;
+
+    let commit = if let Some(oid_str) = from_oid {
+        let oid = git2::Oid::from_str(oid_str)?;
+        repo.find_commit(oid)?
+    } else {
+        repo.head()?.peel_to_commit()?
+    };
+
+    repo.branch(name, &commit, false)?;
+
+    if checkout {
+        let obj = commit.as_object();
+        let mut opts = git2::build::CheckoutBuilder::new();
+        opts.safe();
+        repo.checkout_tree(obj, Some(&mut opts))?;
+        repo.set_head(&format!("refs/heads/{}", name))?;
+    }
+    Ok(())
+}
+
+// ── Delete branch ─────────────────────────────────────────────────────────────
+
+pub fn delete_branch(branch_name: &str, state: SharedState) {
+    let name = branch_name.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+
+    std::thread::spawn(move || match do_delete(&path, &name) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+    });
+}
+
+fn do_delete(path: &Path, name: &str) -> Result<(), git2::Error> {
+    let repo = git2::Repository::open(path)?;
+    let mut branch = repo.find_branch(name, git2::BranchType::Local)?;
+    branch.delete()?;
+    Ok(())
+}
+
+// ── Stash ─────────────────────────────────────────────────────────────────────
+
+pub fn stash_save(state: SharedState) {
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+
+    std::thread::spawn(move || match do_stash_save(&path) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+    });
+}
+
+fn do_stash_save(path: &Path) -> Result<(), git2::Error> {
+    let mut repo = git2::Repository::open(path)?;
+    let sig = repo.signature()?;
+    repo.stash_save(&sig, "WIP", Some(git2::StashFlags::DEFAULT))?;
+    Ok(())
+}
+
+pub fn stash_apply(index: usize, state: SharedState) {
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+
+    std::thread::spawn(move || match do_stash_apply(&path, index, false) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+    });
+}
+
+pub fn stash_pop(index: usize, state: SharedState) {
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+
+    std::thread::spawn(move || match do_stash_apply(&path, index, true) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+    });
+}
+
+fn do_stash_apply(path: &Path, index: usize, pop: bool) -> Result<(), git2::Error> {
+    let mut repo = git2::Repository::open(path)?;
+    let mut opts = git2::StashApplyOptions::new();
+    if pop {
+        repo.stash_pop(index, Some(&mut opts))?;
+    } else {
+        repo.stash_apply(index, Some(&mut opts))?;
+    }
+    Ok(())
+}
+
+pub fn stash_drop(index: usize, state: SharedState) {
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+
+    std::thread::spawn(move || match do_stash_drop(&path, index) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+    });
+}
+
+fn do_stash_drop(path: &Path, index: usize) -> Result<(), git2::Error> {
+    let mut repo = git2::Repository::open(path)?;
+    repo.stash_drop(index)?;
+    Ok(())
+}
+
+// ── Collect stashes (used by load_repo_inner) ────────────────────────────────
+
+pub fn collect_stashes(repo: &mut git2::Repository) -> Vec<crate::state::StashEntry> {
+    let mut stashes = Vec::new();
+    let _ = repo.stash_foreach(|idx, msg, oid| {
+        stashes.push(crate::state::StashEntry {
+            index: idx,
+            message: msg.to_string(),
+            oid: oid.to_string(),
+        });
+        true
+    });
+    stashes
+}

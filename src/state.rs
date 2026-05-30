@@ -5,7 +5,7 @@ use crate::git::graph::CommitGraph;
 #[derive(Debug, Clone)]
 pub struct FileStatus {
     pub path: String,
-    pub index_status: char,  // 'M', 'A', 'D', '?', etc.
+    pub index_status: char, // 'M', 'A', 'D', '?', etc.
 }
 
 #[derive(Debug, Clone)]
@@ -26,7 +26,7 @@ pub struct CommitDetail {
 
 #[derive(Debug, Clone)]
 pub struct DiffLine {
-    pub origin: char,              // '+', '-', ' ', '\\'
+    pub origin: char,
     pub content: String,
     pub old_lineno: Option<u32>,
     pub new_lineno: Option<u32>,
@@ -34,7 +34,7 @@ pub struct DiffLine {
 
 #[derive(Debug, Clone)]
 pub struct DiffHunk {
-    pub header: String,            // "@@ -1,4 +1,8 @@ context"
+    pub header: String,
     pub lines: Vec<DiffLine>,
 }
 
@@ -46,6 +46,27 @@ pub struct FileDiff {
     pub is_binary: bool,
     pub additions: usize,
     pub deletions: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct StashEntry {
+    pub index: usize,
+    pub message: String,
+    pub oid: String,
+}
+
+/// Which modal dialog is currently open (if any).
+#[derive(Debug, Clone, Default)]
+pub enum ModalKind {
+    #[default]
+    None,
+    CreateBranch {
+        /// Commit OID to branch from; None = HEAD.
+        from_oid: Option<String>,
+    },
+    ConfirmDeleteBranch {
+        branch_name: String,
+    },
 }
 
 #[derive(Default)]
@@ -63,6 +84,9 @@ pub struct AppState {
     pub ahead_behind: Option<(usize, usize)>,
     pub dirty_count: usize,
     pub working_dir_status: Vec<FileStatus>,
+    pub stashes: Vec<StashEntry>,
+
+    pub modal: ModalKind,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
