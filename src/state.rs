@@ -132,6 +132,24 @@ pub struct DeletedBranch {
     pub oid: String,
 }
 
+/// A git submodule entry parsed from `.gitmodules`.
+#[derive(Debug, Clone)]
+pub struct SubmoduleInfo {
+    pub name: String,
+    pub path: String,
+    pub url: String,
+    pub initialized: bool,
+}
+
+/// A linked worktree entry from `git worktree list --porcelain`.
+#[derive(Debug, Clone)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub head_oid: String,
+    pub branch: Option<String>,
+    pub is_main: bool,
+}
+
 /// A destructive action pending user confirmation.
 #[derive(Debug, Clone)]
 pub enum PendingDiscard {
@@ -235,6 +253,10 @@ pub struct AppState {
     /// Bisect state (set when `git bisect start` is active).
     pub bisect_in_progress: bool,
     pub bisect_current_oid: Option<String>,
+
+    // ── Phase 12: Submodules and Worktrees ───────────────────────────────────
+    pub submodules: Vec<SubmoduleInfo>,
+    pub worktrees:  Vec<WorktreeInfo>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;

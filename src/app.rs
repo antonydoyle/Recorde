@@ -934,7 +934,7 @@ impl RecordeApp {
     }
 
     fn render_repo_settings(&mut self, ui: &mut egui::Ui) {
-        let (repo_path, head_branch, ahead_behind, dirty_count, conflict_count, caps) = {
+        let (repo_path, head_branch, ahead_behind, dirty_count, conflict_count, caps, submodules, worktrees) = {
             let s = self.state.lock().unwrap();
             (
                 s.repo_path.clone(),
@@ -943,6 +943,8 @@ impl RecordeApp {
                 s.dirty_count,
                 s.conflicted_files.len(),
                 s.capabilities.clone(),
+                s.submodules.clone(),
+                s.worktrees.clone(),
             )
         };
         let Some(path) = repo_path else {
@@ -995,7 +997,41 @@ impl RecordeApp {
                     }
                 });
             }
-            health_row(ui, "Submodules", if caps.has_submodules { "present" } else { "none" });
+            // Submodules row — dim "none" or teal count + hover tooltip
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{:<14}", "Submodules")).color(theme::TEXT_MUTED).size(11.5).monospace());
+                if submodules.is_empty() {
+                    ui.label(RichText::new("none").color(theme::TEXT_MUTED).size(11.5));
+                } else {
+                    let count_label = ui.label(RichText::new(format!("{}", submodules.len())).color(theme::ACCENT_TEAL).size(11.5));
+                    let tooltip: String = submodules.iter()
+                        .map(|s| {
+                            let status = if s.initialized { "initialized" } else { "not initialized" };
+                            format!("{} ({})", s.name, status)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    count_label.on_hover_text(tooltip);
+                }
+            });
+            // Worktrees row — dim "1 (main only)" or teal count + hover tooltip
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{:<14}", "Worktrees")).color(theme::TEXT_MUTED).size(11.5).monospace());
+                if worktrees.len() <= 1 {
+                    ui.label(RichText::new("1 (main only)").color(theme::TEXT_MUTED).size(11.5));
+                } else {
+                    let count_label = ui.label(RichText::new(format!("{}", worktrees.len())).color(theme::ACCENT_TEAL).size(11.5));
+                    let tooltip: String = worktrees.iter()
+                        .map(|w| {
+                            let branch = w.branch.as_deref().unwrap_or("(detached)");
+                            let tag = if w.is_main { " [main]" } else { "" };
+                            format!("{}{} — {}", branch, tag, &w.path)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    count_label.on_hover_text(tooltip);
+                }
+            });
             health_row(ui, "Provider", &format!("{:?}", caps.provider));
         }
         let git_ver = std::process::Command::new("git").arg("--version")
