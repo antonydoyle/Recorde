@@ -1,5 +1,6 @@
 use egui::{Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
+use crate::git::operations::{load_diff, load_workdir_diff};
 use crate::state::{FileDiff, SharedState};
 use crate::theme;
 
@@ -61,13 +62,129 @@ impl DiffView {
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        let (diff_opt, selected_file, console_log) = {
+        let (diff_opt, selected_file, console_log, commit_files, workdir_files, selected_commit) = {
             let s = self.state.lock().unwrap();
-            (s.current_diff.clone(), s.selected_file.clone(), s.console_log.clone())
+            (
+                s.current_diff.clone(),
+                s.selected_file.clone(),
+                s.console_log.clone(),
+                s.selected_commit_detail.as_ref().map(|d| d.changed_files.clone()),
+                s.working_dir_files.clone(),
+                s.selected_commit.clone(),
+            )
         };
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_APP);
 
+        // ── Left file list (230 px) ───────────────────────────────────────
+        let file_list_w = 230.0;
+        let full_rect = ui.max_rect();
+        let list_rect = Rect::from_min_max(full_rect.min, egui::pos2(full_rect.min.x + file_list_w, full_rect.max.y));
+        let diff_rect = Rect::from_min_max(egui::pos2(full_rect.min.x + file_list_w, full_rect.min.y), full_rect.max);
+
+        // Divider
+        ui.painter().line_segment(
+            [egui::pos2(full_rect.min.x + file_list_w, full_rect.min.y),
+             egui::pos2(full_rect.min.x + file_list_w, full_rect.max.y)],
+            Stroke::new(1.0, theme::BORDER),
+        );
+
+        // File list content
+        ui.allocate_ui_at_rect(list_rect, |ui| {
+            ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_PANEL);
+            egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+                ui.add_space(4.0);
+                if let Some(ref files) = commit_files {
+                    // Commit changed files
+                    let oid = selected_commit.clone().unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(format!("Changed files ({})", files.len()))
+                            .color(theme::TEXT_MUTED).size(10.5).strong());
+                    });
+                    ui.add_space(2.0);
+                    for f in files {
+                        let is_sel = selected_file.as_deref() == Some(f.path.as_str());
+                        let (icon, col) = status_icon(f.status);
+                        let resp = ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new(icon).color(col).size(11.0)
+                                .font(FontId::monospace(11.0)));
+                            ui.add_space(3.0);
+                            let name = f.path.rsplit('/').next().unwrap_or(&f.path);
+                            let r = ui.selectable_label(is_sel,
+                                egui::RichText::new(name)
+                                    .color(if is_sel { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY })
+                                    .size(11.5));
+                            if f.path != name { r.on_hover_text(&f.path); }
+                        }).response;
+                        if resp.interact(Sense::click()).clicked() {
+                            let path = f.path.clone();
+                            let oid2 = oid.clone();
+                            let state = self.state.clone();
+                            self.state.lock().unwrap().selected_file = Some(path.clone());
+                            load_diff(&oid2, &path, state);
+                        }
+                    }
+                } else {
+                    // Working directory files
+                    let has_any = !workdir_files.is_empty();
+                    if has_any {
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new(format!("Working tree ({})", workdir_files.len()))
+                                .color(theme::TEXT_MUTED).size(10.5).strong());
+                        });
+                        ui.add_space(2.0);
+                        for f in &workdir_files {
+                            let is_sel = selected_file.as_deref() == Some(f.path.as_str());
+                            let status = f.unstaged_status.or(f.staged_status).unwrap_or('M');
+                            let (icon, col) = status_icon(status);
+                            let resp = ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new(icon).color(col).size(11.0)
+                                    .font(FontId::monospace(11.0)));
+                                ui.add_space(3.0);
+                                let name = f.path.rsplit('/').next().unwrap_or(&f.path);
+                                let r = ui.selectable_label(is_sel,
+                                    egui::RichText::new(name)
+                                        .color(if is_sel { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY })
+                                        .size(11.5));
+                                if f.path != name { r.on_hover_text(&f.path); }
+                            }).response;
+                            if resp.interact(Sense::click()).clicked() {
+                                let path = f.path.clone();
+                                let staged = f.staged_status.is_some() && f.unstaged_status.is_none();
+                                let state = self.state.clone();
+                                self.state.lock().unwrap().selected_file = Some(path.clone());
+                                load_workdir_diff(&path, staged, state);
+                            }
+                        }
+                    } else {
+                        ui.add_space(16.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(12.0);
+                            ui.label(egui::RichText::new("Working tree clean")
+                                .color(theme::TEXT_MUTED).size(11.5));
+                        });
+                    }
+                }
+                ui.add_space(4.0);
+            });
+        });
+
+        // Diff area (right of file list)
+        let mut diff_child = ui.child_ui(diff_rect, egui::Layout::top_down(egui::Align::LEFT), None);
+        self.show_diff_area(&mut diff_child, &diff_opt, &selected_file, &console_log);
+    }
+
+    fn show_diff_area(
+        &mut self,
+        ui: &mut Ui,
+        diff_opt: &Option<FileDiff>,
+        selected_file: &Option<String>,
+        console_log: &[String],
+    ) {
         // Rebuild item caches when diff changes.
         if let Some(ref diff) = diff_opt {
             let key = (diff.commit_oid.clone(), diff.file_path.clone());
@@ -95,30 +212,20 @@ impl DiffView {
         ui.allocate_ui_at_rect(header_rect, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(12.0);
-
-                // File Diff / Console tabs
                 for (label, is_console) in &[("File Diff", false), ("Console", true)] {
                     let active = *is_console == self.show_console;
                     let tc = if active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
-                    let btn = ui.add(
-                        egui::Button::new(egui::RichText::new(*label).size(12.5).color(tc))
-                            .fill(Color32::TRANSPARENT).stroke(Stroke::NONE),
-                    );
+                    let btn = ui.add(egui::Button::new(egui::RichText::new(*label).size(12.5).color(tc))
+                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
                     if btn.clicked() { self.show_console = *is_console; }
                     if active {
                         let br = btn.rect;
-                        ui.painter().line_segment(
-                            [br.left_bottom(), br.right_bottom()],
-                            Stroke::new(2.0, theme::ACCENT_TEAL),
-                        );
+                        ui.painter().line_segment([br.left_bottom(), br.right_bottom()], Stroke::new(2.0, theme::ACCENT_TEAL));
                     }
                     ui.add_space(10.0);
                 }
-
                 ui.add(egui::Separator::default().vertical().spacing(3.0));
                 ui.add_space(6.0);
-
-                // Filename
                 if let Some(ref diff) = diff_opt {
                     let filename = diff.file_path.rsplit('/').next().unwrap_or(&diff.file_path);
                     ui.label(egui::RichText::new(filename).color(theme::TEXT_PRIMARY).size(12.5).strong());
@@ -126,12 +233,9 @@ impl DiffView {
                         ui.label(egui::RichText::new(&diff.file_path).color(theme::TEXT_MUTED).size(11.0));
                     }
                 }
-
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(10.0);
-
                     if let Some(ref diff) = diff_opt {
-                        // Close button
                         if ui.add(egui::Button::new(egui::RichText::new("✕").color(theme::TEXT_MUTED).size(12.0))
                             .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
                             let mut s = self.state.lock().unwrap();
@@ -140,19 +244,15 @@ impl DiffView {
                         ui.add_space(4.0);
                         ui.label(egui::RichText::new(format!("+{}  −{}", diff.additions, diff.deletions))
                             .color(theme::TEXT_SECONDARY).size(11.5));
-                        ui.add_space(8.0);
-
-                        // Unified | Split toggle (only when viewing File Diff)
                         if !self.show_console {
+                            ui.add_space(8.0);
                             ui.add(egui::Separator::default().vertical().spacing(3.0));
                             ui.add_space(6.0);
                             for (label, is_split) in &[("Unified", false), ("Split", true)] {
                                 let active = *is_split == self.split_view;
                                 let tc = if active { theme::ACCENT_TEAL } else { theme::TEXT_MUTED };
-                                let btn = ui.add(
-                                    egui::Button::new(egui::RichText::new(*label).size(11.5).color(tc))
-                                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE),
-                                );
+                                let btn = ui.add(egui::Button::new(egui::RichText::new(*label).size(11.5).color(tc))
+                                    .fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
                                 if btn.clicked() { self.split_view = *is_split; }
                                 ui.add_space(2.0);
                             }
@@ -178,7 +278,7 @@ impl DiffView {
                             ui.label(egui::RichText::new("No git operations yet.").color(theme::TEXT_MUTED).size(12.0));
                         });
                     } else {
-                        for line in &console_log {
+                        for line in console_log {
                             let color = if line.starts_with("error:") { theme::ACCENT_RED }
                                 else if line.starts_with('$') { theme::ACCENT_TEAL }
                                 else { theme::TEXT_SECONDARY };
@@ -195,29 +295,20 @@ impl DiffView {
             return;
         }
 
-        // ── Empty / binary states ─────────────────────────────────────────
-        if diff_opt.is_none() {
+        // ── Empty / binary / no-changes states ───────────────────────────
+        let empty_msg = if diff_opt.is_none() {
+            Some(if selected_file.is_some() { "Loading diff…" } else { "Select a file to view its diff." })
+        } else if diff_opt.as_ref().map_or(false, |d| d.is_binary) {
+            Some("Binary file — no diff available.")
+        } else if self.items.is_empty() {
+            Some("No changes.")
+        } else {
+            None
+        };
+        if let Some(msg) = empty_msg {
             ui.allocate_ui_at_rect(content_rect, |ui| {
                 ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new(
-                        if selected_file.is_some() { "Loading diff…" } else { "Select a file to view its diff." }
-                    ).color(theme::TEXT_MUTED).size(12.0));
-                });
-            });
-            return;
-        }
-        if diff_opt.as_ref().map_or(false, |d| d.is_binary) {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new("Binary file — no diff available.").color(theme::TEXT_MUTED).size(12.0));
-                });
-            });
-            return;
-        }
-        if self.items.is_empty() {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new("No changes.").color(theme::TEXT_MUTED).size(12.0));
+                    ui.label(egui::RichText::new(msg).color(theme::TEXT_MUTED).size(12.0));
                 });
             });
             return;
@@ -475,4 +566,13 @@ fn flatten_split(diff: &FileDiff) -> Vec<SplitRow> {
         flush(&mut rows, &mut dels, &mut adds);
     }
     rows
+}
+
+fn status_icon(status: char) -> (&'static str, egui::Color32) {
+    match status {
+        'A' | '?' => ("A", theme::ACCENT_GREEN),
+        'D'       => ("D", theme::ACCENT_RED),
+        'R'       => ("R", theme::ACCENT_YELLOW),
+        _         => ("M", theme::ACCENT_YELLOW),
+    }
 }
