@@ -81,6 +81,99 @@ pub fn parse_iso8601(s: &str) -> i64 {
     days * 86400 + hour * 3600 + min * 60 + sec
 }
 
+// ── Phase 13 types ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IssueState { Open, Closed }
+
+#[derive(Debug, Clone)]
+pub struct IssueItem {
+    pub number: u32,
+    pub title: String,
+    pub author: String,
+    pub state: IssueState,
+    pub url: String,
+    pub label_names: Vec<String>,
+    pub body: String,
+    pub comments: u32,
+    pub updated_ts: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IssueFilter { #[default] Open, Closed, All }
+
+impl IssueFilter {
+    pub fn label(self) -> &'static str {
+        match self { Self::Open => "Open", Self::Closed => "Closed", Self::All => "All" }
+    }
+    pub fn api_state(self) -> &'static str {
+        match self { Self::Open => "open", Self::Closed => "closed", Self::All => "all" }
+    }
+    pub fn matches(&self, s: &IssueState) -> bool {
+        match self {
+            Self::All    => true,
+            Self::Open   => *s == IssueState::Open,
+            Self::Closed => *s == IssueState::Closed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CiStatus { Success, Failure, Running, Pending, Cancelled }
+
+impl CiStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Success   => "passed",
+            Self::Failure   => "failed",
+            Self::Running   => "running",
+            Self::Pending   => "pending",
+            Self::Cancelled => "cancelled",
+        }
+    }
+    pub fn from_github(conclusion: &str, status: &str) -> Self {
+        match conclusion {
+            "success"             => Self::Success,
+            "failure" | "timed_out" | "startup_failure" => Self::Failure,
+            "cancelled"           => Self::Cancelled,
+            _ => match status {
+                "completed" => Self::Success,
+                "in_progress" | "queued" | "waiting" => Self::Running,
+                _ => Self::Pending,
+            }
+        }
+    }
+    pub fn from_gitlab(s: &str) -> Self {
+        match s {
+            "success" | "passed"  => Self::Success,
+            "failed"              => Self::Failure,
+            "running"             => Self::Running,
+            "canceled" | "skipped" => Self::Cancelled,
+            _                     => Self::Pending,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CiRun {
+    pub id: String,
+    pub name: String,
+    pub status: CiStatus,
+    pub url: String,
+    pub branch: String,
+    pub updated_ts: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReleaseItem {
+    pub tag_name: String,
+    pub name: String,
+    pub body: String,
+    pub url: String,
+    pub published_ts: i64,
+    pub prerelease: bool,
+}
+
 /// Extract (owner, repo, host) from a git remote URL.
 pub fn parse_remote(url: &str) -> Option<(String, String, String)> {
     let url = url.trim_end_matches(".git");
