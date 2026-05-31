@@ -1,4 +1,10 @@
 use egui::Color32;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static DARK_MODE: AtomicBool = AtomicBool::new(true);
+
+#[inline] fn dark() -> bool { DARK_MODE.load(Ordering::Relaxed) }
+pub fn set_dark(d: bool) { DARK_MODE.store(d, Ordering::Relaxed); }
 
 // ── Light mode palette ────────────────────────────────────────────────────────
 pub mod light {
@@ -8,17 +14,38 @@ pub mod light {
     pub const BG_TOOLBAR:    Color32 = Color32::from_rgb(240, 242, 247);
     pub const BG_PANEL:      Color32 = Color32::from_rgb(255, 255, 255);
     pub const BG_PANEL_ALT:  Color32 = Color32::from_rgb(245, 247, 250);
-    pub const BG_HOVER:      Color32 = Color32::from_rgb(230, 234, 242);
-    pub const BG_SELECTED:   Color32 = Color32::from_rgb(215, 225, 245);
-    pub const BORDER:        Color32 = Color32::from_rgb(210, 215, 225);
-    pub const BORDER_STRONG: Color32 = Color32::from_rgb(170, 180, 200);
-    pub const TEXT_PRIMARY:  Color32 = Color32::from_rgb(28,  34,  46);
-    pub const TEXT_SECONDARY:Color32 = Color32::from_rgb(70,  80,  100);
-    pub const TEXT_MUTED:    Color32 = Color32::from_rgb(130, 142, 162);
-    pub const BG_DIFF_ADD:   Color32 = Color32::from_rgb(210, 242, 218);
-    pub const BG_DIFF_DEL:   Color32 = Color32::from_rgb(252, 214, 214);
-    pub const BG_DIFF_HUNK:  Color32 = Color32::from_rgb(225, 232, 248);
+    pub const BG_HOVER:      Color32 = Color32::from_rgb(228, 232, 242);
+    pub const BG_SELECTED:   Color32 = Color32::from_rgb(210, 222, 245);
+    pub const BG_ELEVATED:   Color32 = Color32::from_rgb(250, 251, 253);
+    pub const BORDER:        Color32 = Color32::from_rgb(210, 215, 226);
+    pub const BORDER_STRONG: Color32 = Color32::from_rgb(168, 178, 200);
+    pub const TEXT_PRIMARY:  Color32 = Color32::from_rgb(22,  28,  42);
+    pub const TEXT_SECONDARY:Color32 = Color32::from_rgb(66,  76,  98);
+    pub const TEXT_MUTED:    Color32 = Color32::from_rgb(122, 134, 158);
+    pub const BG_DIFF_ADD:   Color32 = Color32::from_rgb(205, 242, 213);
+    pub const BG_DIFF_DEL:   Color32 = Color32::from_rgb(252, 210, 210);
+    pub const BG_DIFF_HUNK:  Color32 = Color32::from_rgb(222, 230, 250);
 }
+
+// ── Dynamic colour accessors — use these in UI paint calls ────────────────────
+#[inline] pub fn bg_app()        -> Color32 { if dark() { BG_APP       } else { light::BG_APP       } }
+#[inline] pub fn bg_titlebar()   -> Color32 { if dark() { BG_TITLEBAR  } else { light::BG_TITLEBAR  } }
+#[inline] pub fn bg_toolbar()    -> Color32 { if dark() { BG_TOOLBAR   } else { light::BG_TOOLBAR   } }
+#[inline] pub fn bg_panel()      -> Color32 { if dark() { BG_PANEL     } else { light::BG_PANEL     } }
+#[inline] pub fn bg_panel_alt()  -> Color32 { if dark() { BG_PANEL_ALT } else { light::BG_PANEL_ALT } }
+#[inline] pub fn bg_hover()      -> Color32 { if dark() { BG_HOVER     } else { light::BG_HOVER     } }
+#[inline] pub fn bg_selected()   -> Color32 { if dark() { BG_SELECTED  } else { light::BG_SELECTED  } }
+#[inline] pub fn bg_elevated()   -> Color32 { if dark() { BG_ELEVATED  } else { light::BG_ELEVATED  } }
+#[inline] pub fn bg_surface()    -> Color32 { bg_panel() }
+#[inline] pub fn bg_base()       -> Color32 { bg_app()   }
+#[inline] pub fn border()        -> Color32 { if dark() { BORDER       } else { light::BORDER       } }
+#[inline] pub fn border_strong() -> Color32 { if dark() { BORDER_STRONG} else { light::BORDER_STRONG} }
+#[inline] pub fn text_primary()  -> Color32 { if dark() { TEXT_PRIMARY  } else { light::TEXT_PRIMARY  } }
+#[inline] pub fn text_secondary()-> Color32 { if dark() { TEXT_SECONDARY} else { light::TEXT_SECONDARY} }
+#[inline] pub fn text_muted()    -> Color32 { if dark() { TEXT_MUTED    } else { light::TEXT_MUTED    } }
+#[inline] pub fn bg_diff_add()   -> Color32 { if dark() { BG_DIFF_ADD  } else { light::BG_DIFF_ADD  } }
+#[inline] pub fn bg_diff_del()   -> Color32 { if dark() { BG_DIFF_DEL  } else { light::BG_DIFF_DEL  } }
+#[inline] pub fn bg_diff_hunk()  -> Color32 { if dark() { BG_DIFF_HUNK } else { light::BG_DIFF_HUNK } }
 
 // ── Background layers ─────────────────────────────────────────────────────────
 pub const BG_APP:        Color32 = Color32::from_rgb(18,  23,  32);   // #121720 window/app
@@ -137,6 +164,7 @@ pub fn relative_time(ts: i64) -> String {
 
 // ── Apply to egui context ─────────────────────────────────────────────────────
 pub fn apply(ctx: &egui::Context, dark: bool) {
+    set_dark(dark);
     if !dark {
         let mut v = egui::Visuals::light();
         v.panel_fill          = light::BG_PANEL;

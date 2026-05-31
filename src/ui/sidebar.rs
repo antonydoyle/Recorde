@@ -45,13 +45,13 @@ impl Sidebar {
     }
 
     pub fn show(&mut self, ui: &mut Ui) -> Option<SidebarAction> {
-        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_PANEL);
+        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::bg_panel());
 
         // Right border
         let r = ui.max_rect();
         ui.painter().line_segment(
             [r.right_top(), r.right_bottom()],
-            Stroke::new(1.0, theme::BORDER),
+            Stroke::new(1.0, theme::border()),
         );
 
         let (graph_opt, head, stashes, ab_map, merged_set, deleted, worktrees) = {
@@ -73,7 +73,7 @@ impl Sidebar {
                     ui.add_space(20.0);
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
-                        ui.label(RichText::new("Open a repository").color(theme::TEXT_MUTED).size(12.0));
+                        ui.label(RichText::new("Open a repository").color(theme::text_muted()).size(12.0));
                     });
                     return;
                 };
@@ -216,7 +216,7 @@ impl Sidebar {
                         ui.horizontal(|ui| {
                             ui.add_space(14.0);
                             if ui.add(egui::Button::new(
-                                RichText::new("+ Create Tag").color(theme::TEXT_MUTED).size(11.5),
+                                RichText::new("+ Create Tag").color(theme::text_muted()).size(11.5),
                             ).fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
                                 action = Some(SidebarAction::CreateTag(String::new()));
                             }
@@ -244,7 +244,7 @@ impl Sidebar {
                                 let (dr, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
                                 ui.painter().circle_filled(dr.center(), 3.5, theme::ACCENT_YELLOW);
                                 ui.add_space(6.0);
-                                ui.label(RichText::new(&display).color(theme::TEXT_SECONDARY).size(12.0));
+                                ui.label(RichText::new(&display).color(theme::text_secondary()).size(12.0));
                             }).response;
                             resp.context_menu(|ui| {
                                 ui.set_min_width(155.0);
@@ -284,7 +284,7 @@ impl Sidebar {
                                 let (dr, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
                                 ui.painter().circle_filled(dr.center(), 3.5, theme::ACCENT_TEAL);
                                 ui.add_space(6.0);
-                                ui.label(RichText::new(label).color(theme::TEXT_SECONDARY).size(12.0));
+                                ui.label(RichText::new(label).color(theme::text_secondary()).size(12.0));
                             });
                         }
                         ui.add_space(4.0);
@@ -303,7 +303,7 @@ impl Sidebar {
                                 let (dr, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
                                 ui.painter().circle_filled(dr.center(), 3.5, theme::ACCENT_RED);
                                 ui.add_space(6.0);
-                                ui.label(RichText::new(&entry.name).color(theme::TEXT_SECONDARY).size(12.0).strikethrough());
+                                ui.label(RichText::new(&entry.name).color(theme::text_secondary()).size(12.0).strikethrough());
                             }).response;
                             resp.context_menu(|ui| {
                                 ui.set_min_width(155.0);
@@ -330,7 +330,7 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
 
     let hovered = resp.hovered();
-    let bg = if hovered { theme::BG_HOVER } else { Color32::TRANSPARENT };
+    let bg = if hovered { theme::bg_hover() } else { Color32::TRANSPARENT };
     if bg != Color32::TRANSPARENT {
         ui.painter().rect_filled(row_rect, 0.0, bg);
     }
@@ -348,13 +348,13 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
     let dot_x = row_rect.left() + 16.0;
     let dot_color = if is_head { theme::ACCENT_TEAL }
         else if is_remote { theme::ACCENT_BLUE.gamma_multiply(0.7) }
-        else { theme::TEXT_MUTED };
+        else { theme::text_muted() };
     ui.painter().circle_filled(Pos2::new(dot_x, row_rect.center().y), 3.5, dot_color);
 
     // Branch name — greyed out if fully merged into HEAD
-    let text_color = if is_head { theme::TEXT_PRIMARY }
-        else if is_merged { theme::TEXT_MUTED }
-        else { theme::TEXT_SECONDARY };
+    let text_color = if is_head { theme::text_primary() }
+        else if is_merged { theme::text_muted() }
+        else { theme::text_secondary() };
     let text_style = if is_head {
         RichText::new(name).color(text_color).size(12.0).strong()
     } else {
@@ -363,7 +363,7 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
 
     // Right-side indicator: "merged" badge or ahead/behind counts
     let (ab_text, ab_color) = if is_merged && !is_head {
-        ("merged".to_string(), theme::TEXT_MUTED)
+        ("merged".to_string(), theme::text_muted())
     } else {
         let txt = match ahead_behind {
             Some((a, b)) if a > 0 && b > 0 => format!("↑{} ↓{}", a, b),
@@ -371,7 +371,7 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
             Some((0, b)) if b > 0           => format!("↓{}", b),
             _                               => String::new(),
         };
-        (txt, theme::TEXT_MUTED)
+        (txt, theme::text_muted())
     };
 
     let right_margin = if ab_text.is_empty() { 8.0 } else { 4.0 };
@@ -408,7 +408,7 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
 
     if resp.hovered() {
-        ui.painter().rect_filled(row_rect, 0.0, theme::BG_HOVER);
+        ui.painter().rect_filled(row_rect, 0.0, theme::bg_hover());
     }
 
     let cx = row_rect.left() + 18.0;
@@ -430,7 +430,7 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
     );
     ui.allocate_ui_at_rect(text_rect, |ui| {
         ui.horizontal_centered(|ui| {
-            ui.label(RichText::new(name).color(theme::TEXT_SECONDARY).size(12.0));
+            ui.label(RichText::new(name).color(theme::text_secondary()).size(12.0));
         });
     });
 
@@ -440,6 +440,6 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
 fn empty_hint(ui: &mut Ui, text: &str) {
     ui.horizontal(|ui| {
         ui.add_space(20.0);
-        ui.label(RichText::new(text).color(theme::TEXT_MUTED).size(11.0));
+        ui.label(RichText::new(text).color(theme::text_muted()).size(11.0));
     });
 }

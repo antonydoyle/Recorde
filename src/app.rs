@@ -382,7 +382,7 @@ impl RecordeApp {
             }),
 
             ModalKind::ConfirmDeleteBranch { branch_name } => modal_window(ctx, "Delete Branch", |ui| {
-                ui.label(RichText::new(format!("Delete \"{}\"?", branch_name)).color(theme::TEXT_PRIMARY).size(13.0));
+                ui.label(RichText::new(format!("Delete \"{}\"?", branch_name)).color(theme::text_primary()).size(13.0));
                 ui.label(styled_muted("Unmerged commits will be lost."));
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
@@ -429,7 +429,7 @@ impl RecordeApp {
             }),
 
             ModalKind::ConfirmDeleteTag { tag_name } => modal_window(ctx, "Delete Tag", |ui| {
-                ui.label(RichText::new(format!("Delete tag \"{}\"?", tag_name)).color(theme::TEXT_PRIMARY).size(13.0));
+                ui.label(RichText::new(format!("Delete tag \"{}\"?", tag_name)).color(theme::text_primary()).size(13.0));
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     let ok     = ui.add(danger_btn("Delete")).clicked();
@@ -503,8 +503,8 @@ impl RecordeApp {
             .title_bar(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
             .frame(egui::Frame::none()
-                .fill(theme::BG_PANEL)
-                .stroke(Stroke::new(1.0, theme::BORDER_STRONG))
+                .fill(theme::bg_panel())
+                .stroke(Stroke::new(1.0, theme::border_strong()))
                 .rounding(10.0)
                 .inner_margin(egui::Margin::same(0.0)))
             .show(ctx, |ui| {
@@ -512,11 +512,11 @@ impl RecordeApp {
 
                 // Search input
                 let input_bg = egui::Frame::none()
-                    .fill(theme::BG_PANEL_ALT)
+                    .fill(theme::bg_panel_alt())
                     .inner_margin(egui::Margin::symmetric(12.0, 10.0));
                 input_bg.show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("⌘").color(theme::TEXT_MUTED).size(15.0));
+                        ui.label(RichText::new("⌘").color(theme::text_muted()).size(15.0));
                         ui.add_space(6.0);
                         let r = ui.add(
                             egui::TextEdit::singleline(&mut self.command_palette_query)
@@ -539,18 +539,18 @@ impl RecordeApp {
 
                     let row = ui.horizontal(|ui| {
                         ui.add_space(14.0);
-                        ui.label(RichText::new(*label).color(theme::TEXT_PRIMARY).size(13.0));
+                        ui.label(RichText::new(*label).color(theme::text_primary()).size(13.0));
                         if !shortcut.is_empty() {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.add_space(14.0);
-                                ui.label(RichText::new(*shortcut).color(theme::TEXT_MUTED).size(11.0).monospace());
+                                ui.label(RichText::new(*shortcut).color(theme::text_muted()).size(11.0).monospace());
                             });
                         }
                     }).response;
 
                     let row_resp = row.interact(egui::Sense::click());
                     if row_resp.hovered() {
-                        ui.painter().rect_filled(row_resp.rect, 0.0, theme::BG_HOVER);
+                        ui.painter().rect_filled(row_resp.rect, 0.0, theme::bg_hover());
                     }
                     if row_resp.clicked() { selected = Some(i); }
                 }
@@ -611,7 +611,7 @@ impl RecordeApp {
             .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
-                ui.label(RichText::new("Switch Branch").color(theme::TEXT_PRIMARY).size(15.0).strong());
+                ui.label(RichText::new("Switch Branch").color(theme::text_primary()).size(15.0).strong());
                 ui.add_space(10.0);
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut self.branch_switcher_query)
@@ -624,7 +624,7 @@ impl RecordeApp {
                 let q = self.branch_switcher_query.to_lowercase();
                 egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                     for name in branches_list.iter().filter(|n| q.is_empty() || n.to_lowercase().contains(&q)) {
-                        let r = ui.selectable_label(false, RichText::new(name).color(theme::TEXT_SECONDARY).size(12.5));
+                        let r = ui.selectable_label(false, RichText::new(name).color(theme::text_secondary()).size(12.5));
                         if r.clicked() { checkout = Some(name.clone()); }
                     }
                 });
@@ -659,7 +659,7 @@ impl RecordeApp {
             .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
             .show(ctx, |ui| {
                 ui.set_min_size(egui::vec2(520.0, 360.0));
-                ui.label(RichText::new("Settings").color(theme::TEXT_PRIMARY).size(15.0).strong());
+                ui.label(RichText::new("Settings").color(theme::text_primary()).size(15.0).strong());
                 ui.add_space(12.0);
 
                 ui.horizontal(|ui| {
@@ -686,13 +686,13 @@ impl RecordeApp {
     }
 
     fn render_app_settings(&mut self, ctx: &Context, ui: &mut egui::Ui) {
-        if ui.checkbox(&mut self.dark_theme, RichText::new("Dark theme").color(theme::TEXT_SECONDARY)).changed() {
+        if ui.checkbox(&mut self.dark_theme, RichText::new("Dark theme").color(theme::text_secondary())).changed() {
             self.config.dark_theme = self.dark_theme;
             self.config.save();
             theme::apply(ctx, self.dark_theme);
         }
         ui.add_space(8.0);
-        ui.label(RichText::new("Default editor").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Default editor").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.default_editor_input)
@@ -714,7 +714,7 @@ impl RecordeApp {
 
         // ── Pull strategy ────────────────────────────────────────────────────
         ui.add_space(12.0);
-        ui.label(RichText::new("Default pull strategy").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Default pull strategy").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui.radio_value(&mut self.config.pull_strategy, PullStrategy::Merge, "Merge").changed() {
@@ -731,15 +731,15 @@ impl RecordeApp {
 
         // ── Fetch options ────────────────────────────────────────────────────
         ui.add_space(12.0);
-        if ui.checkbox(&mut self.config.fetch_prune, RichText::new("Prune deleted remote branches on fetch").color(theme::TEXT_SECONDARY)).changed() {
+        if ui.checkbox(&mut self.config.fetch_prune, RichText::new("Prune deleted remote branches on fetch").color(theme::text_secondary())).changed() {
             self.config.save();
         }
-        if ui.checkbox(&mut self.config.auto_fetch, RichText::new("Auto-fetch on repo open").color(theme::TEXT_SECONDARY)).changed() {
+        if ui.checkbox(&mut self.config.auto_fetch, RichText::new("Auto-fetch on repo open").color(theme::text_secondary())).changed() {
             self.config.save();
         }
         ui.horizontal(|ui| {
             ui.add_enabled_ui(self.config.auto_fetch, |ui| {
-                ui.label(RichText::new("Interval (seconds)").color(theme::TEXT_SECONDARY));
+                ui.label(RichText::new("Interval (seconds)").color(theme::text_secondary()));
                 let mut interval_str = self.config.auto_fetch_interval_secs.to_string();
                 if ui.add(egui::TextEdit::singleline(&mut interval_str).desired_width(80.0)).changed() {
                     if let Ok(v) = interval_str.trim().parse::<u32>() {
@@ -752,9 +752,9 @@ impl RecordeApp {
 
         // ── External tools ───────────────────────────────────────────────────
         ui.add_space(12.0);
-        ui.label(RichText::new("External tools").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("External tools").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
-        ui.label(RichText::new("Terminal").color(theme::TEXT_SECONDARY));
+        ui.label(RichText::new("Terminal").color(theme::text_secondary()));
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.terminal_input)
                 .desired_width(340.0)
@@ -765,7 +765,7 @@ impl RecordeApp {
             }
         });
         ui.add_space(4.0);
-        ui.label(RichText::new("Diff tool").color(theme::TEXT_SECONDARY));
+        ui.label(RichText::new("Diff tool").color(theme::text_secondary()));
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.diff_tool_input)
                 .desired_width(340.0)
@@ -776,7 +776,7 @@ impl RecordeApp {
             }
         });
         ui.add_space(4.0);
-        ui.label(RichText::new("Merge tool").color(theme::TEXT_SECONDARY));
+        ui.label(RichText::new("Merge tool").color(theme::text_secondary()));
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.merge_tool_input)
                 .desired_width(340.0)
@@ -789,7 +789,7 @@ impl RecordeApp {
 
         // ── UI scale ─────────────────────────────────────────────────────────
         ui.add_space(12.0);
-        ui.label(RichText::new("UI scale").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("UI scale").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add(egui::Slider::new(&mut self.config.font_scale, 0.75..=2.0)
@@ -804,9 +804,9 @@ impl RecordeApp {
 
         // ── Accessibility ────────────────────────────────────────────────────
         ui.add_space(12.0);
-        ui.label(RichText::new("Accessibility").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Accessibility").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
-        if ui.checkbox(&mut self.config.colorblind_graph, RichText::new("Color-blind-safe graph colours").color(theme::TEXT_SECONDARY)).changed() {
+        if ui.checkbox(&mut self.config.colorblind_graph, RichText::new("Color-blind-safe graph colours").color(theme::text_secondary())).changed() {
             self.commit_graph_view.set_colorblind(self.config.colorblind_graph);
             self.config.save();
         }
@@ -814,7 +814,7 @@ impl RecordeApp {
 
     fn render_accounts_tab(&mut self, ui: &mut egui::Ui) {
         // ── Provider Accounts ─────────────────────────────────────────────
-        ui.label(RichText::new("Provider Accounts").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Provider Accounts").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
 
         let accounts = self.config.accounts.clone();
@@ -822,13 +822,13 @@ impl RecordeApp {
         for (i, acc) in accounts.iter().enumerate() {
             ui.horizontal(|ui| {
                 let dot_color = match acc.provider {
-                    ProviderKind::GitHubCom | ProviderKind::GitHubEnterprise => theme::TEXT_PRIMARY,
+                    ProviderKind::GitHubCom | ProviderKind::GitHubEnterprise => theme::text_primary(),
                     ProviderKind::GitLabCom | ProviderKind::GitLabSelf        => theme::ACCENT_RED,
                 };
                 let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                 ui.painter().circle_filled(dot_rect.center(), 3.5, dot_color);
                 ui.add_space(4.0);
-                ui.label(RichText::new(acc.label()).color(theme::TEXT_SECONDARY).size(12.0));
+                ui.label(RichText::new(acc.label()).color(theme::text_secondary()).size(12.0));
                 let has_token = crate::auth::store::load(&acc.host, &acc.username).is_some();
                 let (badge, badge_color) = if has_token { ("token stored", theme::ACCENT_TEAL) } else { ("no token", theme::ACCENT_RED) };
                 ui.label(RichText::new(badge).color(badge_color).size(10.5));
@@ -851,7 +851,7 @@ impl RecordeApp {
         if self.add_account_open {
             ui.separator();
             ui.add_space(6.0);
-            ui.label(RichText::new("Add Account").color(theme::TEXT_SECONDARY).size(12.5).strong());
+            ui.label(RichText::new("Add Account").color(theme::text_secondary()).size(12.5).strong());
             ui.add_space(4.0);
             // Provider picker
             ui.horizontal(|ui| {
@@ -860,7 +860,7 @@ impl RecordeApp {
                 for p in [ProviderKind::GitHubCom, ProviderKind::GitHubEnterprise,
                            ProviderKind::GitLabCom, ProviderKind::GitLabSelf] {
                     let active = self.add_account_provider == p;
-                    let color = if active { theme::ACCENT_TEAL } else { theme::TEXT_MUTED };
+                    let color = if active { theme::ACCENT_TEAL } else { theme::text_muted() };
                     if ui.add(egui::Button::new(RichText::new(p.label()).size(11.5).color(color))
                         .fill(Color32::TRANSPARENT)).clicked() && !active {
                         self.add_account_host = p.default_host().to_string();
@@ -877,7 +877,7 @@ impl RecordeApp {
             settings_text_field(ui, "Username", &mut self.add_account_username);
             ui.horizontal(|ui| {
                 ui.set_min_height(22.0);
-                ui.label(RichText::new(format!("{:<12}", "Token (PAT)")).monospace().color(theme::TEXT_MUTED).size(11.5));
+                ui.label(RichText::new(format!("{:<12}", "Token (PAT)")).monospace().color(theme::text_muted()).size(11.5));
                 ui.add(egui::TextEdit::singleline(&mut self.add_account_token)
                     .password(true).desired_width(260.0).hint_text("ghp_… / glpat-…"));
             });
@@ -928,25 +928,25 @@ impl RecordeApp {
         ui.add_space(14.0);
 
         // ── SSH Diagnostics ───────────────────────────────────────────────
-        ui.label(RichText::new("SSH Keys").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("SSH Keys").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
         let diag = crate::auth::ssh::diagnose();
         let (agent_text, agent_color) = if diag.agent_running {
             (if diag.agent_keys.is_empty() { "running (no keys loaded)" } else { "running" }, theme::ACCENT_TEAL)
-        } else { ("not running / SSH_AUTH_SOCK unset", theme::TEXT_MUTED) };
+        } else { ("not running / SSH_AUTH_SOCK unset", theme::text_muted()) };
         health_row_color(ui, "SSH agent", agent_text, agent_color);
         for key in &diag.agent_keys {
-            ui.label(RichText::new(format!("  {}", key)).monospace().color(theme::TEXT_MUTED).size(10.5));
+            ui.label(RichText::new(format!("  {}", key)).monospace().color(theme::text_muted()).size(10.5));
         }
         for (name, exists) in &diag.key_files {
-            let (status, color) = if *exists { ("found", theme::TEXT_SECONDARY) } else { ("missing", theme::TEXT_MUTED) };
+            let (status, color) = if *exists { ("found", theme::text_secondary()) } else { ("missing", theme::text_muted()) };
             health_row_color(ui, &format!("~/.ssh/{}", name), status, color);
         }
 
         ui.add_space(14.0);
 
         // ── Git Identity ──────────────────────────────────────────────────
-        ui.label(RichText::new("Global Git identity").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Global Git identity").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(6.0);
         settings_text_field(ui, "Name", &mut self.git_name_input);
         settings_text_field(ui, "Email", &mut self.git_email_input);
@@ -982,12 +982,12 @@ impl RecordeApp {
             return;
         };
 
-        ui.label(RichText::new("Repository").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Repository").color(theme::text_secondary()).size(12.5).strong());
         ui.label(styled_muted(&path.display().to_string()));
         ui.add_space(10.0);
 
         // ── Health ──────────────────────────────────────────────────────
-        ui.label(RichText::new("Repository Health").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Repository Health").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
         let ab_str = match ahead_behind {
             Some((a, b)) => format!("↑{} ↓{}", a, b),
@@ -1013,25 +1013,25 @@ impl RecordeApp {
             // LFS row — three states
             if !caps.lfs_installed {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{:<14}", "LFS")).color(theme::TEXT_MUTED).size(11.5).monospace());
-                    ui.label(RichText::new("not installed").color(theme::TEXT_MUTED).size(11.5));
+                    ui.label(RichText::new(format!("{:<14}", "LFS")).color(theme::text_muted()).size(11.5).monospace());
+                    ui.label(RichText::new("not installed").color(theme::text_muted()).size(11.5));
                 });
             } else if !caps.lfs_active {
                 health_row(ui, "LFS", "installed, not used");
             } else {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{:<14}", "LFS")).color(theme::TEXT_MUTED).size(11.5).monospace());
+                    ui.label(RichText::new(format!("{:<14}", "LFS")).color(theme::text_muted()).size(11.5).monospace());
                     ui.label(RichText::new("active").color(theme::ACCENT_TEAL).size(11.5));
                     if !caps.lfs_patterns.is_empty() {
-                        ui.label(RichText::new(format!("({})", caps.lfs_patterns.join(", "))).color(theme::TEXT_SECONDARY).size(11.5));
+                        ui.label(RichText::new(format!("({})", caps.lfs_patterns.join(", "))).color(theme::text_secondary()).size(11.5));
                     }
                 });
             }
             // Submodules row — dim "none" or teal count + hover tooltip
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{:<14}", "Submodules")).color(theme::TEXT_MUTED).size(11.5).monospace());
+                ui.label(RichText::new(format!("{:<14}", "Submodules")).color(theme::text_muted()).size(11.5).monospace());
                 if submodules.is_empty() {
-                    ui.label(RichText::new("none").color(theme::TEXT_MUTED).size(11.5));
+                    ui.label(RichText::new("none").color(theme::text_muted()).size(11.5));
                 } else {
                     let count_label = ui.label(RichText::new(format!("{}", submodules.len())).color(theme::ACCENT_TEAL).size(11.5));
                     let tooltip: String = submodules.iter()
@@ -1046,9 +1046,9 @@ impl RecordeApp {
             });
             // Worktrees row — dim "1 (main only)" or teal count + hover tooltip
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{:<14}", "Worktrees")).color(theme::TEXT_MUTED).size(11.5).monospace());
+                ui.label(RichText::new(format!("{:<14}", "Worktrees")).color(theme::text_muted()).size(11.5).monospace());
                 if worktrees.len() <= 1 {
-                    ui.label(RichText::new("1 (main only)").color(theme::TEXT_MUTED).size(11.5));
+                    ui.label(RichText::new("1 (main only)").color(theme::text_muted()).size(11.5));
                 } else {
                     let count_label = ui.label(RichText::new(format!("{}", worktrees.len())).color(theme::ACCENT_TEAL).size(11.5));
                     let tooltip: String = worktrees.iter()
@@ -1073,7 +1073,7 @@ impl RecordeApp {
         ui.add_space(12.0);
 
         // ── Origin URL ───────────────────────────────────────────────────
-        ui.label(RichText::new("Origin URL").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Origin URL").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
         if self.origin_url_input.is_empty() {
             // Pre-populate on first open
@@ -1094,7 +1094,7 @@ impl RecordeApp {
         ui.add_space(14.0);
 
         // ── Git identity ─────────────────────────────────────────────────
-        ui.label(RichText::new("Repository Git identity").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Repository Git identity").color(theme::text_secondary()).size(12.5).strong());
         settings_text_field(ui, "Name", &mut self.repo_git_name_input);
         settings_text_field(ui, "Email", &mut self.repo_git_email_input);
         ui.add_space(6.0);
@@ -1105,14 +1105,14 @@ impl RecordeApp {
             }
         }
         ui.add_space(14.0);
-        ui.label(RichText::new("Remotes").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(RichText::new("Remotes").color(theme::text_secondary()).size(12.5).strong());
         for remote in repo_remotes(&path) {
             ui.label(styled_muted(&remote));
         }
     }
 
     fn render_about(&self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Recorde").color(theme::TEXT_PRIMARY).size(14.0).strong());
+        ui.label(RichText::new("Recorde").color(theme::text_primary()).size(14.0).strong());
         ui.label(styled_muted("A desktop Git client built with Rust, egui, and eframe."));
         ui.add_space(8.0);
         ui.label(styled_muted("Keyboard: Ctrl+K command palette, Ctrl+B branch switcher, Ctrl+F search."));
@@ -1141,11 +1141,11 @@ impl RecordeApp {
             .show(ctx, |ui| {
                 // ── Header ─────────────────────────────────────────────────
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Pull Requests").color(theme::TEXT_PRIMARY).size(14.0).strong());
+                    ui.label(RichText::new("Pull Requests").color(theme::text_primary()).size(14.0).strong());
                     ui.add_space(8.0);
                     for f in [PrFilter::Open, PrFilter::Closed, PrFilter::All] {
                         let active = pr_filter == f;
-                        let color = if active { theme::ACCENT_TEAL } else { theme::TEXT_MUTED };
+                        let color = if active { theme::ACCENT_TEAL } else { theme::text_muted() };
                         let btn = ui.add(egui::Button::new(RichText::new(f.label()).size(12.0).color(color))
                             .fill(Color32::TRANSPARENT));
                         if active { ui.painter().line_segment([btn.rect.left_bottom(), btn.rect.right_bottom()], egui::Stroke::new(2.0, theme::ACCENT_TEAL)); }
@@ -1177,7 +1177,7 @@ impl RecordeApp {
 
                 if pr_loading {
                     ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new("Loading…").color(theme::TEXT_MUTED).size(13.0));
+                        ui.label(RichText::new("Loading…").color(theme::text_muted()).size(13.0));
                     });
                     return;
                 }
@@ -1198,11 +1198,11 @@ impl RecordeApp {
                     // ── Left: PR list ─────────────────────────────────────
                     egui::ScrollArea::vertical().id_source("pr_list").show(&mut cols[0], |ui| {
                         if visible.is_empty() {
-                            ui.label(RichText::new("No pull requests.").color(theme::TEXT_MUTED).size(12.0));
+                            ui.label(RichText::new("No pull requests.").color(theme::text_muted()).size(12.0));
                         }
                         for (i, pr) in &visible {
                             let is_sel = pr_selected == Some(*i);
-                            let bg = if is_sel { theme::BG_SELECTED } else { Color32::TRANSPARENT };
+                            let bg = if is_sel { theme::bg_selected() } else { Color32::TRANSPARENT };
                             let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
                             ui.painter().rect_filled(row, 0.0, bg);
                             ui.allocate_ui_at_rect(row, |ui| {
@@ -1211,7 +1211,7 @@ impl RecordeApp {
                                     // State dot
                                     let dot_color = match pr.state {
                                         PrState::Open   => theme::ACCENT_GREEN,
-                                        PrState::Draft  => theme::TEXT_MUTED,
+                                        PrState::Draft  => theme::text_muted(),
                                         PrState::Merged => theme::ACCENT_PURPLE,
                                         PrState::Closed => theme::ACCENT_RED,
                                     };
@@ -1219,8 +1219,8 @@ impl RecordeApp {
                                     ui.painter().circle_filled(dr.center(), 4.0, dot_color);
                                     ui.add_space(4.0);
                                     ui.vertical(|ui| {
-                                        ui.label(RichText::new(format!("#{} {}", pr.number, &pr.title)).color(theme::TEXT_PRIMARY).size(12.5));
-                                        ui.label(RichText::new(format!("{} → {}  by @{}", pr.head_ref, pr.base_ref, pr.author)).color(theme::TEXT_MUTED).size(11.0));
+                                        ui.label(RichText::new(format!("#{} {}", pr.number, &pr.title)).color(theme::text_primary()).size(12.5));
+                                        ui.label(RichText::new(format!("{} → {}  by @{}", pr.head_ref, pr.base_ref, pr.author)).color(theme::text_muted()).size(11.0));
                                         // Check state badge
                                         if let Some(ref cs) = pr.check_state {
                                             let (cs_text, cs_color) = match cs {
@@ -1237,7 +1237,7 @@ impl RecordeApp {
                                 new_selected = Some(Some(*i));
                             }
                             ui.painter().line_segment([row.left_bottom(), row.right_bottom()],
-                                egui::Stroke::new(1.0, theme::BORDER));
+                                egui::Stroke::new(1.0, theme::border()));
                         }
                     });
 
@@ -1246,17 +1246,17 @@ impl RecordeApp {
                         if let Some(pr) = pr_list.get(idx) {
                             cols[1].add_space(4.0);
                             cols[1].horizontal(|ui| {
-                                ui.label(RichText::new(format!("#{}", pr.number)).color(theme::TEXT_MUTED).size(12.0));
+                                ui.label(RichText::new(format!("#{}", pr.number)).color(theme::text_muted()).size(12.0));
                                 ui.add_space(6.0);
-                                ui.label(RichText::new(&pr.title).color(theme::TEXT_PRIMARY).size(13.0).strong());
+                                ui.label(RichText::new(&pr.title).color(theme::text_primary()).size(13.0).strong());
                             });
                             cols[1].add_space(4.0);
                             cols[1].horizontal(|ui| {
-                                ui.label(RichText::new(format!("{} → {}", pr.head_ref, pr.base_ref)).color(theme::TEXT_MUTED).size(11.5));
+                                ui.label(RichText::new(format!("{} → {}", pr.head_ref, pr.base_ref)).color(theme::text_muted()).size(11.5));
                                 ui.add_space(8.0);
-                                ui.label(RichText::new(format!("by @{}", pr.author)).color(theme::TEXT_SECONDARY).size(11.5));
+                                ui.label(RichText::new(format!("by @{}", pr.author)).color(theme::text_secondary()).size(11.5));
                                 ui.add_space(8.0);
-                                ui.label(RichText::new(format!("updated {}", crate::theme::relative_time(pr.updated_ts))).color(theme::TEXT_MUTED).size(11.0));
+                                ui.label(RichText::new(format!("updated {}", crate::theme::relative_time(pr.updated_ts))).color(theme::text_muted()).size(11.0));
                             });
                             if !pr.label_names.is_empty() {
                                 cols[1].add_space(2.0);
@@ -1272,10 +1272,10 @@ impl RecordeApp {
                             cols[1].separator();
                             cols[1].add_space(4.0);
                             if pr.body.trim().is_empty() {
-                                cols[1].label(RichText::new("No description.").color(theme::TEXT_MUTED).size(12.0));
+                                cols[1].label(RichText::new("No description.").color(theme::text_muted()).size(12.0));
                             } else {
                                 egui::ScrollArea::vertical().id_source("pr_body").max_height(200.0).show(&mut cols[1], |ui| {
-                                    ui.label(RichText::new(pr.body.trim()).color(theme::TEXT_SECONDARY).size(12.0));
+                                    ui.label(RichText::new(pr.body.trim()).color(theme::text_secondary()).size(12.0));
                                 });
                             }
                             cols[1].add_space(8.0);
@@ -1292,7 +1292,7 @@ impl RecordeApp {
                         }
                     } else {
                         cols[1].centered_and_justified(|ui| {
-                            ui.label(RichText::new("Select a pull request to view details.").color(theme::TEXT_MUTED).size(12.0));
+                            ui.label(RichText::new("Select a pull request to view details.").color(theme::text_muted()).size(12.0));
                         });
                     }
                 });
@@ -1402,20 +1402,20 @@ impl eframe::App for RecordeApp {
         // Title bar
         egui::TopBottomPanel::top("title_bar")
             .exact_height(36.0)
-            .frame(egui::Frame::none().fill(theme::BG_TITLEBAR)
+            .frame(egui::Frame::none().fill(theme::bg_titlebar())
                 .inner_margin(egui::Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| {
                 let r = ui.max_rect();
                 ui.painter().line_segment(
                     [r.left_bottom(), r.right_bottom()],
-                    Stroke::new(1.0, theme::BORDER),
+                    Stroke::new(1.0, theme::border()),
                 );
                 ui.horizontal_centered(|ui| {
                     self.show_menu_contents(ctx, ui);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(16.0);
-                        ui.label(RichText::new("Recorde").color(theme::TEXT_MUTED).size(12.5));
+                        ui.label(RichText::new("Recorde").color(theme::text_muted()).size(12.5));
                     });
                 });
             });
@@ -1439,12 +1439,12 @@ impl eframe::App for RecordeApp {
             .resizable(true)
             .default_height(300.0)
             .height_range(160.0..=480.0)
-            .frame(egui::Frame::none().fill(theme::BG_APP))
+            .frame(egui::Frame::none().fill(theme::bg_app()))
             .show(ctx, |ui| {
                 let r = ui.max_rect();
                 ui.painter().line_segment(
                     [r.left_top(), r.right_top()],
-                    Stroke::new(1.0, theme::BORDER),
+                    Stroke::new(1.0, theme::border()),
                 );
                 self.diff_view.show(ui);
                 if self.state.lock().unwrap().focused_pane == 4 {
@@ -1482,10 +1482,10 @@ impl eframe::App for RecordeApp {
                     ui.min_rect().min,
                     egui::Vec2::new(ui.available_width(), tab_h),
                 );
-                ui.painter().rect_filled(tab_rect, 0.0, theme::BG_PANEL);
+                ui.painter().rect_filled(tab_rect, 0.0, theme::bg_panel());
                 ui.painter().line_segment(
                     [tab_rect.left_bottom(), tab_rect.right_bottom()],
-                    Stroke::new(1.0, theme::BORDER),
+                    Stroke::new(1.0, theme::border()),
                 );
 
                 ui.allocate_ui_at_rect(tab_rect, |ui| {
@@ -1496,7 +1496,7 @@ impl eframe::App for RecordeApp {
                             (RightTab::Details, "Details"),
                         ] {
                             let sel = self.right_tab == *tab;
-                            let text_col = if sel { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
+                            let text_col = if sel { theme::text_primary() } else { theme::text_muted() };
                             let btn = ui.add(
                                 egui::Button::new(RichText::new(*lbl).size(13.0).color(text_col))
                                     .fill(Color32::TRANSPARENT)
@@ -1537,7 +1537,7 @@ impl eframe::App for RecordeApp {
 
         // Central panel — commit graph (always)
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(theme::BG_APP))
+            .frame(egui::Frame::none().fill(theme::bg_app()))
             .show(ctx, |ui| {
                 self.commit_graph_view.show(ui);
                 if self.state.lock().unwrap().focused_pane == 2 {
@@ -1589,7 +1589,7 @@ impl RecordeApp {
         let mut do_checkout = false;
         let short = &oid[..7.min(oid.len())];
         modal_window(ctx, "Checkout Commit", |ui| {
-            ui.label(RichText::new(format!("Checkout commit {}?", short)).color(theme::TEXT_PRIMARY).size(13.0));
+            ui.label(RichText::new(format!("Checkout commit {}?", short)).color(theme::text_primary()).size(13.0));
             ui.add_space(6.0);
             ui.label(styled_muted("This will put you in detached HEAD state."));
             ui.label(styled_muted("Any commits made here won't be on a named branch."));
@@ -1691,7 +1691,7 @@ impl RecordeApp {
                 let dest_str = self.clone_dest.as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "Choose folder…".into());
-                ui.label(RichText::new(dest_str).color(theme::TEXT_SECONDARY).size(12.0));
+                ui.label(RichText::new(dest_str).color(theme::text_secondary()).size(12.0));
                 if ui.add(secondary_btn("Browse")).clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
                         self.clone_dest = Some(p);
@@ -1745,7 +1745,7 @@ impl RecordeApp {
                 let path_str = self.init_repo_path.as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "No folder selected".into());
-                ui.label(RichText::new(path_str).color(theme::TEXT_SECONDARY).size(12.0));
+                ui.label(RichText::new(path_str).color(theme::text_secondary()).size(12.0));
                 if ui.add(secondary_btn("Browse")).clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
                         self.init_repo_path = Some(p);
@@ -1804,7 +1804,7 @@ impl RecordeApp {
                 let entries = self.state.lock().unwrap().reflog_entries.clone();
 
                 ui.horizontal(|ui| {
-                    ui.heading(RichText::new("Reflog").size(14.0).color(theme::TEXT_PRIMARY));
+                    ui.heading(RichText::new("Reflog").size(14.0).color(theme::text_primary()));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(egui::Button::new("✕").fill(Color32::TRANSPARENT)).clicked() {
                             close = true;
@@ -1819,9 +1819,9 @@ impl RecordeApp {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&entry.short_oid).monospace().color(theme::ACCENT_TEAL).size(11.5));
                             ui.add_space(6.0);
-                            ui.label(RichText::new(&entry.refname).color(theme::TEXT_MUTED).size(11.0));
+                            ui.label(RichText::new(&entry.refname).color(theme::text_muted()).size(11.0));
                             ui.add_space(6.0);
-                            ui.label(RichText::new(&entry.message).color(theme::TEXT_SECONDARY).size(11.5));
+                            ui.label(RichText::new(&entry.message).color(theme::text_secondary()).size(11.5));
                         }).response.context_menu(|ui| {
                             ui.set_min_width(180.0);
                             if ui.button("Recover as Branch…").clicked() {
@@ -1836,14 +1836,14 @@ impl RecordeApp {
                         });
                     }
                     if entries.is_empty() {
-                        ui.label(RichText::new("No reflog entries.").color(theme::TEXT_MUTED).size(12.0));
+                        ui.label(RichText::new("No reflog entries.").color(theme::text_muted()).size(12.0));
                     }
                 });
 
                 if self.reflog_recover_oid.is_some() {
                     ui.separator();
                     ui.add_space(6.0);
-                    ui.label(RichText::new("Branch name for recovery:").color(theme::TEXT_SECONDARY).size(12.0));
+                    ui.label(RichText::new("Branch name for recovery:").color(theme::text_secondary()).size(12.0));
                     ui.add_space(4.0);
                     ui.add(egui::TextEdit::singleline(&mut self.reflog_recover_input)
                         .desired_width(f32::INFINITY));
@@ -1899,9 +1899,9 @@ impl RecordeApp {
             ui.set_min_width(380.0);
 
             if !bisect_active {
-                ui.label(RichText::new("Start a bisect session to find which commit introduced a bug.").color(theme::TEXT_SECONDARY).size(12.0));
+                ui.label(RichText::new("Start a bisect session to find which commit introduced a bug.").color(theme::text_secondary()).size(12.0));
                 ui.add_space(8.0);
-                ui.label(RichText::new("Select the known-bad commit in the graph, then mark it bad. Select a known-good commit and mark it good.").color(theme::TEXT_MUTED).size(11.5));
+                ui.label(RichText::new("Select the known-bad commit in the graph, then mark it bad. Select a known-good commit and mark it good.").color(theme::text_muted()).size(11.5));
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.add(primary_btn("Start Bisect")).clicked() {
@@ -1920,7 +1920,7 @@ impl RecordeApp {
 
                 if let Some(ref oid) = bisect_oid {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Testing:").color(theme::TEXT_MUTED).size(12.0));
+                        ui.label(RichText::new("Testing:").color(theme::text_muted()).size(12.0));
                         ui.label(RichText::new(&oid[..7.min(oid.len())]).monospace().color(theme::ACCENT_TEAL).size(12.0));
                     });
                     ui.add_space(4.0);
@@ -1929,9 +1929,9 @@ impl RecordeApp {
                 let cur = selected_oid.as_deref().unwrap_or("");
                 let short = if cur.len() >= 7 { &cur[..7] } else { cur };
                 if cur.is_empty() {
-                    ui.label(RichText::new("Select a commit in the graph, then mark it good or bad.").color(theme::TEXT_MUTED).size(11.5));
+                    ui.label(RichText::new("Select a commit in the graph, then mark it good or bad.").color(theme::text_muted()).size(11.5));
                 } else {
-                    ui.label(RichText::new(format!("Selected: {}", short)).color(theme::TEXT_SECONDARY).size(12.0));
+                    ui.label(RichText::new(format!("Selected: {}", short)).color(theme::text_secondary()).size(12.0));
                 }
                 ui.add_space(10.0);
 
@@ -1990,10 +1990,10 @@ impl RecordeApp {
             .default_size([800.0, 560.0])
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Base:").color(theme::TEXT_MUTED).size(11.5));
+                    ui.label(RichText::new("Base:").color(theme::text_muted()).size(11.5));
                     ui.label(RichText::new(&base_oid[..7.min(base_oid.len())]).monospace().color(theme::ACCENT_TEAL).size(11.5));
                     ui.add_space(12.0);
-                    ui.label(RichText::new("Compare:").color(theme::TEXT_MUTED).size(11.5));
+                    ui.label(RichText::new("Compare:").color(theme::text_muted()).size(11.5));
                     ui.label(RichText::new(&compare_oid[..7.min(compare_oid.len())]).monospace().color(theme::ACCENT_TEAL).size(11.5));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(egui::Button::new("✕").fill(Color32::TRANSPARENT)).clicked() {
@@ -2005,34 +2005,34 @@ impl RecordeApp {
 
                 ui.columns(2, |cols| {
                     // Left: file list
-                    cols[0].label(RichText::new(format!("Changed files ({})", compare_files.len())).color(theme::TEXT_MUTED).size(11.0).strong());
+                    cols[0].label(RichText::new(format!("Changed files ({})", compare_files.len())).color(theme::text_muted()).size(11.0).strong());
                     cols[0].add_space(4.0);
                     egui::ScrollArea::vertical().id_source("cmp_files").max_height(460.0).show(&mut cols[0], |ui| {
                         for file in &compare_files {
                             let is_sel = compare_sel.as_deref() == Some(&file.path);
-                            let color = if is_sel { theme::BG_APP } else { theme::TEXT_SECONDARY };
+                            let color = if is_sel { theme::bg_app() } else { theme::text_secondary() };
                             let resp = ui.selectable_label(is_sel,
                                 RichText::new(file.path.rsplit('/').next().unwrap_or(&file.path)).color(color).size(12.0))
                                 .on_hover_text(&file.path);
                             if resp.clicked() { select_file = Some(file.path.clone()); }
                         }
                         if compare_files.is_empty() {
-                            ui.label(RichText::new("Loading…").color(theme::TEXT_MUTED).size(12.0));
+                            ui.label(RichText::new("Loading…").color(theme::text_muted()).size(12.0));
                         }
                     });
 
                     // Right: diff view
                     if let Some(ref diff) = compare_diff {
-                        cols[1].label(RichText::new(format!("+{}  −{}", diff.additions, diff.deletions)).color(theme::TEXT_MUTED).size(11.0));
+                        cols[1].label(RichText::new(format!("+{}  −{}", diff.additions, diff.deletions)).color(theme::text_muted()).size(11.0));
                         cols[1].add_space(4.0);
                         egui::ScrollArea::vertical().id_source("cmp_diff").max_height(460.0).show(&mut cols[1], |ui| {
                             for hunk in &diff.hunks {
-                                ui.label(RichText::new(&hunk.header).monospace().color(theme::ACCENT_PURPLE).size(11.0).background_color(theme::BG_DIFF_HUNK));
+                                ui.label(RichText::new(&hunk.header).monospace().color(theme::ACCENT_PURPLE).size(11.0).background_color(theme::bg_diff_hunk()));
                                 for line in &hunk.lines {
                                     let (color, bg) = match line.origin {
-                                        '+' => (theme::ACCENT_GREEN, theme::BG_DIFF_ADD),
-                                        '-' => (theme::ACCENT_RED,   theme::BG_DIFF_DEL),
-                                        _   => (theme::TEXT_SECONDARY, Color32::TRANSPARENT),
+                                        '+' => (theme::ACCENT_GREEN, theme::bg_diff_add()),
+                                        '-' => (theme::ACCENT_RED,   theme::bg_diff_del()),
+                                        _   => (theme::text_secondary(), Color32::TRANSPARENT),
                                     };
                                     let text = format!("{}{}", line.origin, line.content.trim_end_matches('\n'));
                                     let label = egui::RichText::new(&text).monospace().color(color).size(11.5);
@@ -2045,9 +2045,9 @@ impl RecordeApp {
                             }
                         });
                     } else if compare_sel.is_some() {
-                        cols[1].label(RichText::new("Loading diff…").color(theme::TEXT_MUTED).size(12.0));
+                        cols[1].label(RichText::new("Loading diff…").color(theme::text_muted()).size(12.0));
                     } else {
-                        cols[1].label(RichText::new("Select a file to view its diff.").color(theme::TEXT_MUTED).size(12.0));
+                        cols[1].label(RichText::new("Select a file to view its diff.").color(theme::text_muted()).size(12.0));
                     }
                 });
             });
@@ -2095,13 +2095,13 @@ impl RecordeApp {
             .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
-                ui.label(RichText::new(title).color(theme::TEXT_PRIMARY).size(15.0).strong());
+                ui.label(RichText::new(title).color(theme::text_primary()).size(15.0).strong());
                 ui.add_space(6.0);
                 ui.label(styled_muted(hint));
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                     for name in &branches_list {
-                        if ui.selectable_label(false, RichText::new(name).color(theme::TEXT_SECONDARY).size(12.5)).clicked() {
+                        if ui.selectable_label(false, RichText::new(name).color(theme::text_secondary()).size(12.5)).clicked() {
                             chosen = Some(name.clone());
                         }
                     }
@@ -2162,9 +2162,9 @@ impl RecordeApp {
                         .min_size(egui::Vec2::new(72.0, 24.0))).clicked() { do_continue = true; }
                     if show_skip {
                         ui.add_space(4.0);
-                        if ui.add(egui::Button::new(RichText::new("Skip").color(theme::TEXT_SECONDARY).size(12.0))
+                        if ui.add(egui::Button::new(RichText::new("Skip").color(theme::text_secondary()).size(12.0))
                             .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::new(1.0, theme::BORDER))
+                            .stroke(Stroke::new(1.0, theme::border()))
                             .rounding(5.0)
                             .min_size(egui::Vec2::new(52.0, 24.0))).clicked() { do_skip = true; }
                     }
@@ -2264,7 +2264,7 @@ impl RecordeApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     egui::Frame::none()
-                        .fill(theme::BG_ELEVATED)
+                        .fill(theme::bg_elevated())
                         .stroke(Stroke::new(1.0, theme::ACCENT_TEAL))
                         .rounding(8.0)
                         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
@@ -2272,10 +2272,10 @@ impl RecordeApp {
                             ui.horizontal_centered(|ui| {
                                 ui.spinner();
                                 ui.add_space(8.0);
-                                ui.label(RichText::new(msg.as_str()).color(theme::TEXT_PRIMARY).size(13.0).strong());
+                                ui.label(RichText::new(msg.as_str()).color(theme::text_primary()).size(13.0).strong());
                                 if let Some(p) = pct {
                                     ui.add_space(6.0);
-                                    ui.label(RichText::new(format!("{}%", p)).color(theme::TEXT_MUTED).size(12.0));
+                                    ui.label(RichText::new(format!("{}%", p)).color(theme::text_muted()).size(12.0));
                                 }
                                 ui.add_space(10.0);
                                 if ui.add(secondary_btn("Cancel")).clicked() {
@@ -2296,7 +2296,7 @@ impl RecordeApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     egui::Frame::none()
-                        .fill(theme::BG_ELEVATED)
+                        .fill(theme::bg_elevated())
                         .stroke(Stroke::new(1.0, theme::ACCENT_TEAL))
                         .rounding(8.0)
                         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
@@ -2304,7 +2304,7 @@ impl RecordeApp {
                             ui.horizontal_centered(|ui| {
                                 ui.spinner();
                                 ui.add_space(8.0);
-                                ui.label(RichText::new(op).color(theme::TEXT_PRIMARY).size(13.0).strong());
+                                ui.label(RichText::new(op).color(theme::text_primary()).size(13.0).strong());
                             });
                         });
                 });
@@ -2624,38 +2624,38 @@ fn danger_btn(label: &str) -> egui::Button<'_> {
 }
 
 fn secondary_btn(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(theme::TEXT_SECONDARY))
+    egui::Button::new(RichText::new(label).color(theme::text_secondary()))
         .fill(Color32::TRANSPARENT)
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .stroke(Stroke::new(1.0, theme::border()))
         .rounding(6.0)
         .min_size(egui::Vec2::new(0.0, 28.0))
 }
 
 fn health_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    health_row_color(ui, label, value, theme::TEXT_SECONDARY);
+    health_row_color(ui, label, value, theme::text_secondary());
 }
 
 fn health_row_color(ui: &mut egui::Ui, label: &str, value: &str, color: egui::Color32) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{:<14}", label)).color(theme::TEXT_MUTED).size(11.5).monospace());
+        ui.label(RichText::new(format!("{:<14}", label)).color(theme::text_muted()).size(11.5).monospace());
         ui.label(RichText::new(value).color(color).size(11.5));
     });
 }
 
 fn styled_label(text: &str) -> RichText {
-    RichText::new(text).color(theme::TEXT_SECONDARY).size(12.0)
+    RichText::new(text).color(theme::text_secondary()).size(12.0)
 }
 
 fn styled_muted(text: &str) -> RichText {
-    RichText::new(text).color(theme::TEXT_MUTED).size(11.5)
+    RichText::new(text).color(theme::text_muted()).size(11.5)
 }
 
 fn settings_tab_button(ui: &mut egui::Ui, tab: &mut SettingsTab, value: SettingsTab, label: &str) {
     let selected = *tab == value;
-    let color = if selected { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
+    let color = if selected { theme::text_primary() } else { theme::text_muted() };
     if ui.add(egui::Button::new(RichText::new(label).color(color).size(12.0))
-        .fill(if selected { theme::BG_SELECTED } else { Color32::TRANSPARENT })
-        .stroke(Stroke::new(1.0, if selected { theme::BORDER_STRONG } else { theme::BORDER }))
+        .fill(if selected { theme::bg_selected() } else { Color32::TRANSPARENT })
+        .stroke(Stroke::new(1.0, if selected { theme::border_strong() } else { theme::border() }))
         .rounding(6.0)
         .min_size(egui::Vec2::new(0.0, 28.0))).clicked()
     {
@@ -2666,7 +2666,7 @@ fn settings_tab_button(ui: &mut egui::Ui, tab: &mut SettingsTab, value: Settings
 fn settings_text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.horizontal(|ui| {
         ui.set_width(460.0);
-        ui.label(RichText::new(label).color(theme::TEXT_MUTED).font(egui::FontId::monospace(11.0)));
+        ui.label(RichText::new(label).color(theme::text_muted()).font(egui::FontId::monospace(11.0)));
         ui.add_space(8.0);
         ui.add(egui::TextEdit::singleline(value).desired_width(340.0));
     });
