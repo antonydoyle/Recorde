@@ -171,6 +171,9 @@ fn parse_diff(diff: git2::Diff, commit_oid: &str, file_path: &str) -> Result<Fil
         }),
     )?;
 
+    drop(hunks_hunk);
+    drop(hunks_line);
+    drop(is_binary_cb);
     let raw = Rc::try_unwrap(hunks_rc).unwrap().into_inner();
     let hunks: Vec<DiffHunk> = raw.into_iter()
         .map(|(header, lines)| DiffHunk { header, lines })
