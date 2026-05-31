@@ -106,7 +106,8 @@ impl DiffView {
                     for f in files {
                         let is_sel = selected_file.as_deref() == Some(f.path.as_str());
                         let (icon, col) = status_icon(f.status);
-                        let resp = ui.horizontal(|ui| {
+                        let mut clicked = false;
+                        ui.horizontal(|ui| {
                             ui.add_space(8.0);
                             ui.label(egui::RichText::new(icon).color(col).size(11.0)
                                 .font(FontId::monospace(11.0)));
@@ -116,9 +117,10 @@ impl DiffView {
                                 egui::RichText::new(name)
                                     .color(if is_sel { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY })
                                     .size(11.5));
+                            if r.clicked() { clicked = true; }
                             if f.path != name { r.on_hover_text(&f.path); }
-                        }).response;
-                        if resp.interact(Sense::click()).clicked() {
+                        });
+                        if clicked {
                             let path = f.path.clone();
                             let oid2 = oid.clone();
                             let state = self.state.clone();
@@ -140,7 +142,8 @@ impl DiffView {
                             let is_sel = selected_file.as_deref() == Some(f.path.as_str());
                             let status = f.unstaged_status.or(f.staged_status).unwrap_or('M');
                             let (icon, col) = status_icon(status);
-                            let resp = ui.horizontal(|ui| {
+                            let mut clicked = false;
+                            ui.horizontal(|ui| {
                                 ui.add_space(8.0);
                                 ui.label(egui::RichText::new(icon).color(col).size(11.0)
                                     .font(FontId::monospace(11.0)));
@@ -150,9 +153,10 @@ impl DiffView {
                                     egui::RichText::new(name)
                                         .color(if is_sel { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY })
                                         .size(11.5));
+                                if r.clicked() { clicked = true; }
                                 if f.path != name { r.on_hover_text(&f.path); }
-                            }).response;
-                            if resp.interact(Sense::click()).clicked() {
+                            });
+                            if clicked {
                                 let path = f.path.clone();
                                 let staged = f.staged_status.is_some() && f.unstaged_status.is_none();
                                 let state = self.state.clone();
