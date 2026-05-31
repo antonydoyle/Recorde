@@ -37,6 +37,7 @@ pub struct RecordeApp {
     staging_panel: StagingPanel,
     status_bar: StatusBar,
     right_tab: RightTab,
+    last_auto_detail_commit: Option<String>,
     config: Config,
     dark_theme: bool,
     high_contrast: bool,
@@ -153,6 +154,7 @@ impl RecordeApp {
             staging_panel: StagingPanel::new(state.clone()),
             status_bar: StatusBar::new(state.clone()),
             right_tab: RightTab::Changes,
+            last_auto_detail_commit: None,
             config,
             dark_theme,
             high_contrast,
@@ -1605,8 +1607,17 @@ impl eframe::App for RecordeApp {
                 .width_range(160.0..=560.0)
                 .frame(egui::Frame::none())
                 .show(ctx, |ui| {
-                let has_commit = self.state.lock().unwrap().selected_commit.is_some();
+                let selected_commit = self.state.lock().unwrap().selected_commit.clone();
+                let has_commit = selected_commit.is_some();
                 let has_dirty  = self.state.lock().unwrap().dirty_count > 0;
+                if let Some(ref oid) = selected_commit {
+                    if self.last_auto_detail_commit.as_deref() != Some(oid) {
+                        self.right_tab = RightTab::Details;
+                        self.last_auto_detail_commit = Some(oid.clone());
+                    }
+                } else {
+                    self.last_auto_detail_commit = None;
+                }
 
                 // Tab bar
                 let tab_h = 38.0;
@@ -1646,12 +1657,18 @@ impl eframe::App for RecordeApp {
                                     Stroke::new(2.0, theme::ACCENT_TEAL),
                                 );
                             }
-                            if btn.clicked() { self.right_tab = *tab; }
+                            if btn.clicked() {
+                                if *tab == RightTab::Changes && has_commit && !has_dirty {
+                                    let mut s = self.state.lock().unwrap();
+                                    s.selected_commit = None;
+                                    s.selected_commit_detail = None;
+                                    s.selected_file = None;
+                                    s.current_diff = None;
+                                    self.last_auto_detail_commit = None;
+                                }
+                                self.right_tab = *tab;
+                            }
                             ui.add_space(16.0);
-                        }
-                        // Auto-switch to details when commit selected
-                        if has_commit && !has_dirty {
-                            self.right_tab = RightTab::Details;
                         }
                     });
                 });
