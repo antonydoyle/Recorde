@@ -443,7 +443,8 @@ fn render_unified(ui: &mut Ui, rect: Rect, items: &[Item], diff_context: DiffCon
                     }
 
                     Item::Line { origin: ch, old_no, new_no, content, hunk_index, line_index } => {
-                        let (row_bg, bar_col, text_col) = line_colors(*ch);
+                        let (row_bg, bar_col, text_col) = conflict_marker_colors(content)
+                            .unwrap_or_else(|| line_colors(*ch));
                         if row_bg != Color32::TRANSPARENT { painter.rect_filled(row_rect, 0.0, row_bg); }
                         if bar_col != Color32::TRANSPARENT {
                             painter.rect_filled(
@@ -590,6 +591,20 @@ fn line_colors(ch: char) -> (Color32, Color32, Color32) {
         '+' => (BG_ADD, theme::ACCENT_GREEN, Color32::from_rgb(0xAB, 0xE0, 0xAB)),
         '-' => (BG_DEL, theme::ACCENT_RED,   Color32::from_rgb(0xF0, 0xA0, 0xA0)),
         _   => (Color32::TRANSPARENT, Color32::TRANSPARENT, theme::TEXT_PRIMARY),
+    }
+}
+
+/// Override colours for git conflict marker lines (<<< === >>>).
+/// Returns (bg, bar, text) if the content is a conflict marker, else None.
+fn conflict_marker_colors(content: &str) -> Option<(Color32, Color32, Color32)> {
+    if content.starts_with("<<<<<<<") {
+        Some((Color32::from_rgb(0x3A, 0x10, 0x08), Color32::from_rgb(0xFF, 0x60, 0x50), Color32::from_rgb(0xFF, 0x90, 0x80)))
+    } else if content.starts_with("=======") || content.starts_with("|||||||") {
+        Some((Color32::from_rgb(0x2A, 0x22, 0x00), Color32::from_rgb(0xFF, 0xCC, 0x00), Color32::from_rgb(0xFF, 0xE0, 0x60)))
+    } else if content.starts_with(">>>>>>>") {
+        Some((Color32::from_rgb(0x08, 0x22, 0x10), Color32::from_rgb(0x40, 0xCC, 0x70), Color32::from_rgb(0x70, 0xFF, 0x90)))
+    } else {
+        None
     }
 }
 

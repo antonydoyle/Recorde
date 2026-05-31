@@ -1,5 +1,6 @@
 pub mod branches;
 pub mod capabilities;
+pub mod conflicts;
 pub mod error;
 pub mod graph;
 pub mod job;
