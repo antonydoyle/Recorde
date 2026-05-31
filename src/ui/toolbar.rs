@@ -13,7 +13,13 @@ pub enum ToolbarAction {
     CreateBranch,
     Fetch,
     Pull,
+    PullWithRebase,
+    PullFfOnly,
     Push,
+    PushWithLease,
+    PushSetUpstream,
+    MergeBranch,
+    RebaseOnto,
     ToggleTheme,
     ToggleSearch,
     OpenCommandPalette,
@@ -113,15 +119,50 @@ impl Toolbar {
 
                     ui.add_space(3.0);
 
-                    if widgets::toolbar_btn_icon(ui, icons::SWAP_VERT, "Pull", has_repo && !busy)
-                        .on_hover_text("Fetch + fast-forward  (Ctrl+Shift+P)").clicked()
-                    { action = Some(ToolbarAction::Pull); }
+                    {
+                        let pull_btn = widgets::toolbar_btn_icon(ui, icons::SWAP_VERT, "Pull", has_repo && !busy)
+                            .on_hover_text("Fetch + fast-forward  (Ctrl+Shift+P)");
+                        if pull_btn.clicked() { action = Some(ToolbarAction::Pull); }
+                        pull_btn.context_menu(|ui| {
+                            ui.set_min_width(190.0);
+                            if ui.button("Pull (fast-forward)").clicked() {
+                                action = Some(ToolbarAction::Pull); ui.close_menu();
+                            }
+                            if ui.button("Pull with Rebase").clicked() {
+                                action = Some(ToolbarAction::PullWithRebase); ui.close_menu();
+                            }
+                            if ui.button("Pull (ff-only)").clicked() {
+                                action = Some(ToolbarAction::PullFfOnly); ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("Merge Branch…").clicked() {
+                                action = Some(ToolbarAction::MergeBranch); ui.close_menu();
+                            }
+                            if ui.button("Rebase Onto…").clicked() {
+                                action = Some(ToolbarAction::RebaseOnto); ui.close_menu();
+                            }
+                        });
+                    }
 
                     ui.add_space(3.0);
 
-                    if widgets::toolbar_btn_icon(ui, icons::UPLOAD, "Push", has_repo && !busy)
-                        .on_hover_text("Push current branch  (Ctrl+Shift+U)").clicked()
-                    { action = Some(ToolbarAction::Push); }
+                    {
+                        let push_btn = widgets::toolbar_btn_icon(ui, icons::UPLOAD, "Push", has_repo && !busy)
+                            .on_hover_text("Push current branch  (Ctrl+Shift+U)");
+                        if push_btn.clicked() { action = Some(ToolbarAction::Push); }
+                        push_btn.context_menu(|ui| {
+                            ui.set_min_width(200.0);
+                            if ui.button("Push").clicked() {
+                                action = Some(ToolbarAction::Push); ui.close_menu();
+                            }
+                            if ui.button("Force Push with Lease").clicked() {
+                                action = Some(ToolbarAction::PushWithLease); ui.close_menu();
+                            }
+                            if ui.button("Push and Set Upstream").clicked() {
+                                action = Some(ToolbarAction::PushSetUpstream); ui.close_menu();
+                            }
+                        });
+                    }
 
                     ui.add_space(6.0);
                     vsep(ui);

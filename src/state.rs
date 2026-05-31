@@ -124,6 +124,8 @@ pub enum ModalKind {
     ConfirmDeleteTag {
         tag_name: String,
     },
+    MergeBranch,
+    RebaseOnto,
 }
 
 #[derive(Default)]
