@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use recorde::git::capabilities;
+use recorde::git::graph::CommitGraph;
 use recorde::git::runner::GitRunner;
 use recorde::git::job::JobProgress;
 use recorde::state::{AppState, SharedState};
@@ -387,4 +388,113 @@ fn test_discard_hunk_round_trip() {
     // File should be restored
     let content = std::fs::read_to_string(repo.path().join("discard.txt")).unwrap();
     assert_eq!(content, "aaa\nbbb\nccc\n", "file should be restored to original");
+}
+
+// ── Graph layout tests ────────────────────────────────────────────────────────
+
+#[test]
+fn test_graph_linear_history_all_lane_zero() {
+    // A single linear chain of commits should all occupy lane 0.
+    let repo = TestRepo::new();
+    repo.add_and_commit("first",  &[("a.txt", "1")]);
+    repo.add_and_commit("second", &[("a.txt", "2")]);
+    repo.add_and_commit("third",  &[("a.txt", "3")]);
+
+    let git_repo = git2::Repository::open(repo.path()).unwrap();
+    let graph = CommitGraph::from_repo(&git_repo).unwrap();
+
+    assert_eq!(graph.nodes.len(), 3, "expected 3 commits");
+    for node in &graph.nodes {
+        assert_eq!(node.lane, 0, "commit '{}' should be on lane 0 in a linear history", node.summary);
+    }
+    assert_eq!(graph.max_lane, 0);
+}
+
+#[test]
+fn test_graph_branch_occupies_second_lane() {
+    // main: A → B → C
+    // feature: branches from A → D
+    // After the branch tip D is added, it should occupy a lane != 0.
+    let repo = TestRepo::new();
+    repo.add_and_commit("base", &[("base.txt", "base")]);
+
+    // Create a feature branch at this point and add a commit there
+    {
+        let r = git2::Repository::open(repo.path()).unwrap();
+        let head = r.head().unwrap().peel_to_commit().unwrap();
+        r.branch("feature", &head, false).unwrap();
+        let feat_ref = r.find_branch("feature", git2::BranchType::Local).unwrap();
+        let obj = feat_ref.get().peel(git2::ObjectType::Commit).unwrap();
+        let mut co = git2::build::CheckoutBuilder::new();
+        co.safe();
+        r.checkout_tree(&obj, Some(&mut co)).unwrap();
+        r.set_head("refs/heads/feature").unwrap();
+    }
+    repo.add_and_commit("feature commit", &[("feature.txt", "feat")]);
+
+    // Switch back to main and add another commit
+    {
+        let r = git2::Repository::open(repo.path()).unwrap();
+        let main_ref = r.find_branch("main", git2::BranchType::Local)
+            .or_else(|_| r.find_branch("master", git2::BranchType::Local))
+            .unwrap();
+        let obj = main_ref.get().peel(git2::ObjectType::Commit).unwrap();
+        let mut co = git2::build::CheckoutBuilder::new();
+        co.safe();
+        r.checkout_tree(&obj, Some(&mut co)).unwrap();
+        let head_name = main_ref.name().unwrap().unwrap().to_string();
+        r.set_head(&format!("refs/heads/{}", head_name)).unwrap();
+    }
+    repo.add_and_commit("main commit", &[("main.txt", "main")]);
+
+    let git_repo = git2::Repository::open(repo.path()).unwrap();
+    let graph = CommitGraph::from_repo(&git_repo).unwrap();
+
+    // The graph must have at least 3 commits and use more than one lane.
+    assert!(graph.nodes.len() >= 3);
+    assert!(graph.max_lane >= 1, "branching history should use at least 2 lanes");
+
+    let lanes: std::collections::HashSet<usize> = graph.nodes.iter().map(|n| n.lane).collect();
+    assert!(lanes.len() >= 2, "expected commits on at least 2 different lanes");
+}
+
+#[test]
+fn test_graph_edges_connect_parent_child() {
+    // Every edge should point from a child row to a valid parent row.
+    let repo = TestRepo::new();
+    repo.add_and_commit("c1", &[("f.txt", "1")]);
+    repo.add_and_commit("c2", &[("f.txt", "2")]);
+    repo.add_and_commit("c3", &[("f.txt", "3")]);
+
+    let git_repo = git2::Repository::open(repo.path()).unwrap();
+    let graph = CommitGraph::from_repo(&git_repo).unwrap();
+
+    for edge in &graph.edges {
+        // from_row (child) comes before to_row (parent) in topological order
+        assert!(edge.from_row < edge.to_row,
+            "edge from_row {} should be less than to_row {}", edge.from_row, edge.to_row);
+        assert!(edge.from_row < graph.nodes.len(),
+            "edge from_row {} out of bounds", edge.from_row);
+        assert!(edge.to_row < graph.nodes.len(),
+            "edge to_row {} out of bounds", edge.to_row);
+        // Lane assignments in the edge must match the nodes
+        assert_eq!(edge.from_lane, graph.nodes[edge.from_row].lane);
+        assert_eq!(edge.to_lane, graph.nodes[edge.to_row].lane);
+    }
+}
+
+#[test]
+fn test_graph_oid_to_row_index_is_consistent() {
+    let repo = TestRepo::new();
+    repo.add_and_commit("a", &[("x.txt", "a")]);
+    repo.add_and_commit("b", &[("x.txt", "b")]);
+
+    let git_repo = git2::Repository::open(repo.path()).unwrap();
+    let graph = CommitGraph::from_repo(&git_repo).unwrap();
+
+    for (oid, &row) in &graph.oid_to_row {
+        assert_eq!(&graph.nodes[row].oid, oid,
+            "oid_to_row entry {} points to wrong row {}", oid, row);
+    }
+    assert_eq!(graph.oid_to_row.len(), graph.nodes.len());
 }

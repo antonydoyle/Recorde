@@ -25,6 +25,7 @@ pub enum SidebarAction {
     DeleteRemoteTag(String),
     PreviewStash(usize, String),   // (index, oid)
     StashBranch(usize),            // index
+    RestoreBranch(String, String), // (name, oid)
 }
 
 pub struct Sidebar {
@@ -52,11 +53,11 @@ impl Sidebar {
             Stroke::new(1.0, theme::BORDER),
         );
 
-        let (graph_opt, head, stashes, ab_map, merged_set) = {
+        let (graph_opt, head, stashes, ab_map, merged_set, deleted) = {
             let s = self.state.lock().unwrap();
             (s.commit_graph.clone(), s.head_branch.clone().unwrap_or_default(),
              s.stashes.clone(), s.branch_ahead_behind.clone(),
-             s.merged_into_head.clone())
+             s.merged_into_head.clone(), s.deleted_branches.clone())
         };
 
         let mut action: Option<SidebarAction> = None;
@@ -261,6 +262,32 @@ impl Sidebar {
                             });
                         }
                         if stashes.is_empty() { empty_hint(ui, "No stashes"); }
+                        ui.add_space(4.0);
+                    }
+                }
+
+                // ── RECENTLY DELETED ──────────────────────────────────
+                if !deleted.is_empty() {
+                    let open = self.open.entry("DELETED").or_insert(true);
+                    widgets::section_header(ui, "RECENTLY DELETED", deleted.len(), open);
+                    if *open {
+                        ui.add_space(2.0);
+                        for entry in deleted.iter().rev() {
+                            let resp = ui.horizontal(|ui| {
+                                ui.add_space(14.0);
+                                let (dr, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                                ui.painter().circle_filled(dr.center(), 3.5, theme::ACCENT_RED);
+                                ui.add_space(6.0);
+                                ui.label(RichText::new(&entry.name).color(theme::TEXT_SECONDARY).size(12.0).strikethrough());
+                            }).response;
+                            resp.context_menu(|ui| {
+                                ui.set_min_width(155.0);
+                                if ui.button("Restore Branch").clicked() {
+                                    action = Some(SidebarAction::RestoreBranch(entry.name.clone(), entry.oid.clone()));
+                                    ui.close_menu();
+                                }
+                            });
+                        }
                         ui.add_space(4.0);
                     }
                 }
