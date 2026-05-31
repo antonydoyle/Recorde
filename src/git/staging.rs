@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use crate::state::SharedState;
+use crate::git::patch;
+use crate::state::{PendingDiscard, SharedState};
 
 fn reload(state: SharedState) {
     crate::git::branches::reload_repo(state);
@@ -78,6 +79,106 @@ pub fn load_head_message(state: SharedState) -> Option<String> {
     Some(msg)
 }
 
+// ── Hunk / line staging ───────────────────────────────────────────────────────
+
+pub fn stage_hunk(hunk_index: usize, state: SharedState) {
+    let Some((rp, file_path, hunk)) = pluck_hunk(hunk_index, &state) else { return };
+    std::thread::spawn(move || {
+        let p = patch::hunk_patch(&file_path, &hunk);
+        match patch::apply_to_index(&rp, &p) {
+            Ok(()) => reload(state),
+            Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+        }
+    });
+}
+
+pub fn unstage_hunk(hunk_index: usize, state: SharedState) {
+    let Some((rp, file_path, hunk)) = pluck_hunk(hunk_index, &state) else { return };
+    std::thread::spawn(move || {
+        let p = patch::hunk_patch(&file_path, &hunk);
+        match patch::remove_from_index(&rp, &p) {
+            Ok(()) => reload(state),
+            Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+        }
+    });
+}
+
+pub fn discard_hunk(hunk_index: usize, state: SharedState) {
+    let Some((rp, file_path, hunk)) = pluck_hunk(hunk_index, &state) else {
+        state.lock().unwrap().pending_discard = None;
+        return;
+    };
+    std::thread::spawn(move || {
+        let p = patch::hunk_patch(&file_path, &hunk);
+        let mut s = state.lock().unwrap();
+        s.pending_discard = None;
+        match patch::discard_from_workdir(&rp, &p) {
+            Ok(()) => {
+                drop(s);
+                reload(state);
+            }
+            Err(e) => s.error = Some(e.user_message()),
+        }
+    });
+}
+
+pub fn stage_lines(hunk_index: usize, line_indices: Vec<usize>, state: SharedState) {
+    let Some((rp, file_path, hunk)) = pluck_hunk(hunk_index, &state) else { return };
+    std::thread::spawn(move || {
+        let p = patch::lines_patch(&file_path, &hunk, &line_indices);
+        match patch::apply_to_index(&rp, &p) {
+            Ok(()) => reload(state),
+            Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+        }
+    });
+}
+
+pub fn unstage_lines(hunk_index: usize, line_indices: Vec<usize>, state: SharedState) {
+    let Some((rp, file_path, hunk)) = pluck_hunk(hunk_index, &state) else { return };
+    std::thread::spawn(move || {
+        let p = patch::lines_patch(&file_path, &hunk, &line_indices);
+        match patch::remove_from_index(&rp, &p) {
+            Ok(()) => reload(state),
+            Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+        }
+    });
+}
+
+/// Discard all unstaged changes to a file (restore from index).
+pub fn discard_file(file_path: &str, state: SharedState) {
+    let fp = file_path.to_string();
+    let rp = state.lock().unwrap().repo_path.clone();
+    let Some(rp) = rp else {
+        state.lock().unwrap().pending_discard = None;
+        return;
+    };
+    std::thread::spawn(move || {
+        let result = do_discard_file(&rp, &fp);
+        let mut s = state.lock().unwrap();
+        s.pending_discard = None;
+        match result {
+            Ok(()) => {
+                drop(s);
+                reload(state);
+            }
+            Err(e) => s.error = Some(e.message().to_string()),
+        }
+    });
+}
+
+// Read (repo_path, file_path, hunk_clone) from state — returns None if anything is missing.
+fn pluck_hunk(
+    hunk_index: usize,
+    state: &SharedState,
+) -> Option<(std::path::PathBuf, String, crate::state::DiffHunk)> {
+    let s = state.lock().unwrap();
+    let rp = s.repo_path.clone()?;
+    let diff = s.current_diff.as_ref()?;
+    let file_path = diff.file_path.clone();
+    let hunk = diff.hunks.get(hunk_index)?.clone();
+    Some((rp, file_path, hunk))
+}
+
 // ── Internals ─────────────────────────────────────────────────────────────────
 
 fn do_stage(repo_path: &Path, file_path: &str) -> Result<(), git2::Error> {
@@ -140,6 +241,14 @@ fn do_commit(repo_path: &Path, message: &str) -> Result<(), git2::Error> {
     let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
     let parents: Vec<&git2::Commit> = parent.iter().collect();
     repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
+    Ok(())
+}
+
+fn do_discard_file(repo_path: &Path, file_path: &str) -> Result<(), git2::Error> {
+    let repo = git2::Repository::open(repo_path)?;
+    let mut co = git2::build::CheckoutBuilder::new();
+    co.path(file_path).force();
+    repo.checkout_index(None, Some(&mut co))?;
     Ok(())
 }
 
