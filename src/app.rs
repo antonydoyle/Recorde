@@ -1484,10 +1484,10 @@ impl eframe::App for RecordeApp {
             });
 
         // Right panel (Changes + Details)
-        egui::SidePanel::right("right_panel")
+        let right_panel_resp = egui::SidePanel::right("right_panel")
             .resizable(true)
-            .default_width(430.0)
-            .width_range(340.0..=560.0)
+            .default_width(self.config.right_panel_width)
+            .width_range(240.0..=640.0)
             .frame(egui::Frame::none())
             .show(ctx, |ui| {
                 let has_commit = self.state.lock().unwrap().selected_commit.is_some();
@@ -1551,6 +1551,15 @@ impl eframe::App for RecordeApp {
                     focus_ring(ui);
                 }
             });
+
+        // Persist right-panel width when user resizes it
+        {
+            let current_w = right_panel_resp.response.rect.width();
+            if (current_w - self.config.right_panel_width).abs() > 2.0 {
+                self.config.right_panel_width = current_w;
+                self.config.save();
+            }
+        }
 
         // Central panel — commit graph (always)
         egui::CentralPanel::default()
