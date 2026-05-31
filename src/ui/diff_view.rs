@@ -115,7 +115,7 @@ impl DiffView {
                             let name = f.path.rsplit('/').next().unwrap_or(&f.path);
                             let r = ui.selectable_label(is_sel,
                                 egui::RichText::new(name)
-                                    .color(if is_sel { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY })
+                                    .color(if is_sel { theme::BG_APP } else { theme::TEXT_SECONDARY })
                                     .size(11.5));
                             if r.clicked() { clicked = true; }
                             if f.path != name { r.on_hover_text(&f.path); }
@@ -151,7 +151,7 @@ impl DiffView {
                                 let name = f.path.rsplit('/').next().unwrap_or(&f.path);
                                 let r = ui.selectable_label(is_sel,
                                     egui::RichText::new(name)
-                                        .color(if is_sel { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY })
+                                        .color(if is_sel { theme::BG_APP } else { theme::TEXT_SECONDARY })
                                         .size(11.5));
                                 if r.clicked() { clicked = true; }
                                 if f.path != name { r.on_hover_text(&f.path); }

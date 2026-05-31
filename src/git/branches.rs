@@ -19,10 +19,20 @@ pub fn checkout_branch(branch_name: &str, state: SharedState) {
     let name = branch_name.to_string();
     let path = state.lock().unwrap().repo_path.clone();
     let Some(path) = path else { return };
+    {
+        let mut s = state.lock().unwrap();
+        s.remote_op = Some(format!("Switching to {}...", name));
+        s.console_log.push(format!("$ checkout {}", name));
+    }
 
     std::thread::spawn(move || match do_checkout(&path, &name) {
         Ok(()) => reload_repo(state),
-        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+        Err(e) => {
+            let mut s = state.lock().unwrap();
+            s.remote_op = None;
+            s.error = Some(e.message().to_string());
+            s.console_log.push(format!("error: {}", e.message()));
+        }
     });
 }
 

@@ -23,6 +23,7 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
                 s.working_dir_files = files;
                 s.stashes = stashes;
                 s.error = None;
+                s.remote_op = None;
             }
             Err(e) => {
                 s.console_log.push(format!("error: {}", e.message()));
@@ -311,4 +312,3 @@ fn compute_diff(repo_path: &Path, commit_oid: &str, file_path: &str) -> Result<F
 
     parse_diff(diff, commit_oid, file_path)
 }
-

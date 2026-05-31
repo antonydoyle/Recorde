@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use egui::{Color32, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 
-use crate::state::{ModalKind, SharedState};
+use crate::state::SharedState;
 use crate::theme;
 use crate::ui::widgets;
 
@@ -202,10 +202,10 @@ impl Sidebar {
     }
 }
 
-// ── Branch row (34 px) ────────────────────────────────────────────────────────
+// ── Branch row ────────────────────────────────────────────────────────────────
 
 fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_behind: Option<(usize, usize)>) -> egui::Response {
-    let row_h = 34.0;
+    let row_h = 26.0;
     let avail = ui.available_width();
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
 
@@ -225,7 +225,7 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
     }
 
     // Branch icon dot
-    let dot_x = row_rect.left() + 18.0;
+    let dot_x = row_rect.left() + 16.0;
     let dot_color = if is_head { theme::ACCENT_TEAL }
         else if is_remote { theme::ACCENT_BLUE.gamma_multiply(0.7) }
         else { theme::TEXT_MUTED };
@@ -234,9 +234,9 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
     // Branch name
     let text_color = if is_head { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
     let text_style = if is_head {
-        RichText::new(name).color(text_color).size(12.5).strong()
+        RichText::new(name).color(text_color).size(12.0).strong()
     } else {
-        RichText::new(name).color(text_color).size(12.5)
+        RichText::new(name).color(text_color).size(12.0)
     };
 
     // Ahead/behind counts on the right
@@ -276,7 +276,7 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
 }
 
 fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
-    let row_h = 30.0;
+    let row_h = 24.0;
     let avail = ui.available_width();
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
 

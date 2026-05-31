@@ -7,28 +7,45 @@ use crate::ui::widgets;
 
 // Layout
 const ROW_H:        f32 = 36.0;
+const REFS_W_DEF:   f32 = 170.0;
+const REFS_W_MIN:   f32 = 90.0;
+const REFS_W_MAX:   f32 = 320.0;
 const GRAPH_W_MIN:  f32 = 80.0;
 const GRAPH_W_MAX:  f32 = 340.0;
 const GRAPH_W_DEF:  f32 = 170.0;
+const COMMIT_W_DEF: f32 = 380.0;
+const COMMIT_W_MIN: f32 = 180.0;
+const TIME_W_DEF:   f32 = 60.0;
+const TIME_W_MIN:   f32 = 46.0;
+const HASH_W_DEF:   f32 = 62.0;
+const HASH_W_MIN:   f32 = 54.0;
 const LANE_W:       f32 = 18.0;
 const DOT_R:        f32 = 6.0;
 const DOT_R_SEL:    f32 = 8.0;
 const GRAPH_LEFT:   f32 = 10.0;
 const HEADER_H:     f32 = 28.0;
-// Right-side fixed columns
-const COL_AUTHOR:   f32 = 140.0;
-const COL_TIME:     f32 = 60.0;
-const COL_HASH:     f32 = 62.0;
 
 pub struct CommitGraphView {
     state: SharedState,
     last_selected: Option<String>,
+    refs_w: f32,
     graph_w: f32,
+    commit_w: f32,
+    time_w: f32,
+    hash_w: f32,
 }
 
 impl CommitGraphView {
     pub fn new(state: SharedState) -> Self {
-        Self { state, last_selected: None, graph_w: GRAPH_W_DEF }
+        Self {
+            state,
+            last_selected: None,
+            refs_w: REFS_W_DEF,
+            graph_w: GRAPH_W_DEF,
+            commit_w: COMMIT_W_DEF,
+            time_w: TIME_W_DEF,
+            hash_w: HASH_W_DEF,
+        }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
@@ -103,48 +120,40 @@ impl CommitGraphView {
         ui.painter().rect_filled(header_rect, 0.0, theme::BG_PANEL_ALT);
         ui.painter().line_segment([header_rect.left_bottom(), header_rect.right_bottom()], Stroke::new(1.0, theme::BORDER));
 
-        let right_fixed = COL_AUTHOR + COL_TIME + COL_HASH + 24.0;
-        let msg_start = header_rect.min.x + self.graph_w;
-        let msg_end   = header_rect.max.x - right_fixed - 8.0;
+        self.fit_columns(avail);
+
+        let refs_start = header_rect.min.x;
+        let graph_start = refs_start + self.refs_w;
+        let msg_start = graph_start + self.graph_w;
+        let time_x = msg_start + self.commit_w;
+        let hash_x = time_x + self.time_w;
+        let end_x = hash_x + self.hash_w;
 
         let hcol = Color32::from_rgb(90, 100, 120);
         let header_font = FontId::proportional(11.0);
-        ui.painter().text(Pos2::new(header_rect.min.x + GRAPH_LEFT, header_rect.center().y), egui::Align2::LEFT_CENTER, "Graph", header_font.clone(), hcol);
+        ui.painter().text(Pos2::new(refs_start + 10.0, header_rect.center().y), egui::Align2::LEFT_CENTER, "Branches / Tags", header_font.clone(), hcol);
+        ui.painter().text(Pos2::new(graph_start + GRAPH_LEFT, header_rect.center().y), egui::Align2::LEFT_CENTER, "Graph", header_font.clone(), hcol);
         ui.painter().text(Pos2::new(msg_start + 4.0, header_rect.center().y), egui::Align2::LEFT_CENTER, "Commit", header_font.clone(), hcol);
+        ui.painter().text(Pos2::new(time_x + 8.0, header_rect.center().y), egui::Align2::LEFT_CENTER, "Time", header_font.clone(), hcol);
+        ui.painter().text(Pos2::new(hash_x + 8.0, header_rect.center().y), egui::Align2::LEFT_CENTER, "Hash", header_font.clone(), hcol);
 
-        // Drag handle on the graph/commit column divider
-        let handle_rect = Rect::from_min_size(
-            Pos2::new(msg_start - 3.0, header_rect.min.y),
-            Vec2::new(6.0, HEADER_H),
+        self.resize_handle(ui, header_rect, graph_start, ColumnDivider::RefsGraph);
+        self.resize_handle(ui, header_rect, msg_start, ColumnDivider::GraphCommit);
+        self.resize_handle(ui, header_rect, time_x, ColumnDivider::CommitTime);
+        self.resize_handle(ui, header_rect, hash_x, ColumnDivider::TimeHash);
+        ui.painter().line_segment(
+            [Pos2::new(end_x, header_rect.min.y), Pos2::new(end_x, header_rect.max.y)],
+            Stroke::new(1.0, theme::BORDER),
         );
-        let handle_resp = ui.allocate_rect(handle_rect, Sense::drag());
-        ui.ctx().set_cursor_icon(if handle_resp.hovered() || handle_resp.dragged() {
-            egui::CursorIcon::ResizeColumn
-        } else {
-            egui::CursorIcon::Default
-        });
-        if handle_resp.dragged() {
-            self.graph_w = (self.graph_w + handle_resp.drag_delta().x)
-                .clamp(GRAPH_W_MIN, GRAPH_W_MAX);
-        }
-        // Draw a subtle handle line when hovered
-        if handle_resp.hovered() || handle_resp.dragged() {
-            ui.painter().line_segment(
-                [Pos2::new(msg_start, header_rect.min.y + 4.0), Pos2::new(msg_start, header_rect.max.y - 4.0)],
-                Stroke::new(2.0, theme::ACCENT_TEAL),
-            );
-        }
-        let author_x = header_rect.max.x - right_fixed;
-        ui.painter().text(Pos2::new(author_x, header_rect.center().y), egui::Align2::LEFT_CENTER, "Author", header_font.clone(), hcol);
-        let time_x = author_x + COL_AUTHOR + 4.0;
-        ui.painter().text(Pos2::new(time_x, header_rect.center().y), egui::Align2::LEFT_CENTER, "Time", header_font.clone(), hcol);
-        let hash_x = time_x + COL_TIME + 4.0;
-        ui.painter().text(Pos2::new(hash_x, header_rect.center().y), egui::Align2::LEFT_CENTER, "Hash", header_font.clone(), hcol);
 
         // ── Scroll area (graph + list) ────────────────────────────────────
         let scroll_start = header_top + HEADER_H;
         let scroll_rect = Rect::from_min_max(Pos2::new(ui.min_rect().min.x, scroll_start), ui.max_rect().max);
-        let graph_w = self.graph_w; // capture for closure
+        let refs_w = self.refs_w;
+        let graph_w = self.graph_w;
+        let commit_w = self.commit_w;
+        let time_w = self.time_w;
+        let hash_w = self.hash_w;
 
         // Filter to current branch only when show_all_branches is false
         let nodes: Vec<_> = if show_all_branches {
@@ -209,6 +218,24 @@ impl CommitGraphView {
                     let first = ((clip.top() - origin.y) / ROW_H).floor().max(0.0) as usize;
                     let last  = (((clip.bottom() - origin.y) / ROW_H).ceil() as usize + 1).min(nodes.len());
 
+                    // ── Draw row backgrounds first so graph/text stay above hover/selection.
+                    for i in first..last {
+                        let node = &nodes[i];
+                        let row_top  = origin.y + i as f32 * ROW_H;
+                        let row_rect = Rect::from_min_size(Pos2::new(origin.x, row_top), Vec2::new(avail, ROW_H));
+                        let row_resp = ui.interact(row_rect, egui::Id::new(("row_bg", i)), Sense::click());
+                        let is_sel = selected.as_deref() == Some(&node.oid);
+                        let row_bg = if is_sel { theme::BG_SELECTED }
+                                     else if row_resp.hovered() { theme::BG_HOVER }
+                                     else { Color32::TRANSPARENT };
+                        if row_bg != Color32::TRANSPARENT { painter.rect_filled(row_rect, 0.0, row_bg); }
+
+                        let is_match = q_lower.as_ref().map_or(true, |q| node_matches(node, q));
+                        if q_lower.is_some() && !is_match {
+                            painter.rect_filled(row_rect, 0.0, Color32::from_black_alpha(80));
+                        }
+                    }
+
                     // ── Draw edges (cubic bezier) ─────────────────────
                     for edge in &edges {
                         let from_y = origin.y + edge.from_row as f32 * ROW_H + ROW_H / 2.0;
@@ -216,8 +243,8 @@ impl CommitGraphView {
                         if to_y < clip.top() - ROW_H || from_y > clip.bottom() + ROW_H { continue; }
 
                         let color  = theme::lane_color(edge.from_lane);
-                        let from_x = origin.x + GRAPH_LEFT + edge.from_lane as f32 * LANE_W;
-                        let to_x   = origin.x + GRAPH_LEFT + edge.to_lane   as f32 * LANE_W;
+                        let from_x = origin.x + refs_w + GRAPH_LEFT + edge.from_lane as f32 * LANE_W;
+                        let to_x   = origin.x + refs_w + GRAPH_LEFT + edge.to_lane   as f32 * LANE_W;
 
                         if edge.from_lane == edge.to_lane {
                             painter.line_segment(
@@ -252,22 +279,15 @@ impl CommitGraphView {
 
                         let is_sel = selected.as_deref() == Some(&node.oid);
                         let row_resp = ui.interact(row_rect, egui::Id::new(("row", i)), Sense::click());
-                        let hovered  = row_resp.hovered();
 
                         let is_match = q_lower.as_ref().map_or(true, |q| node_matches(node, q));
                         let dim = q_lower.is_some() && !is_match;
-
-                        let row_bg = if is_sel     { theme::BG_SELECTED }
-                                     else if hovered { theme::BG_HOVER }
-                                     else             { Color32::TRANSPARENT };
-                        if row_bg != Color32::TRANSPARENT { painter.rect_filled(row_rect, 0.0, row_bg); }
-                        if dim { painter.rect_filled(row_rect, 0.0, Color32::from_black_alpha(110)); }
 
                         if row_resp.clicked() { new_selection = Some(Some(node.oid.clone())); }
 
                         let fade = if dim { 0.25 } else { 1.0 };
                         let lane_col = theme::lane_color(node.lane).gamma_multiply(fade);
-                        let dot_x = origin.x + GRAPH_LEFT + node.lane as f32 * LANE_W;
+                        let dot_x = origin.x + refs_w + GRAPH_LEFT + node.lane as f32 * LANE_W;
 
                         // Node circle
                         painter.circle_filled(Pos2::new(dot_x, cy), DOT_R, lane_col);
@@ -277,10 +297,11 @@ impl CommitGraphView {
                         }
 
                         // Right columns
-                        let right = origin.x + avail - 8.0;
-                        let hash_right   = right;
-                        let time_right   = hash_right - COL_HASH - 8.0;
-                        let author_right = time_right - COL_TIME - 8.0;
+                        let msg_start = origin.x + refs_w + graph_w;
+                        let time_start = msg_start + commit_w;
+                        let hash_start = time_start + time_w;
+                        let hash_right = hash_start + hash_w - 8.0;
+                        let time_right = time_start + time_w - 8.0;
 
                         let dim_col = |c: Color32| c.gamma_multiply(fade);
 
@@ -296,37 +317,22 @@ impl CommitGraphView {
                             &theme::relative_time(node.time),
                             FontId::proportional(11.5), dim_col(theme::TEXT_MUTED),
                         );
-                        // Author avatar + name
-                        let av_cx = author_right - COL_AUTHOR + 12.0;
-                        widgets::avatar(&painter, Pos2::new(av_cx, cy), 10.0, &node.author);
-                        let author_text_x = av_cx + 14.0;
-                        painter.with_clip_rect(Rect::from_min_max(
-                            Pos2::new(author_text_x, row_top),
-                            Pos2::new(author_right, row_top + ROW_H),
-                        )).text(
-                            Pos2::new(author_text_x, cy), egui::Align2::LEFT_CENTER,
-                            &node.author,
-                            FontId::proportional(12.0), dim_col(theme::TEXT_SECONDARY),
-                        );
+                        // Author indicator attached to the graph, icon-only.
+                        let author_x = (dot_x + 18.0).min(origin.x + refs_w + graph_w - 14.0);
+                        let author_pos = Pos2::new(author_x, cy);
+                        widgets::avatar(&painter, author_pos, 8.5, &node.author);
+                        ui.interact(
+                            Rect::from_center_size(author_pos, Vec2::splat(22.0)),
+                            egui::Id::new(("author_avatar", i)),
+                            Sense::hover(),
+                        )
+                        .on_hover_text(&node.author);
 
-                        // Ref label pills (branch labels)
-                        let mut label_x = origin.x + graph_w;
-                        for ref_name in node.refs.iter().take(3) {
-                            label_x = widgets::branch_label(&painter, Pos2::new(label_x, cy), ref_name, row_top, ROW_H);
-                            label_x += 4.0;
-                        }
-                        if node.refs.len() > 3 {
-                            let extra = format!("+{}", node.refs.len() - 3);
-                            painter.text(
-                                Pos2::new(label_x + 4.0, cy), egui::Align2::LEFT_CENTER,
-                                &extra, FontId::proportional(10.5), dim_col(theme::TEXT_MUTED),
-                            );
-                            label_x += 30.0;
-                        }
+                        draw_ref_column(&painter, origin.x, refs_w, row_top, cy, node, lane_col);
 
                         // Commit summary
-                        let summary_start = label_x + 4.0;
-                        let summary_end   = author_right - COL_AUTHOR - 8.0;
+                        let summary_start = msg_start + 8.0;
+                        let summary_end   = time_start - 8.0;
                         if summary_end > summary_start + 20.0 {
                             let tc = if is_sel { theme::TEXT_PRIMARY } else { dim_col(Color32::from_rgb(200, 207, 218)) };
                             painter.with_clip_rect(Rect::from_min_max(
@@ -391,6 +397,76 @@ impl CommitGraphView {
             }
         }
     }
+
+    fn fit_columns(&mut self, avail: f32) {
+        let min_total = REFS_W_MIN + GRAPH_W_MIN + COMMIT_W_MIN + TIME_W_MIN + HASH_W_MIN;
+        if avail <= min_total {
+            self.refs_w = REFS_W_MIN;
+            self.graph_w = GRAPH_W_MIN;
+            self.commit_w = COMMIT_W_MIN;
+            self.time_w = TIME_W_MIN;
+            self.hash_w = HASH_W_MIN;
+            return;
+        }
+
+        self.refs_w = self.refs_w.clamp(REFS_W_MIN, REFS_W_MAX);
+        self.graph_w = self.graph_w.clamp(GRAPH_W_MIN, GRAPH_W_MAX);
+        self.time_w = self.time_w.max(TIME_W_MIN);
+        self.hash_w = self.hash_w.max(HASH_W_MIN);
+
+        let fixed = self.refs_w + self.graph_w + self.time_w + self.hash_w;
+        self.commit_w = (avail - fixed).max(COMMIT_W_MIN);
+    }
+
+    fn resize_handle(&mut self, ui: &mut Ui, header_rect: Rect, x: f32, divider: ColumnDivider) {
+        let rect = Rect::from_min_size(
+            Pos2::new(x - 3.0, header_rect.min.y),
+            Vec2::new(6.0, HEADER_H),
+        );
+        let resp = ui.allocate_rect(rect, Sense::drag());
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+            ui.painter().line_segment(
+                [Pos2::new(x, header_rect.min.y + 4.0), Pos2::new(x, header_rect.max.y - 4.0)],
+                Stroke::new(2.0, theme::ACCENT_TEAL),
+            );
+        } else {
+            ui.painter().line_segment(
+                [Pos2::new(x, header_rect.min.y), Pos2::new(x, header_rect.max.y)],
+                Stroke::new(1.0, theme::BORDER),
+            );
+        }
+
+        if resp.dragged() {
+            let delta = resp.drag_delta().x;
+            match divider {
+                ColumnDivider::RefsGraph => {
+                    self.refs_w = (self.refs_w + delta).clamp(REFS_W_MIN, REFS_W_MAX);
+                    self.graph_w = (self.graph_w - delta).clamp(GRAPH_W_MIN, GRAPH_W_MAX);
+                }
+                ColumnDivider::GraphCommit => {
+                    self.graph_w = (self.graph_w + delta).clamp(GRAPH_W_MIN, GRAPH_W_MAX);
+                    self.commit_w = (self.commit_w - delta).max(COMMIT_W_MIN);
+                }
+                ColumnDivider::CommitTime => {
+                    self.commit_w = (self.commit_w + delta).max(COMMIT_W_MIN);
+                    self.time_w = (self.time_w - delta).max(TIME_W_MIN);
+                }
+                ColumnDivider::TimeHash => {
+                    self.time_w = (self.time_w + delta).max(TIME_W_MIN);
+                    self.hash_w = (self.hash_w - delta).max(HASH_W_MIN);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ColumnDivider {
+    RefsGraph,
+    GraphCommit,
+    CommitTime,
+    TimeHash,
 }
 
 fn node_matches(node: &crate::git::graph::CommitNode, q: &str) -> bool {
@@ -398,4 +474,43 @@ fn node_matches(node: &crate::git::graph::CommitNode, q: &str) -> bool {
         || node.author.to_lowercase().contains(q)
         || node.oid.starts_with(q)
         || node.refs.iter().any(|r| r.to_lowercase().contains(q))
+}
+
+fn draw_ref_column(
+    painter: &egui::Painter,
+    origin_x: f32,
+    refs_w: f32,
+    row_top: f32,
+    cy: f32,
+    node: &crate::git::graph::CommitNode,
+    branch_color: Color32,
+) {
+    let clip = Rect::from_min_max(
+        Pos2::new(origin_x + 8.0, row_top),
+        Pos2::new(origin_x + refs_w - 8.0, row_top + ROW_H),
+    );
+    let painter = painter.with_clip_rect(clip);
+    let mut x = origin_x + 10.0;
+    for name in node.refs.iter().take(3) {
+        let is_tag = name.starts_with('v') && name.chars().nth(1).map_or(false, |c| c.is_ascii_digit());
+        let color = if is_tag { theme::ACCENT_PURPLE } else { branch_color };
+        let font = FontId::proportional(10.5);
+        let galley = painter.layout_no_wrap(name.to_string(), font, color);
+        let width = galley.size().x + 14.0;
+        if x + width > origin_x + refs_w - 10.0 {
+            break;
+        }
+        let rect = Rect::from_min_size(
+            Pos2::new(x, row_top + 8.0),
+            Vec2::new(width, ROW_H - 16.0),
+        );
+        painter.rect_filled(rect, 4.0, color.gamma_multiply(0.12));
+        painter.rect_stroke(rect, 4.0, Stroke::new(0.8, color.gamma_multiply(0.65)));
+        painter.galley(
+            Pos2::new(rect.min.x + 7.0, cy - galley.size().y / 2.0),
+            galley,
+            color,
+        );
+        x = rect.max.x + 4.0;
+    }
 }
