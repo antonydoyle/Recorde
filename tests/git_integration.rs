@@ -185,3 +185,132 @@ fn test_runner_cancel_token() {
 
     assert!(got_terminal, "should receive terminal event even after cancel");
 }
+
+// ── Patch round-trip tests ────────────────────────────────────────────────────
+
+#[test]
+fn test_stage_hunk_round_trip() {
+    // Two separate hunks: stage only the first, verify second stays unstaged.
+    let repo = TestRepo::new();
+    // Create base file with two sections separated by context
+    repo.add_and_commit("base", &[("file.txt",
+        "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n")]);
+
+    // Modify lines far apart so git produces two hunks
+    let modified = "CHANGED1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nCHANGED2\nline10\n";
+    std::fs::write(repo.path().join("file.txt"), modified).unwrap();
+
+    // Get the unstaged diff
+    let git_repo = git2::Repository::open(repo.path()).unwrap();
+    let mut diff_opts = git2::DiffOptions::new();
+    diff_opts.pathspec("file.txt");
+    let diff = git_repo.diff_index_to_workdir(None, Some(&mut diff_opts)).unwrap();
+
+    // Collect hunks using Rc<RefCell<>> to share state across closures
+    use std::rc::Rc;
+    use std::cell::RefCell;
+    let raw: Rc<RefCell<Vec<(String, Vec<recorde::state::DiffLine>)>>> = Rc::new(RefCell::new(Vec::new()));
+    let raw_h = Rc::clone(&raw);
+    let raw_l = Rc::clone(&raw);
+
+    diff.foreach(
+        &mut |_, _| true,
+        None,
+        Some(&mut |_, h| {
+            let header = std::str::from_utf8(h.header()).unwrap_or("").trim_end().to_string();
+            raw_h.borrow_mut().push((header, Vec::new()));
+            true
+        }),
+        Some(&mut |_, _, line| {
+            if let Some(last) = raw_l.borrow_mut().last_mut() {
+                last.1.push(recorde::state::DiffLine {
+                    origin: line.origin(),
+                    content: std::str::from_utf8(line.content()).unwrap_or("").to_string(),
+                    old_lineno: line.old_lineno(),
+                    new_lineno: line.new_lineno(),
+                });
+            }
+            true
+        }),
+    ).unwrap();
+    drop(raw_h); drop(raw_l);
+    let hunks: Vec<recorde::state::DiffHunk> = Rc::try_unwrap(raw).unwrap().into_inner()
+        .into_iter()
+        .map(|(header, lines)| recorde::state::DiffHunk { header, lines })
+        .collect();
+
+    assert!(hunks.len() >= 2, "expected at least 2 hunks, got {}", hunks.len());
+
+    // Stage just the first hunk
+    let patch = recorde::git::patch::hunk_patch("file.txt", &hunks[0]);
+    recorde::git::patch::apply_to_index(repo.path(), &patch).expect("stage hunk 0 failed");
+
+    // Check staged diff: should have CHANGED1 staged
+    let git_repo2 = git2::Repository::open(repo.path()).unwrap();
+    let head_tree = git_repo2.head().unwrap().peel_to_commit().unwrap().tree().unwrap();
+    let staged_diff = git_repo2.diff_tree_to_index(Some(&head_tree), None, None).unwrap();
+    let stats = staged_diff.stats().unwrap();
+    assert!(stats.files_changed() == 1, "staged diff should show 1 file");
+
+    // The staged diff should contain CHANGED1 but not CHANGED2
+    let mut staged_content = String::new();
+    staged_diff.print(git2::DiffFormat::Patch, |_, _, line| {
+        staged_content.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+        true
+    }).unwrap();
+    assert!(staged_content.contains("CHANGED1"), "CHANGED1 should be staged");
+    assert!(!staged_content.contains("CHANGED2"), "CHANGED2 should NOT be staged yet");
+}
+
+#[test]
+fn test_discard_hunk_round_trip() {
+    let repo = TestRepo::new();
+    repo.add_and_commit("base", &[("discard.txt", "aaa\nbbb\nccc\n")]);
+
+    // Modify the file
+    std::fs::write(repo.path().join("discard.txt"), "MODIFIED\nbbb\nccc\n").unwrap();
+
+    // Get the diff
+    let git_repo = git2::Repository::open(repo.path()).unwrap();
+    let mut opts = git2::DiffOptions::new();
+    opts.pathspec("discard.txt");
+    let diff = git_repo.diff_index_to_workdir(None, Some(&mut opts)).unwrap();
+
+    use std::rc::Rc;
+    use std::cell::RefCell;
+    let raw2: Rc<RefCell<Vec<(String, Vec<recorde::state::DiffLine>)>>> = Rc::new(RefCell::new(Vec::new()));
+    let raw2h = Rc::clone(&raw2);
+    let raw2l = Rc::clone(&raw2);
+    diff.foreach(
+        &mut |_, _| true,
+        None,
+        Some(&mut |_, h| {
+            let hdr = std::str::from_utf8(h.header()).unwrap_or("").trim_end().to_string();
+            raw2h.borrow_mut().push((hdr, Vec::new()));
+            true
+        }),
+        Some(&mut |_, _, line| {
+            if let Some(last) = raw2l.borrow_mut().last_mut() {
+                last.1.push(recorde::state::DiffLine {
+                    origin: line.origin(),
+                    content: std::str::from_utf8(line.content()).unwrap_or("").to_string(),
+                    old_lineno: line.old_lineno(),
+                    new_lineno: line.new_lineno(),
+                });
+            }
+            true
+        }),
+    ).unwrap();
+    drop(raw2h); drop(raw2l);
+    let mut hunks2 = Rc::try_unwrap(raw2).unwrap().into_inner();
+    let (hdr, lines) = hunks2.remove(0);
+    let hunk = recorde::state::DiffHunk { header: hdr, lines };
+    let patch = recorde::git::patch::hunk_patch("discard.txt", &hunk);
+
+    // Discard (reverse apply to workdir)
+    recorde::git::patch::discard_from_workdir(repo.path(), &patch).expect("discard failed");
+
+    // File should be restored
+    let content = std::fs::read_to_string(repo.path().join("discard.txt")).unwrap();
+    assert_eq!(content, "aaa\nbbb\nccc\n", "file should be restored to original");
+}

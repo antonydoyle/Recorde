@@ -90,6 +90,22 @@ pub struct RebaseEntry {
     pub action: RebaseAction,
 }
 
+/// Which section of the working tree the current diff was loaded from.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum DiffContext {
+    #[default]
+    CommitDiff,
+    StagedFile,
+    UnstagedFile,
+}
+
+/// A destructive action pending user confirmation.
+#[derive(Debug, Clone)]
+pub enum PendingDiscard {
+    File { path: String },
+    Hunk { hunk_index: usize },
+}
+
 /// Which modal dialog is currently open (if any).
 #[derive(Debug, Clone, Default)]
 pub enum ModalKind {
@@ -130,6 +146,10 @@ pub struct AppState {
     pub stashes: Vec<StashEntry>,
 
     pub modal: ModalKind,
+    /// Context for the currently-loaded diff (commit vs staged vs unstaged).
+    pub diff_context: DiffContext,
+    /// Destructive action waiting for user confirmation.
+    pub pending_discard: Option<PendingDiscard>,
     /// Label shown while a branch/staging operation is running (legacy path).
     pub remote_op: Option<String>,
     /// In-flight jobs dispatched through GitRunner.
