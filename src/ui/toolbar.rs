@@ -163,14 +163,18 @@ impl Toolbar {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
 
-                        // Avatar placeholder
+                        // Avatar — initials from git config user.name
+                        let initials = {
+                            let s = self.state.lock().unwrap();
+                            s.git_user_initials.clone()
+                        };
                         let (av_rect, _) = ui.allocate_exact_size(
                             egui::Vec2::splat(28.0), egui::Sense::hover(),
                         );
                         ui.painter().circle_filled(av_rect.center(), 14.0, theme::ACCENT_PURPLE);
                         ui.painter().text(
                             av_rect.center(), egui::Align2::CENTER_CENTER,
-                            "AD", egui::FontId::proportional(10.0), egui::Color32::WHITE,
+                            &initials, egui::FontId::proportional(10.0), egui::Color32::WHITE,
                         );
 
                         ui.add_space(8.0);

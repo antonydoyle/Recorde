@@ -119,6 +119,7 @@ pub struct AppState {
     pub selected_file: Option<String>,
     pub current_diff: Option<FileDiff>,
 
+    pub git_user_initials: String,
     pub head_branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub branch_ahead_behind: std::collections::HashMap<String, (usize, usize)>,
@@ -142,5 +143,21 @@ pub struct AppState {
 pub type SharedState = Arc<Mutex<AppState>>;
 
 pub fn new_shared_state() -> SharedState {
-    Arc::new(Mutex::new(AppState { show_all_branches: true, ..Default::default() }))
+    // Read git user.name from global config for the avatar initials.
+    let git_user_initials = git2::Config::open_default()
+        .ok()
+        .and_then(|c| c.get_string("user.name").ok())
+        .map(|name| {
+            let mut words = name.split_whitespace();
+            let first = words.next().and_then(|w| w.chars().next());
+            let last  = words.last().and_then(|w| w.chars().next());
+            match (first, last) {
+                (Some(a), Some(b)) => format!("{}{}", a.to_uppercase(), b.to_uppercase()),
+                (Some(a), None)    => a.to_uppercase().to_string(),
+                _                  => "?".into(),
+            }
+        })
+        .unwrap_or_else(|| "?".into());
+
+    Arc::new(Mutex::new(AppState { show_all_branches: true, git_user_initials, ..Default::default() }))
 }
