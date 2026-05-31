@@ -1,8 +1,8 @@
 use egui::{Color32, Context, Key, Modifiers, RichText, Stroke};
 
 use crate::config::Config;
-use crate::git::{branches, job::ActiveOp, job::JobProgress, operations::load_repo, rebase, remote, runner::GitRunner};
-use crate::state::{ModalKind, RebaseEntry, new_shared_state, SharedState};
+use crate::git::{branches, job::ActiveOp, job::JobProgress, operations::load_repo, rebase, remote, runner::GitRunner, staging};
+use crate::state::{ModalKind, PendingDiscard, RebaseEntry, new_shared_state, SharedState};
 use crate::theme;
 use crate::ui::{
     commit_graph::CommitGraphView,
@@ -972,6 +972,7 @@ impl RecordeApp {
         }
 
         // Legacy overlay for branch/staging ops (remote_op path)
+        let has_legacy = legacy_op.is_some();
         if let Some(op) = legacy_op {
             let y_offset = 104.0 + active_ops.len() as f32 * 52.0;
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
@@ -992,6 +993,45 @@ impl RecordeApp {
                             });
                         });
                 });
+        }
+
+        // ── Discard confirmation ──────────────────────────────────────────
+        let pending = { self.state.lock().unwrap().pending_discard.clone() };
+        if let Some(ref pd) = pending {
+            let y_off = 146.0 + active_ops.len() as f32 * 52.0 + if has_legacy { 52.0 } else { 0.0 };
+            let desc = match pd {
+                PendingDiscard::File { path } => format!("Discard all changes to \"{}\"?", path.rsplit('/').next().unwrap_or(path)),
+                PendingDiscard::Hunk { hunk_index } => format!("Discard hunk #{}? This cannot be undone.", hunk_index + 1),
+            };
+            let mut confirm = false;
+            let mut cancel  = false;
+            egui::Area::new(egui::Id::new("discard_confirm_overlay"))
+                .anchor(egui::Align2::CENTER_TOP, [0.0, y_off])
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(74, 24, 28))
+                        .stroke(Stroke::new(1.5, theme::ACCENT_RED))
+                        .rounding(8.0)
+                        .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+                        .show(ui, |ui| {
+                            ui.set_max_width(640.0);
+                            ui.horizontal_centered(|ui| {
+                                ui.label(RichText::new(&desc).color(Color32::WHITE).size(12.5));
+                                ui.add_space(12.0);
+                                if ui.add(danger_btn("Discard")).clicked() { confirm = true; }
+                                if ui.add(secondary_btn("Cancel")).clicked() { cancel = true; }
+                            });
+                        });
+                });
+            if confirm {
+                match pd {
+                    PendingDiscard::File { path } => staging::discard_file(path, self.state.clone()),
+                    PendingDiscard::Hunk { hunk_index } => staging::discard_hunk(*hunk_index, self.state.clone()),
+                }
+            } else if cancel {
+                self.state.lock().unwrap().pending_discard = None;
+            }
         }
 
         if let Some(error) = error {
