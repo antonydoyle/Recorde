@@ -23,9 +23,14 @@ pub struct Config {
     pub default_editor: String,
     #[serde(default)]
     pub per_repo: std::collections::HashMap<String, RepoConfig>,
+    #[serde(default)]
+    pub signoff_default: bool,
+    #[serde(default = "default_protected")]
+    pub protected_branches: Vec<String>,
 }
 
 fn default_true() -> bool { true }
+fn default_protected() -> Vec<String> { vec!["main".into(), "master".into()] }
 
 impl Config {
     pub fn load() -> Self {

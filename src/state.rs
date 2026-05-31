@@ -110,6 +110,7 @@ pub enum DiffContext {
 pub enum PendingDiscard {
     File { path: String },
     Hunk { hunk_index: usize },
+    ResetHard,
 }
 
 /// Which modal dialog is currently open (if any).

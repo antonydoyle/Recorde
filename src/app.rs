@@ -1457,6 +1457,7 @@ impl RecordeApp {
             let desc = match pd {
                 PendingDiscard::File { path } => format!("Discard all changes to \"{}\"?", path.rsplit('/').next().unwrap_or(path)),
                 PendingDiscard::Hunk { hunk_index } => format!("Discard hunk #{}? This cannot be undone.", hunk_index + 1),
+                PendingDiscard::ResetHard => "Hard reset: discard the last commit AND all staged/unstaged changes? This cannot be undone.".to_string(),
             };
             let mut confirm = false;
             let mut cancel  = false;
@@ -1483,6 +1484,7 @@ impl RecordeApp {
                 match pd {
                     PendingDiscard::File { path } => staging::discard_file(path, self.state.clone()),
                     PendingDiscard::Hunk { hunk_index } => staging::discard_hunk(*hunk_index, self.state.clone()),
+                    PendingDiscard::ResetHard => staging::reset_hard(self.state.clone()),
                 }
             } else if cancel {
                 self.state.lock().unwrap().pending_discard = None;
