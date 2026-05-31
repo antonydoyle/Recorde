@@ -7,7 +7,9 @@ use crate::ui::widgets;
 
 // Layout
 const ROW_H:        f32 = 36.0;
-const GRAPH_W:      f32 = 170.0; // fixed graph column width
+const GRAPH_W_MIN:  f32 = 80.0;
+const GRAPH_W_MAX:  f32 = 340.0;
+const GRAPH_W_DEF:  f32 = 170.0;
 const LANE_W:       f32 = 18.0;
 const DOT_R:        f32 = 6.0;
 const DOT_R_SEL:    f32 = 8.0;
@@ -21,11 +23,12 @@ const COL_HASH:     f32 = 62.0;
 pub struct CommitGraphView {
     state: SharedState,
     last_selected: Option<String>,
+    graph_w: f32,
 }
 
 impl CommitGraphView {
     pub fn new(state: SharedState) -> Self {
-        Self { state, last_selected: None }
+        Self { state, last_selected: None, graph_w: GRAPH_W_DEF }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
@@ -101,13 +104,36 @@ impl CommitGraphView {
         ui.painter().line_segment([header_rect.left_bottom(), header_rect.right_bottom()], Stroke::new(1.0, theme::BORDER));
 
         let right_fixed = COL_AUTHOR + COL_TIME + COL_HASH + 24.0;
-        let msg_start = header_rect.min.x + GRAPH_W;
+        let msg_start = header_rect.min.x + self.graph_w;
         let msg_end   = header_rect.max.x - right_fixed - 8.0;
 
         let hcol = Color32::from_rgb(90, 100, 120);
         let header_font = FontId::proportional(11.0);
         ui.painter().text(Pos2::new(header_rect.min.x + GRAPH_LEFT, header_rect.center().y), egui::Align2::LEFT_CENTER, "Graph", header_font.clone(), hcol);
         ui.painter().text(Pos2::new(msg_start + 4.0, header_rect.center().y), egui::Align2::LEFT_CENTER, "Commit", header_font.clone(), hcol);
+
+        // Drag handle on the graph/commit column divider
+        let handle_rect = Rect::from_min_size(
+            Pos2::new(msg_start - 3.0, header_rect.min.y),
+            Vec2::new(6.0, HEADER_H),
+        );
+        let handle_resp = ui.allocate_rect(handle_rect, Sense::drag());
+        ui.ctx().set_cursor_icon(if handle_resp.hovered() || handle_resp.dragged() {
+            egui::CursorIcon::ResizeColumn
+        } else {
+            egui::CursorIcon::Default
+        });
+        if handle_resp.dragged() {
+            self.graph_w = (self.graph_w + handle_resp.drag_delta().x)
+                .clamp(GRAPH_W_MIN, GRAPH_W_MAX);
+        }
+        // Draw a subtle handle line when hovered
+        if handle_resp.hovered() || handle_resp.dragged() {
+            ui.painter().line_segment(
+                [Pos2::new(msg_start, header_rect.min.y + 4.0), Pos2::new(msg_start, header_rect.max.y - 4.0)],
+                Stroke::new(2.0, theme::ACCENT_TEAL),
+            );
+        }
         let author_x = header_rect.max.x - right_fixed;
         ui.painter().text(Pos2::new(author_x, header_rect.center().y), egui::Align2::LEFT_CENTER, "Author", header_font.clone(), hcol);
         let time_x = author_x + COL_AUTHOR + 4.0;
@@ -118,6 +144,7 @@ impl CommitGraphView {
         // ── Scroll area (graph + list) ────────────────────────────────────
         let scroll_start = header_top + HEADER_H;
         let scroll_rect = Rect::from_min_max(Pos2::new(ui.min_rect().min.x, scroll_start), ui.max_rect().max);
+        let graph_w = self.graph_w; // capture for closure
 
         // Filter to current branch only when show_all_branches is false
         let nodes: Vec<_> = if show_all_branches {
@@ -283,7 +310,7 @@ impl CommitGraphView {
                         );
 
                         // Ref label pills (branch labels)
-                        let mut label_x = origin.x + GRAPH_W;
+                        let mut label_x = origin.x + graph_w;
                         for ref_name in node.refs.iter().take(3) {
                             label_x = widgets::branch_label(&painter, Pos2::new(label_x, cy), ref_name, row_top, ROW_H);
                             label_x += 4.0;
