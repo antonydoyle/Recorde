@@ -1,6 +1,7 @@
 use egui::{Color32, Context, Key, Modifiers, RichText, Stroke};
 
-use crate::config::Config;
+use crate::auth::{ProviderKind, StoredAccount};
+use crate::config::{Config, PullStrategy};
 use crate::git::{branches, job::ActiveOp, job::JobProgress, lifecycle, merge, operations::load_repo, rebase, remote, runner::GitRunner, staging};
 use crate::state::{ModalKind, PendingDiscard, RebaseEntry, new_shared_state, SharedState};
 use crate::theme;
@@ -19,7 +20,7 @@ use crate::ui::{
 pub enum RightTab { Changes, Details }
 
 #[derive(PartialEq, Clone, Copy)]
-enum SettingsTab { App, GitCredentials, Repository, About }
+enum SettingsTab { App, Accounts, Repository, About }
 
 pub struct RecordeApp {
     state: SharedState,
@@ -68,6 +69,17 @@ pub struct RecordeApp {
     reflog_recover_input: String,
     reflog_recover_oid: Option<String>,
     compare_file_selected: Option<String>,
+    // Phase 10: Auth & Accounts
+    add_account_open: bool,
+    add_account_provider: ProviderKind,
+    add_account_host: String,
+    add_account_username: String,
+    add_account_token: String,
+    add_account_error: Option<String>,
+    // Phase 14: External tool inputs
+    terminal_input: String,
+    diff_tool_input: String,
+    merge_tool_input: String,
 }
 
 impl RecordeApp {
@@ -75,6 +87,9 @@ impl RecordeApp {
         let config = Config::load();
         let dark_theme = config.dark_theme;
         let default_editor = config.default_editor.clone();
+        let terminal = config.terminal.clone();
+        let diff_tool = config.diff_tool.clone();
+        let merge_tool = config.merge_tool.clone();
 
         // Load Noto Symbols as egui fallback font for full Unicode symbol coverage.
         // This fixes missing-glyph squares for ⎇ ⚑ ⊞ ⇅ ☀ ⌘ and similar.
@@ -152,6 +167,15 @@ impl RecordeApp {
             reflog_recover_input: String::new(),
             reflog_recover_oid: None,
             compare_file_selected: None,
+            add_account_open: false,
+            add_account_provider: ProviderKind::GitHubCom,
+            add_account_host: String::new(),
+            add_account_username: String::new(),
+            add_account_token: String::new(),
+            add_account_error: None,
+            terminal_input: terminal,
+            diff_tool_input: diff_tool,
+            merge_tool_input: merge_tool,
         }
     }
 
@@ -218,7 +242,7 @@ impl RecordeApp {
             }
             ToolbarAction::OpenCommandPalette => self.command_palette_open = !self.command_palette_open,
             ToolbarAction::OpenBranchSwitcher => self.branch_switcher_open = true,
-            ToolbarAction::OpenUserMenu => self.open_settings(SettingsTab::GitCredentials),
+            ToolbarAction::OpenUserMenu => self.open_settings(SettingsTab::Accounts),
             ToolbarAction::ToggleAllBranches => {
                 let mut s = self.state.lock().unwrap();
                 s.show_all_branches = !s.show_all_branches;
@@ -273,6 +297,13 @@ impl RecordeApp {
         self.settings_tab = tab;
         self.settings_open = true;
         self.load_git_identity_inputs();
+        self.load_app_settings_inputs();
+    }
+
+    fn load_app_settings_inputs(&mut self) {
+        self.terminal_input   = self.config.terminal.clone();
+        self.diff_tool_input  = self.config.diff_tool.clone();
+        self.merge_tool_input = self.config.merge_tool.clone();
     }
 
     fn load_git_identity_inputs(&mut self) {
@@ -627,7 +658,7 @@ impl RecordeApp {
 
                 ui.horizontal(|ui| {
                     settings_tab_button(ui, &mut self.settings_tab, SettingsTab::App, "App");
-                    settings_tab_button(ui, &mut self.settings_tab, SettingsTab::GitCredentials, "Git Credentials");
+                    settings_tab_button(ui, &mut self.settings_tab, SettingsTab::Accounts, "Accounts & SSH");
                     settings_tab_button(ui, &mut self.settings_tab, SettingsTab::Repository, "Repository");
                     settings_tab_button(ui, &mut self.settings_tab, SettingsTab::About, "About");
                 });
@@ -636,7 +667,7 @@ impl RecordeApp {
 
                 match self.settings_tab {
                     SettingsTab::App => self.render_app_settings(ctx, ui),
-                    SettingsTab::GitCredentials => self.render_git_settings(ui),
+                    SettingsTab::Accounts => self.render_accounts_tab(ui),
                     SettingsTab::Repository => self.render_repo_settings(ui),
                     SettingsTab::About => self.render_about(ui),
                 }
@@ -674,9 +705,217 @@ impl RecordeApp {
         ui.label(styled_muted("Used by Repository > Open in Editor. Arguments are supported, e.g. code --reuse-window."));
         ui.add_space(8.0);
         ui.label(styled_muted("Split diff view is controlled from the diff header."));
+
+        // ── Pull strategy ────────────────────────────────────────────────────
+        ui.add_space(12.0);
+        ui.label(RichText::new("Default pull strategy").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.radio_value(&mut self.config.pull_strategy, PullStrategy::Merge, "Merge").changed() {
+                self.config.save();
+            }
+            if ui.radio_value(&mut self.config.pull_strategy, PullStrategy::Rebase, "Rebase").changed() {
+                self.config.save();
+            }
+            if ui.radio_value(&mut self.config.pull_strategy, PullStrategy::FfOnly, "Fast-forward only").changed() {
+                self.config.save();
+            }
+        });
+        ui.label(styled_muted("Used when pulling without an explicit flag."));
+
+        // ── Fetch options ────────────────────────────────────────────────────
+        ui.add_space(12.0);
+        if ui.checkbox(&mut self.config.fetch_prune, RichText::new("Prune deleted remote branches on fetch").color(theme::TEXT_SECONDARY)).changed() {
+            self.config.save();
+        }
+        if ui.checkbox(&mut self.config.auto_fetch, RichText::new("Auto-fetch on repo open").color(theme::TEXT_SECONDARY)).changed() {
+            self.config.save();
+        }
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(self.config.auto_fetch, |ui| {
+                ui.label(RichText::new("Interval (seconds)").color(theme::TEXT_SECONDARY));
+                let mut interval_str = self.config.auto_fetch_interval_secs.to_string();
+                if ui.add(egui::TextEdit::singleline(&mut interval_str).desired_width(80.0)).changed() {
+                    if let Ok(v) = interval_str.trim().parse::<u32>() {
+                        self.config.auto_fetch_interval_secs = v;
+                        self.config.save();
+                    }
+                }
+            });
+        });
+
+        // ── External tools ───────────────────────────────────────────────────
+        ui.add_space(12.0);
+        ui.label(RichText::new("External tools").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(4.0);
+        ui.label(RichText::new("Terminal").color(theme::TEXT_SECONDARY));
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.terminal_input)
+                .desired_width(340.0)
+                .hint_text("xterm, gnome-terminal, konsole, ..."));
+            if ui.add(secondary_btn("Save")).clicked() {
+                self.config.terminal = self.terminal_input.trim().to_string();
+                self.config.save();
+            }
+        });
+        ui.add_space(4.0);
+        ui.label(RichText::new("Diff tool").color(theme::TEXT_SECONDARY));
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.diff_tool_input)
+                .desired_width(340.0)
+                .hint_text("meld, kdiff3, vimdiff, ..."));
+            if ui.add(secondary_btn("Save")).clicked() {
+                self.config.diff_tool = self.diff_tool_input.trim().to_string();
+                self.config.save();
+            }
+        });
+        ui.add_space(4.0);
+        ui.label(RichText::new("Merge tool").color(theme::TEXT_SECONDARY));
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.merge_tool_input)
+                .desired_width(340.0)
+                .hint_text("meld, kdiff3, ..."));
+            if ui.add(secondary_btn("Save")).clicked() {
+                self.config.merge_tool = self.merge_tool_input.trim().to_string();
+                self.config.save();
+            }
+        });
     }
 
-    fn render_git_settings(&mut self, ui: &mut egui::Ui) {
+    fn render_accounts_tab(&mut self, ui: &mut egui::Ui) {
+        // ── Provider Accounts ─────────────────────────────────────────────
+        ui.label(RichText::new("Provider Accounts").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(4.0);
+
+        let accounts = self.config.accounts.clone();
+        let mut remove_idx: Option<usize> = None;
+        for (i, acc) in accounts.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let dot_color = match acc.provider {
+                    ProviderKind::GitHubCom | ProviderKind::GitHubEnterprise => theme::TEXT_PRIMARY,
+                    ProviderKind::GitLabCom | ProviderKind::GitLabSelf        => theme::ACCENT_RED,
+                };
+                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 3.5, dot_color);
+                ui.add_space(4.0);
+                ui.label(RichText::new(acc.label()).color(theme::TEXT_SECONDARY).size(12.0));
+                let has_token = crate::auth::store::load(&acc.host, &acc.username).is_some();
+                let (badge, badge_color) = if has_token { ("token stored", theme::ACCENT_TEAL) } else { ("no token", theme::ACCENT_RED) };
+                ui.label(RichText::new(badge).color(badge_color).size(10.5));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(RichText::new("Remove").color(theme::ACCENT_RED).size(11.5))
+                        .fill(Color32::TRANSPARENT)).clicked() {
+                        crate::auth::store::remove(&acc.host, &acc.username);
+                        remove_idx = Some(i);
+                    }
+                });
+            });
+        }
+        if let Some(i) = remove_idx { self.config.accounts.remove(i); self.config.save(); }
+
+        if accounts.is_empty() && !self.add_account_open {
+            ui.label(styled_muted("No provider accounts connected."));
+        }
+        ui.add_space(6.0);
+
+        if self.add_account_open {
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label(RichText::new("Add Account").color(theme::TEXT_SECONDARY).size(12.5).strong());
+            ui.add_space(4.0);
+            // Provider picker
+            ui.horizontal(|ui| {
+                ui.label(styled_label("Provider"));
+                ui.add_space(8.0);
+                for p in [ProviderKind::GitHubCom, ProviderKind::GitHubEnterprise,
+                           ProviderKind::GitLabCom, ProviderKind::GitLabSelf] {
+                    let active = self.add_account_provider == p;
+                    let color = if active { theme::ACCENT_TEAL } else { theme::TEXT_MUTED };
+                    if ui.add(egui::Button::new(RichText::new(p.label()).size(11.5).color(color))
+                        .fill(Color32::TRANSPARENT)).clicked() && !active {
+                        self.add_account_host = p.default_host().to_string();
+                        self.add_account_provider = p.clone();
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            if self.add_account_provider.needs_host() {
+                settings_text_field(ui, "Host", &mut self.add_account_host);
+            } else {
+                ui.label(styled_muted(&format!("Host: {}", self.add_account_provider.default_host())));
+            }
+            settings_text_field(ui, "Username", &mut self.add_account_username);
+            ui.horizontal(|ui| {
+                ui.set_min_height(22.0);
+                ui.label(RichText::new(format!("{:<12}", "Token (PAT)")).monospace().color(theme::TEXT_MUTED).size(11.5));
+                ui.add(egui::TextEdit::singleline(&mut self.add_account_token)
+                    .password(true).desired_width(260.0).hint_text("ghp_… / glpat-…"));
+            });
+            if let Some(ref err) = self.add_account_error.clone() {
+                ui.label(RichText::new(err).color(theme::ACCENT_RED).size(11.5));
+            }
+            ui.add_space(6.0);
+            let eff_host = if self.add_account_provider.needs_host() {
+                self.add_account_host.trim().to_string()
+            } else { self.add_account_provider.default_host().to_string() };
+            let can_save = !self.add_account_username.trim().is_empty()
+                && !self.add_account_token.trim().is_empty()
+                && !eff_host.is_empty();
+            ui.horizontal(|ui| {
+                if ui.add_enabled(can_save, primary_btn("Save Account")).clicked() {
+                    let username = self.add_account_username.trim().to_string();
+                    let token    = self.add_account_token.trim().to_string();
+                    match crate::auth::store::save(&eff_host, &username, &token) {
+                        Ok(()) => {
+                            self.config.accounts.push(StoredAccount {
+                                provider: self.add_account_provider.clone(),
+                                host: eff_host, username,
+                            });
+                            self.config.save();
+                            self.add_account_open = false;
+                            self.add_account_username.clear();
+                            self.add_account_token.clear();
+                            self.add_account_error = None;
+                        }
+                        Err(e) => self.add_account_error = Some(e),
+                    }
+                }
+                if ui.add(secondary_btn("Cancel")).clicked() {
+                    self.add_account_open = false;
+                    self.add_account_username.clear();
+                    self.add_account_token.clear();
+                    self.add_account_error = None;
+                }
+            });
+            ui.separator();
+        } else if ui.add(secondary_btn("Add Account…")).clicked() {
+            self.add_account_open = true;
+            self.add_account_provider = ProviderKind::GitHubCom;
+            self.add_account_host = ProviderKind::GitHubCom.default_host().to_string();
+            self.add_account_error = None;
+        }
+
+        ui.add_space(14.0);
+
+        // ── SSH Diagnostics ───────────────────────────────────────────────
+        ui.label(RichText::new("SSH Keys").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(4.0);
+        let diag = crate::auth::ssh::diagnose();
+        let (agent_text, agent_color) = if diag.agent_running {
+            (if diag.agent_keys.is_empty() { "running (no keys loaded)" } else { "running" }, theme::ACCENT_TEAL)
+        } else { ("not running / SSH_AUTH_SOCK unset", theme::TEXT_MUTED) };
+        health_row_color(ui, "SSH agent", agent_text, agent_color);
+        for key in &diag.agent_keys {
+            ui.label(RichText::new(format!("  {}", key)).monospace().color(theme::TEXT_MUTED).size(10.5));
+        }
+        for (name, exists) in &diag.key_files {
+            let (status, color) = if *exists { ("found", theme::TEXT_SECONDARY) } else { ("missing", theme::TEXT_MUTED) };
+            health_row_color(ui, &format!("~/.ssh/{}", name), status, color);
+        }
+
+        ui.add_space(14.0);
+
+        // ── Git Identity ──────────────────────────────────────────────────
         ui.label(RichText::new("Global Git identity").color(theme::TEXT_SECONDARY).size(12.5).strong());
         ui.add_space(6.0);
         settings_text_field(ui, "Name", &mut self.git_name_input);
@@ -688,16 +927,10 @@ impl RecordeApp {
                 Err(e) => self.state.lock().unwrap().error = Some(e),
             }
         }
-        ui.add_space(14.0);
-        ui.label(RichText::new("Credential helper").color(theme::TEXT_SECONDARY).size(12.5).strong());
-        ui.label(styled_muted(&git_config_value(None, "credential.helper").unwrap_or_else(|| "Not configured".into())));
-        ui.add_space(6.0);
-        ui.label(styled_muted("Recorde uses Git's credential helper and SSH agent/key files. It does not store passwords."));
-        ui.add_space(10.0);
-        ui.label(RichText::new("SSH keys").color(theme::TEXT_SECONDARY).size(12.5).strong());
-        for line in ssh_key_status() {
-            ui.label(styled_muted(&line));
-        }
+        ui.add_space(8.0);
+        ui.label(styled_muted(&format!("System credential helper: {}",
+            git_config_value(None, "credential.helper").unwrap_or_else(|| "not configured".into()))));
+        ui.label(styled_muted("Tokens stored by Recorde take precedence over the system helper for HTTPS remotes."));
     }
 
     fn render_repo_settings(&mut self, ui: &mut egui::Ui) {
@@ -2189,9 +2422,13 @@ fn secondary_btn(label: &str) -> egui::Button<'_> {
 }
 
 fn health_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    health_row_color(ui, label, value, theme::TEXT_SECONDARY);
+}
+
+fn health_row_color(ui: &mut egui::Ui, label: &str, value: &str, color: egui::Color32) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{:<14}", label)).color(theme::TEXT_MUTED).size(11.5).monospace());
-        ui.label(RichText::new(value).color(theme::TEXT_SECONDARY).size(11.5));
+        ui.label(RichText::new(value).color(color).size(11.5));
     });
 }
 
