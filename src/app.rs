@@ -2,7 +2,8 @@ use egui::{Color32, Context, Key, Modifiers, RichText, Stroke};
 
 use crate::auth::{ProviderKind, StoredAccount};
 use crate::config::{Config, PullStrategy};
-use crate::git::{branches, job::ActiveOp, job::JobProgress, lifecycle, merge, operations::load_repo, rebase, remote, runner::GitRunner, staging};
+use crate::git::{branches, job::ActiveOp, job::JobProgress, lifecycle, merge, operations::{load_prs, load_repo}, rebase, remote, runner::GitRunner, staging};
+use crate::providers::PrFilter;
 use crate::state::{ModalKind, PendingDiscard, RebaseEntry, new_shared_state, SharedState};
 use crate::theme;
 use crate::ui::{
@@ -86,6 +87,7 @@ impl RecordeApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_repo: Option<std::path::PathBuf>) -> Self {
         let config = Config::load();
         let dark_theme = config.dark_theme;
+        let colorblind_graph = config.colorblind_graph;
         let default_editor = config.default_editor.clone();
         let terminal = config.terminal.clone();
         let diff_tool = config.diff_tool.clone();
@@ -112,6 +114,9 @@ impl RecordeApp {
         cc.egui_ctx.set_fonts(fonts);
 
         theme::apply(&cc.egui_ctx, dark_theme);
+        if config.font_scale != 1.0 {
+            cc.egui_ctx.set_pixels_per_point(config.font_scale);
+        }
 
         let state = new_shared_state();
         let runner = GitRunner::new();
@@ -130,6 +135,7 @@ impl RecordeApp {
                 if let Some(rc) = initial_repo_config {
                     cgv.set_column_widths(rc.refs_w, rc.graph_w, rc.time_w, rc.hash_w);
                 }
+                cgv.set_colorblind(colorblind_graph);
                 cgv
             },
             diff_view: DiffView::new(state.clone()),
@@ -780,6 +786,30 @@ impl RecordeApp {
                 self.config.save();
             }
         });
+
+        // ── UI scale ─────────────────────────────────────────────────────────
+        ui.add_space(12.0);
+        ui.label(RichText::new("UI scale").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut self.config.font_scale, 0.75..=2.0)
+                .step_by(0.25)
+                .text(""));
+            if ui.add(secondary_btn("Apply")).clicked() {
+                ctx.set_pixels_per_point(self.config.font_scale);
+                self.config.save();
+            }
+        });
+        ui.label(styled_muted("1.0 = default. Restart not required."));
+
+        // ── Accessibility ────────────────────────────────────────────────────
+        ui.add_space(12.0);
+        ui.label(RichText::new("Accessibility").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(4.0);
+        if ui.checkbox(&mut self.config.colorblind_graph, RichText::new("Color-blind-safe graph colours").color(theme::TEXT_SECONDARY)).changed() {
+            self.commit_graph_view.set_colorblind(self.config.colorblind_graph);
+            self.config.save();
+        }
     }
 
     fn render_accounts_tab(&mut self, ui: &mut egui::Ui) {
@@ -1089,51 +1119,195 @@ impl RecordeApp {
     }
 
     fn render_pull_requests(&mut self, ctx: &Context) {
-        let (repo_path, branch) = {
-            let s = self.state.lock().unwrap();
-            (s.repo_path.clone(), s.head_branch.clone().unwrap_or_else(|| "HEAD".into()))
-        };
-        let pr_target = repo_path.as_deref().and_then(|path| pull_request_target(path, &branch));
+        use crate::providers::{PrState, CheckState};
 
-        egui::Window::new("Pull Requests")
+        let (repo_path, branch, pr_list, pr_loading, pr_error, pr_selected, pr_filter, caps) = {
+            let s = self.state.lock().unwrap();
+            (s.repo_path.clone(), s.head_branch.clone().unwrap_or_else(|| "HEAD".into()),
+             s.pr_list.clone(), s.pr_loading, s.pr_error.clone(),
+             s.pr_selected, s.pr_filter, s.capabilities.clone())
+        };
+
+        let mut new_filter: Option<PrFilter> = None;
+        let mut new_selected: Option<Option<usize>> = None;
+        let mut checkout_branch: Option<String> = None;
+        let mut open_url_req: Option<String> = None;
+
+        egui::Window::new("Pull Requests / Merge Requests")
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+            .default_size([860.0, 560.0])
             .show(ctx, |ui| {
-                ui.set_min_size(egui::vec2(460.0, 220.0));
-                ui.label(RichText::new("Pull Requests").color(theme::TEXT_PRIMARY).size(15.0).strong());
-                ui.add_space(8.0);
-
-                match pr_target {
-                    Some((ref remote_url, ref pr_url)) => {
-                        ui.label(styled_muted(&format!("Remote: {remote_url}")));
-                        ui.label(styled_muted(&format!("Current branch: {branch}")));
-                        ui.add_space(10.0);
-                        ui.label(RichText::new("Preview").color(theme::TEXT_SECONDARY).size(12.5).strong());
-                        ui.label(styled_muted("Recorde can open the hosting provider's compare / pull request page for this branch."));
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui.add(primary_btn("Open Pull Request Page")).clicked() {
-                                if let Err(e) = open_url(pr_url) {
-                                    self.state.lock().unwrap().error = Some(e);
-                                }
-                            }
-                            if ui.add(secondary_btn("Close")).clicked() {
-                                self.pull_requests_open = false;
-                            }
-                        });
+                // ── Header ─────────────────────────────────────────────────
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Pull Requests").color(theme::TEXT_PRIMARY).size(14.0).strong());
+                    ui.add_space(8.0);
+                    for f in [PrFilter::Open, PrFilter::Closed, PrFilter::All] {
+                        let active = pr_filter == f;
+                        let color = if active { theme::ACCENT_TEAL } else { theme::TEXT_MUTED };
+                        let btn = ui.add(egui::Button::new(RichText::new(f.label()).size(12.0).color(color))
+                            .fill(Color32::TRANSPARENT));
+                        if active { ui.painter().line_segment([btn.rect.left_bottom(), btn.rect.right_bottom()], egui::Stroke::new(2.0, theme::ACCENT_TEAL)); }
+                        if btn.clicked() && !active { new_filter = Some(f); }
                     }
-                    None => {
-                        ui.label(styled_muted("No GitHub-style remote URL was found for this repository."));
-                        ui.label(styled_muted("Add an origin remote or open the pull request page in your browser."));
-                        ui.add_space(12.0);
-                        if ui.add(secondary_btn("Close")).clicked() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new("✕").fill(Color32::TRANSPARENT)).clicked() {
                             self.pull_requests_open = false;
                         }
-                    }
+                        if ui.add(secondary_btn("Refresh")).clicked() {
+                            load_prs(self.state.clone());
+                        }
+                        // Create PR: open browser compare page
+                        if let Some(ref path) = repo_path {
+                            if let Some((_, pr_url)) = pull_request_target(path, &branch) {
+                                if ui.add(primary_btn("Create PR")).clicked() {
+                                    let _ = open_url(&pr_url);
+                                }
+                            }
+                        }
+                    });
+                });
+                ui.separator();
+
+                // ── Load trigger ───────────────────────────────────────────
+                if pr_list.is_empty() && !pr_loading && pr_error.is_none() {
+                    load_prs(self.state.clone());
                 }
+
+                if pr_loading {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(RichText::new("Loading…").color(theme::TEXT_MUTED).size(13.0));
+                    });
+                    return;
+                }
+
+                if let Some(ref err) = pr_error {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(err).color(theme::ACCENT_RED).size(12.0));
+                    ui.add_space(4.0);
+                    ui.label(styled_muted("Add a token in Settings > Accounts & SSH to enable in-app PR listing."));
+                    return;
+                }
+
+                let visible: Vec<(usize, &crate::providers::PrItem)> = pr_list.iter().enumerate()
+                    .filter(|(_, p)| pr_filter.matches(&p.state))
+                    .collect();
+
+                ui.columns(2, |cols| {
+                    // ── Left: PR list ─────────────────────────────────────
+                    egui::ScrollArea::vertical().id_source("pr_list").show(&mut cols[0], |ui| {
+                        if visible.is_empty() {
+                            ui.label(RichText::new("No pull requests.").color(theme::TEXT_MUTED).size(12.0));
+                        }
+                        for (i, pr) in &visible {
+                            let is_sel = pr_selected == Some(*i);
+                            let bg = if is_sel { theme::BG_SELECTED } else { Color32::TRANSPARENT };
+                            let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
+                            ui.painter().rect_filled(row, 0.0, bg);
+                            ui.allocate_ui_at_rect(row, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(8.0);
+                                    // State dot
+                                    let dot_color = match pr.state {
+                                        PrState::Open   => theme::ACCENT_GREEN,
+                                        PrState::Draft  => theme::TEXT_MUTED,
+                                        PrState::Merged => theme::ACCENT_PURPLE,
+                                        PrState::Closed => theme::ACCENT_RED,
+                                    };
+                                    let (dr, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                                    ui.painter().circle_filled(dr.center(), 4.0, dot_color);
+                                    ui.add_space(4.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new(format!("#{} {}", pr.number, &pr.title)).color(theme::TEXT_PRIMARY).size(12.5));
+                                        ui.label(RichText::new(format!("{} → {}  by @{}", pr.head_ref, pr.base_ref, pr.author)).color(theme::TEXT_MUTED).size(11.0));
+                                        // Check state badge
+                                        if let Some(ref cs) = pr.check_state {
+                                            let (cs_text, cs_color) = match cs {
+                                                CheckState::Success => ("✓ checks passed", theme::ACCENT_GREEN),
+                                                CheckState::Failure => ("✗ checks failed", theme::ACCENT_RED),
+                                                CheckState::Pending => ("… checks pending", theme::ACCENT_YELLOW),
+                                            };
+                                            ui.label(RichText::new(cs_text).size(10.5).color(cs_color));
+                                        }
+                                    });
+                                });
+                            });
+                            if ui.interact(row, egui::Id::new(("pr_row", i)), egui::Sense::click()).clicked() {
+                                new_selected = Some(Some(*i));
+                            }
+                            ui.painter().line_segment([row.left_bottom(), row.right_bottom()],
+                                egui::Stroke::new(1.0, theme::BORDER));
+                        }
+                    });
+
+                    // ── Right: PR detail ──────────────────────────────────
+                    if let Some(idx) = pr_selected {
+                        if let Some(pr) = pr_list.get(idx) {
+                            cols[1].add_space(4.0);
+                            cols[1].horizontal(|ui| {
+                                ui.label(RichText::new(format!("#{}", pr.number)).color(theme::TEXT_MUTED).size(12.0));
+                                ui.add_space(6.0);
+                                ui.label(RichText::new(&pr.title).color(theme::TEXT_PRIMARY).size(13.0).strong());
+                            });
+                            cols[1].add_space(4.0);
+                            cols[1].horizontal(|ui| {
+                                ui.label(RichText::new(format!("{} → {}", pr.head_ref, pr.base_ref)).color(theme::TEXT_MUTED).size(11.5));
+                                ui.add_space(8.0);
+                                ui.label(RichText::new(format!("by @{}", pr.author)).color(theme::TEXT_SECONDARY).size(11.5));
+                                ui.add_space(8.0);
+                                ui.label(RichText::new(format!("updated {}", crate::theme::relative_time(pr.updated_ts))).color(theme::TEXT_MUTED).size(11.0));
+                            });
+                            if !pr.label_names.is_empty() {
+                                cols[1].add_space(2.0);
+                                cols[1].horizontal(|ui| {
+                                    for label in &pr.label_names {
+                                        ui.label(RichText::new(label).size(10.5).color(theme::ACCENT_BLUE)
+                                            .background_color(theme::ACCENT_BLUE.gamma_multiply(0.15)));
+                                        ui.add_space(4.0);
+                                    }
+                                });
+                            }
+                            cols[1].add_space(6.0);
+                            cols[1].separator();
+                            cols[1].add_space(4.0);
+                            if pr.body.trim().is_empty() {
+                                cols[1].label(RichText::new("No description.").color(theme::TEXT_MUTED).size(12.0));
+                            } else {
+                                egui::ScrollArea::vertical().id_source("pr_body").max_height(200.0).show(&mut cols[1], |ui| {
+                                    ui.label(RichText::new(pr.body.trim()).color(theme::TEXT_SECONDARY).size(12.0));
+                                });
+                            }
+                            cols[1].add_space(8.0);
+                            cols[1].separator();
+                            cols[1].add_space(6.0);
+                            cols[1].horizontal(|ui| {
+                                if ui.add(primary_btn("Open in Browser")).clicked() {
+                                    open_url_req = Some(pr.url.clone());
+                                }
+                                if ui.add(secondary_btn("Checkout Branch")).clicked() {
+                                    checkout_branch = Some(pr.head_ref.clone());
+                                }
+                            });
+                        }
+                    } else {
+                        cols[1].centered_and_justified(|ui| {
+                            ui.label(RichText::new("Select a pull request to view details.").color(theme::TEXT_MUTED).size(12.0));
+                        });
+                    }
+                });
             });
+
+        // Apply mutations after borrow ends
+        if let Some(f) = new_filter {
+            { self.state.lock().unwrap().pr_filter = f; }
+            load_prs(self.state.clone());
+        }
+        if let Some(sel) = new_selected { self.state.lock().unwrap().pr_selected = sel; }
+        if let Some(ref url) = open_url_req { let _ = open_url(url); }
+        if let Some(branch_name) = checkout_branch {
+            branches::checkout_branch(&branch_name, self.state.clone());
+        }
     }
 }
 

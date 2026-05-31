@@ -1,5 +1,25 @@
 use egui::Color32;
 
+// ── Light mode palette ────────────────────────────────────────────────────────
+pub mod light {
+    use egui::Color32;
+    pub const BG_APP:        Color32 = Color32::from_rgb(248, 249, 251);
+    pub const BG_TITLEBAR:   Color32 = Color32::from_rgb(235, 238, 244);
+    pub const BG_TOOLBAR:    Color32 = Color32::from_rgb(240, 242, 247);
+    pub const BG_PANEL:      Color32 = Color32::from_rgb(255, 255, 255);
+    pub const BG_PANEL_ALT:  Color32 = Color32::from_rgb(245, 247, 250);
+    pub const BG_HOVER:      Color32 = Color32::from_rgb(230, 234, 242);
+    pub const BG_SELECTED:   Color32 = Color32::from_rgb(215, 225, 245);
+    pub const BORDER:        Color32 = Color32::from_rgb(210, 215, 225);
+    pub const BORDER_STRONG: Color32 = Color32::from_rgb(170, 180, 200);
+    pub const TEXT_PRIMARY:  Color32 = Color32::from_rgb(28,  34,  46);
+    pub const TEXT_SECONDARY:Color32 = Color32::from_rgb(70,  80,  100);
+    pub const TEXT_MUTED:    Color32 = Color32::from_rgb(130, 142, 162);
+    pub const BG_DIFF_ADD:   Color32 = Color32::from_rgb(210, 242, 218);
+    pub const BG_DIFF_DEL:   Color32 = Color32::from_rgb(252, 214, 214);
+    pub const BG_DIFF_HUNK:  Color32 = Color32::from_rgb(225, 232, 248);
+}
+
 // ── Background layers ─────────────────────────────────────────────────────────
 pub const BG_APP:        Color32 = Color32::from_rgb(18,  23,  32);   // #121720 window/app
 pub const BG_TITLEBAR:   Color32 = Color32::from_rgb(13,  17,  23);   // #0D1117 title strip
@@ -60,8 +80,28 @@ pub const LANE_COLORS: &[Color32] = &[
     Color32::from_rgb(200, 140, 255), // lavender
 ];
 
+/// Optimised for deuteranopia/protanopia — no red/green confusion.
+pub const LANE_COLORS_COLORBLIND: &[Color32] = &[
+    Color32::from_rgb(  0, 114, 178), // blue
+    Color32::from_rgb(230, 159,   0), // orange
+    Color32::from_rgb( 86, 180, 233), // sky blue
+    Color32::from_rgb(240, 228,  66), // yellow
+    Color32::from_rgb(  0, 158, 115), // bluish-green
+    Color32::from_rgb(213,  94,   0), // vermilion
+    Color32::from_rgb(204, 121, 167), // reddish-purple
+    Color32::from_rgb(255, 255, 255), // white (for dark bg)
+];
+
 pub fn lane_color(lane: usize) -> Color32 {
     LANE_COLORS[lane % LANE_COLORS.len()]
+}
+
+pub fn lane_color_for_palette(lane: usize, colorblind: bool) -> Color32 {
+    if colorblind {
+        LANE_COLORS_COLORBLIND[lane % LANE_COLORS_COLORBLIND.len()]
+    } else {
+        LANE_COLORS[lane % LANE_COLORS.len()]
+    }
 }
 
 pub fn author_color(name: &str) -> Color32 {
@@ -99,13 +139,52 @@ pub fn relative_time(ts: i64) -> String {
 pub fn apply(ctx: &egui::Context, dark: bool) {
     if !dark {
         let mut v = egui::Visuals::light();
-        v.popup_shadow = egui::Shadow::NONE;
-        v.window_shadow = egui::Shadow::NONE;
+        v.panel_fill          = light::BG_PANEL;
+        v.window_fill         = light::BG_APP;
+        v.faint_bg_color      = light::BG_PANEL_ALT;
+        v.extreme_bg_color    = light::BG_APP;
+        v.override_text_color = Some(light::TEXT_PRIMARY);
+
+        v.widgets.noninteractive.bg_fill   = light::BG_PANEL;
+        v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, light::TEXT_SECONDARY);
+        v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, light::BORDER);
+        v.widgets.noninteractive.rounding  = egui::Rounding::same(5.0);
+
+        v.widgets.inactive.bg_fill         = light::BG_PANEL_ALT;
+        v.widgets.inactive.fg_stroke       = egui::Stroke::new(1.0, light::TEXT_SECONDARY);
+        v.widgets.inactive.bg_stroke       = egui::Stroke::new(1.0, light::BORDER);
+        v.widgets.inactive.rounding        = egui::Rounding::same(5.0);
+
+        v.widgets.hovered.bg_fill          = light::BG_HOVER;
+        v.widgets.hovered.fg_stroke        = egui::Stroke::new(1.0, light::TEXT_PRIMARY);
+        v.widgets.hovered.bg_stroke        = egui::Stroke::new(1.0, light::BORDER_STRONG);
+        v.widgets.hovered.rounding         = egui::Rounding::same(5.0);
+
+        v.widgets.active.bg_fill           = light::BG_SELECTED;
+        v.widgets.active.fg_stroke         = egui::Stroke::new(1.0, light::TEXT_PRIMARY);
+        v.widgets.active.bg_stroke         = egui::Stroke::new(1.0, light::BORDER_STRONG);
+        v.widgets.active.rounding          = egui::Rounding::same(5.0);
+
+        v.widgets.open.bg_fill             = light::BG_SELECTED;
+        v.widgets.open.fg_stroke           = egui::Stroke::new(1.0, light::TEXT_PRIMARY);
+
+        v.selection.bg_fill = Color32::from_rgba_premultiplied(82, 150, 255, 80);
+        v.selection.stroke  = egui::Stroke::new(1.0, Color32::from_rgb(82, 150, 255));
+
+        v.window_stroke  = egui::Stroke::new(1.0, light::BORDER);
+        v.popup_shadow   = egui::Shadow::NONE;
+        v.window_shadow  = egui::Shadow::NONE;
+        v.window_rounding = egui::Rounding::same(8.0);
+
         ctx.set_visuals(v);
         ctx.style_mut(|s| {
-            s.spacing.item_spacing = egui::Vec2::new(8.0, 5.0);
-            s.spacing.button_padding = egui::Vec2::new(12.0, 7.0);
+            s.spacing.item_spacing    = egui::Vec2::new(8.0, 5.0);
+            s.spacing.window_margin   = egui::Margin::same(0.0);
+            s.spacing.button_padding  = egui::Vec2::new(12.0, 7.0);
             s.spacing.interact_size.y = 26.0;
+            s.visuals.widgets.inactive.rounding = egui::Rounding::same(5.0);
+            s.visuals.widgets.hovered.rounding  = egui::Rounding::same(5.0);
+            s.visuals.widgets.active.rounding   = egui::Rounding::same(5.0);
             kill_debug(s);
         });
         ctx.options_mut(|o| o.warn_on_id_clash = false);
