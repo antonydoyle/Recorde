@@ -477,6 +477,21 @@ impl eframe::App for RecordeApp {
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(Key::U)) {
             remote::push_branch(self.state.clone());
         }
+        // Ctrl+1/2/3/4: focus sidebar / graph / changes / diff
+        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num1)) {
+            // Focus sidebar — nothing to scroll to, just a visual hint via state
+            self.state.lock().unwrap().focused_pane = 1;
+        }
+        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num2)) {
+            self.state.lock().unwrap().focused_pane = 2;
+        }
+        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num3)) {
+            self.right_tab = RightTab::Changes;
+            self.state.lock().unwrap().focused_pane = 3;
+        }
+        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num4)) {
+            self.state.lock().unwrap().focused_pane = 4;
+        }
 
         // ── Pending actions from graph context menu ───────────────────────
         let pending_rebase = self.state.lock().unwrap().pending_open_rebase.take();
@@ -566,6 +581,9 @@ impl eframe::App for RecordeApp {
                     Stroke::new(1.0, theme::BORDER),
                 );
                 self.diff_view.show(ui);
+                if self.state.lock().unwrap().focused_pane == 4 {
+                    focus_ring(ui);
+                }
             });
 
         // Left sidebar
@@ -577,6 +595,9 @@ impl eframe::App for RecordeApp {
             .show(ctx, |ui| {
                 let a = self.sidebar.show(ui);
                 if let Some(sa) = a { self.handle_sidebar(sa); }
+                if self.state.lock().unwrap().focused_pane == 1 {
+                    focus_ring(ui);
+                }
             });
 
         // Right panel (Changes + Details)
@@ -643,6 +664,9 @@ impl eframe::App for RecordeApp {
                         RightTab::Details => self.detail_panel.show(ui),
                     }
                 });
+                if self.state.lock().unwrap().focused_pane == 3 {
+                    focus_ring(ui);
+                }
             });
 
         // Central panel — commit graph (always)
@@ -650,11 +674,23 @@ impl eframe::App for RecordeApp {
             .frame(egui::Frame::none().fill(theme::BG_APP))
             .show(ctx, |ui| {
                 self.commit_graph_view.show(ui);
+                if self.state.lock().unwrap().focused_pane == 2 {
+                    focus_ring(ui);
+                }
             });
     }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Draw a subtle teal focus ring around the panel to indicate keyboard focus.
+fn focus_ring(ui: &egui::Ui) {
+    ui.painter().rect_stroke(
+        ui.max_rect().shrink(1.0),
+        0.0,
+        egui::Stroke::new(1.5, theme::ACCENT_TEAL.gamma_multiply(0.5)),
+    );
+}
 
 fn modal_window(ctx: &Context, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Window::new(title)
