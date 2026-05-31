@@ -33,6 +33,9 @@ pub struct CommitGraphView {
     commit_w: f32,
     time_w: f32,
     hash_w: f32,
+    cols_dirty: bool,
+    last_saved_refs_w: f32,
+    last_saved_graph_w: f32,
 }
 
 impl CommitGraphView {
@@ -45,6 +48,35 @@ impl CommitGraphView {
             commit_w: COMMIT_W_DEF,
             time_w: TIME_W_DEF,
             hash_w: HASH_W_DEF,
+            cols_dirty: false,
+            last_saved_refs_w: REFS_W_DEF,
+            last_saved_graph_w: GRAPH_W_DEF,
+        }
+    }
+
+    /// Restore saved column widths (called after opening a repo).
+    pub fn set_column_widths(&mut self, refs_w: Option<f32>, graph_w: Option<f32>, time_w: Option<f32>, hash_w: Option<f32>) {
+        if let Some(w) = refs_w  { self.refs_w  = w.clamp(REFS_W_MIN,  REFS_W_MAX);  }
+        if let Some(w) = graph_w { self.graph_w = w.clamp(GRAPH_W_MIN, GRAPH_W_MAX); }
+        if let Some(w) = time_w  { self.time_w  = w.clamp(TIME_W_MIN,  200.0); }
+        if let Some(w) = hash_w  { self.hash_w  = w.clamp(HASH_W_MIN,  120.0); }
+        self.last_saved_refs_w  = self.refs_w;
+        self.last_saved_graph_w = self.graph_w;
+        self.cols_dirty = false;
+    }
+
+    /// Returns column widths if they have changed since last call, then resets the flag.
+    pub fn take_dirty_widths(&mut self) -> Option<(f32, f32, f32, f32)> {
+        let changed = (self.refs_w - self.last_saved_refs_w).abs() > 0.5
+            || (self.graph_w - self.last_saved_graph_w).abs() > 0.5;
+        if self.cols_dirty && changed {
+            self.cols_dirty = false;
+            self.last_saved_refs_w  = self.refs_w;
+            self.last_saved_graph_w = self.graph_w;
+            Some((self.refs_w, self.graph_w, self.time_w, self.hash_w))
+        } else {
+            self.cols_dirty = false;
+            None
         }
     }
 
@@ -371,6 +403,10 @@ impl CommitGraphView {
                                 self.state.lock().unwrap().modal = crate::state::ModalKind::CreateTag { from_oid: Some(oid.clone()) }; ui.close_menu();
                             }
                             ui.separator();
+                            if ui.button("Checkout (detached HEAD)…").clicked() {
+                                self.state.lock().unwrap().modal = crate::state::ModalKind::ConfirmDetachedCheckout { oid: oid.clone() }; ui.close_menu();
+                            }
+                            ui.separator();
                         }
                         if ui.button("Deselect").clicked() {
                             new_selection = Some(None); ui.close_menu();
@@ -457,6 +493,7 @@ impl CommitGraphView {
                     self.hash_w = (self.hash_w - delta).max(HASH_W_MIN);
                 }
             }
+            self.cols_dirty = true;
         }
     }
 }
