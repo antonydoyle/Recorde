@@ -134,36 +134,49 @@ pub fn toolbar_btn_icon_colored(
     stroke: Color32,
 ) -> Response {
     let col = if enabled { color } else { theme::text_muted() };
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &icon.to_string(),
-        0.0,
-        egui::TextFormat { font_id: icons::font(15.0), color: col, line_height: Some(18.0), valign: egui::Align::Max, ..Default::default() },
+    let icon_font = icons::font(15.0);
+    let text_font = egui::FontId::proportional(12.5);
+    let icon_galley = ui.painter().layout_no_wrap(icon.to_string(), icon_font.clone(), col);
+    let text_galley = ui.painter().layout_no_wrap(label.to_string(), text_font.clone(), col);
+    let padding = Vec2::new(12.0, 6.0);
+    let gap = 7.0;
+    let size = Vec2::new(
+        icon_galley.size().x + gap + text_galley.size().x + padding.x * 2.0,
+        30.0,
     );
-    job.append(
-        &format!("  {label}"),
-        0.0,
-        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: col, line_height: Some(18.0), valign: egui::Align::Max, ..Default::default() },
-    );
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(job)
-            .fill(fill)
-            .stroke(Stroke::new(1.0, stroke))
-            .rounding(6.0)
-            .min_size(Vec2::new(0.0, 30.0)),
-    )
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let visuals = if enabled && resp.hovered() {
+        &ui.style().visuals.widgets.hovered
+    } else {
+        &ui.style().visuals.widgets.inactive
+    };
+    let fill = if enabled && resp.hovered() { visuals.bg_fill } else { fill };
+    ui.painter().rect_filled(rect, 6.0, fill);
+    ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, stroke));
+
+    let center_y = rect.center().y + 1.5;
+    let icon_pos = Pos2::new(rect.min.x + padding.x, center_y);
+    ui.painter().text(icon_pos, egui::Align2::LEFT_CENTER, icon, icon_font, col);
+    let text_pos = Pos2::new(icon_pos.x + icon_galley.size().x + gap, center_y + 0.5);
+    ui.painter().text(text_pos, egui::Align2::LEFT_CENTER, label, text_font, col);
+    resp
 }
 
 /// Icon-only button using Material Icons font.
 pub fn icon_btn_mat(ui: &mut Ui, icon: char, size: f32, tip: &str) -> Response {
-    ui.add(
-        egui::Button::new(icons::rich(icon, size).color(theme::text_muted()))
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(Stroke::NONE)
-            .min_size(Vec2::splat(28.0)),
-    )
-    .on_hover_text(tip)
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 6.0, theme::bg_hover());
+    }
+    ui.painter().text(
+        Pos2::new(rect.center().x, rect.center().y + 1.5),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        icons::font(size),
+        theme::text_muted(),
+    );
+    resp.on_hover_text(tip)
 }
 
 // ── Branch pill (graph labels) ────────────────────────────────────────────────
