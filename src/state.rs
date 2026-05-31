@@ -121,6 +121,7 @@ pub struct AppState {
 
     pub head_branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
+    pub branch_ahead_behind: std::collections::HashMap<String, (usize, usize)>,
     pub dirty_count: usize,
     pub working_dir_files: Vec<WorkingDirFile>,
     pub stashes: Vec<StashEntry>,
@@ -128,9 +129,12 @@ pub struct AppState {
     pub modal: ModalKind,
     /// Label shown while a remote operation (fetch/push/pull) is running.
     pub remote_op: Option<String>,
+    /// Log lines shown in the Console tab.
+    pub console_log: Vec<String>,
     /// Commit graph search state.
     pub search_active: bool,
     pub search_query: String,
+    pub show_all_branches: bool,
     /// Set by the graph context menu to trigger opening the rebase modal.
     pub pending_open_rebase: Option<String>,
 }
@@ -138,5 +142,5 @@ pub struct AppState {
 pub type SharedState = Arc<Mutex<AppState>>;
 
 pub fn new_shared_state() -> SharedState {
-    Arc::new(Mutex::new(AppState::default()))
+    Arc::new(Mutex::new(AppState { show_all_branches: true, ..Default::default() }))
 }

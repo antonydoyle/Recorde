@@ -6,3 +6,4 @@ pub mod sidebar;
 pub mod staging_panel;
 pub mod status_bar;
 pub mod toolbar;
+pub mod widgets;

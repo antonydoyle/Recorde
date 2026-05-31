@@ -43,16 +43,24 @@ pub fn pull_branch(state: SharedState) {
 // ── State helpers ─────────────────────────────────────────────────────────────
 
 fn set_op(state: &SharedState, msg: &str) {
-    state.lock().unwrap().remote_op = Some(msg.to_string());
+    let mut s = state.lock().unwrap();
+    s.remote_op = Some(msg.to_string());
+    s.console_log.push(format!("$ {}", msg));
 }
 
 fn finish_op(state: &SharedState, result: Result<(), git2::Error>) {
     let mut s = state.lock().unwrap();
     s.remote_op = None;
-    if let Err(e) = result {
-        s.error = Some(e.message().to_string());
-    } else {
-        s.error = None;
+    match result {
+        Err(e) => {
+            let msg = e.message().to_string();
+            s.console_log.push(format!("error: {}", msg));
+            s.error = Some(msg);
+        }
+        Ok(()) => {
+            s.console_log.push("Done.".into());
+            s.error = None;
+        }
     }
 }
 
@@ -306,6 +314,22 @@ fn git_credential_fill(url: &str) -> Option<(String, String)> {
 }
 
 // ── Ahead / behind (called from operations::load_repo_inner) ─────────────────
+
+pub fn compute_all_ahead_behind(repo: &git2::Repository) -> std::collections::HashMap<String, (usize, usize)> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) else { return map };
+    for branch in branches.flatten() {
+        let (branch, _) = branch;
+        let Some(name) = branch.name().ok().flatten().map(str::to_owned) else { continue };
+        let Some(local_oid) = branch.get().target() else { continue };
+        let Ok(upstream) = branch.upstream() else { continue };
+        let Some(upstream_oid) = upstream.get().target() else { continue };
+        if let Ok((a, b)) = repo.graph_ahead_behind(local_oid, upstream_oid) {
+            map.insert(name, (a, b));
+        }
+    }
+    map
+}
 
 pub fn compute_ahead_behind(repo: &git2::Repository) -> Option<(usize, usize)> {
     let head = repo.head().ok()?;

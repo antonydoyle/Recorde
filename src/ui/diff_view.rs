@@ -9,9 +9,7 @@ const BAR_W: f32 = 3.0;      // left colour bar for +/- lines
 const FONT_SIZE: f32 = 12.0;
 
 // Subtle tinted row backgrounds for added/deleted lines
-const BG_ADD: Color32 = Color32::from_rgb(0x0E, 0x26, 0x14);
-const BG_DEL: Color32 = Color32::from_rgb(0x28, 0x0D, 0x0D);
-const BG_HUNK: Color32 = Color32::from_rgb(0x1A, 0x1E, 0x2E);
+use crate::theme::{BG_DIFF_ADD as BG_ADD, BG_DIFF_DEL as BG_DEL, BG_DIFF_HUNK as BG_HUNK};
 
 /// A flat renderable item — one per visual row.
 #[derive(Clone)]
@@ -34,21 +32,22 @@ pub struct DiffView {
     items: Vec<Item>,
     /// OID+path key we last built items for.
     last_key: Option<(String, String)>,
+    show_console: bool,
 }
 
 impl DiffView {
     pub fn new(state: SharedState) -> Self {
-        Self { state, items: Vec::new(), last_key: None }
+        Self { state, items: Vec::new(), last_key: None, show_console: false }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
         // Snapshot state — release lock before any rendering.
-        let (diff_opt, selected_file) = {
+        let (diff_opt, selected_file, console_log) = {
             let s = self.state.lock().unwrap();
-            (s.current_diff.clone(), s.selected_file.clone())
+            (s.current_diff.clone(), s.selected_file.clone(), s.console_log.clone())
         };
 
-        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_BASE);
+        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_APP);
 
         // Rebuild flat item list when the diff changes.
         if let Some(ref diff) = diff_opt {
@@ -62,70 +61,66 @@ impl DiffView {
             self.last_key = None;
         }
 
-        // --- Header bar ---
-        let header_height = 34.0;
+        // ── Header bar ────────────────────────────────────────────────────
+        let header_height = 36.0;
         let header_rect = Rect::from_min_size(
             ui.min_rect().min,
             Vec2::new(ui.available_width(), header_height),
         );
-        ui.painter().rect_filled(header_rect, 0.0, theme::BG_ELEVATED);
+        ui.painter().rect_filled(header_rect, 0.0, theme::BG_PANEL);
         ui.painter().line_segment(
-            [
-                Pos2::new(header_rect.min.x, header_rect.max.y),
-                Pos2::new(header_rect.max.x, header_rect.max.y),
-            ],
+            [Pos2::new(header_rect.min.x, header_rect.max.y),
+             Pos2::new(header_rect.max.x, header_rect.max.y)],
             Stroke::new(1.0, theme::BORDER),
         );
 
         ui.allocate_ui_at_rect(header_rect, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.add_space(10.0);
+                ui.add_space(12.0);
 
-                // Back / close button
-                let close_btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("← Back")
-                            .color(theme::TEXT_SECONDARY)
-                            .size(12.0),
-                    )
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0, theme::BORDER)),
-                );
-                if close_btn.clicked() {
-                    let mut s = self.state.lock().unwrap();
-                    s.selected_file = None;
-                    s.current_diff = None;
+                // "File Diff" and "Console" tab labels
+                for (label, is_console) in &[("File Diff", false), ("Console", true)] {
+                    let active = *is_console == self.show_console;
+                    let tc = if active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
+                    let btn = ui.add(
+                        egui::Button::new(egui::RichText::new(*label).size(12.5).color(tc))
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE),
+                    );
+                    if btn.clicked() { self.show_console = *is_console; }
+                    if active {
+                        let br = btn.rect;
+                        ui.painter().line_segment(
+                            [br.left_bottom(), br.right_bottom()],
+                            Stroke::new(2.0, theme::ACCENT_TEAL),
+                        );
+                    }
+                    ui.add_space(10.0);
                 }
 
-                ui.add_space(10.0);
-                ui.add(egui::Separator::default().vertical().spacing(4.0));
-                ui.add_space(10.0);
+                ui.add_space(4.0);
+                ui.add(egui::Separator::default().vertical().spacing(3.0));
+                ui.add_space(6.0);
 
                 // Filename
                 if let Some(ref diff) = diff_opt {
                     let filename = diff.file_path.rsplit('/').next().unwrap_or(&diff.file_path);
-                    ui.label(
-                        egui::RichText::new(filename)
-                            .color(theme::TEXT_PRIMARY)
-                            .size(13.0)
-                            .strong(),
-                    );
-                    // Full path as secondary label if it differs
+                    ui.label(egui::RichText::new(filename).color(theme::TEXT_PRIMARY).size(12.5).strong());
                     if diff.file_path != filename {
-                        ui.label(
-                            egui::RichText::new(&diff.file_path)
-                                .color(theme::TEXT_MUTED)
-                                .size(11.0),
-                        );
+                        ui.label(egui::RichText::new(&diff.file_path).color(theme::TEXT_MUTED).size(11.0));
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(10.0);
+                        // Close / clear selection
+                        if ui.add(egui::Button::new(egui::RichText::new("✕").color(theme::TEXT_MUTED).size(12.0))
+                            .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
+                            let mut s = self.state.lock().unwrap();
+                            s.selected_file = None; s.current_diff = None;
+                        }
+                        ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new(format!(
-                                "+{}  −{}",
-                                diff.additions, diff.deletions
-                            ))
+                            egui::RichText::new(format!("+{}  −{}", diff.additions, diff.deletions))
                             .color(theme::TEXT_SECONDARY)
                             .size(11.5),
                         );
@@ -139,6 +134,44 @@ impl DiffView {
             Pos2::new(ui.min_rect().min.x, ui.min_rect().min.y + header_height),
             ui.max_rect().max,
         );
+
+        // --- Console tab ---
+        if self.show_console {
+            ui.allocate_ui_at_rect(content_rect, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.add_space(6.0);
+                        if console_log.is_empty() {
+                            ui.horizontal(|ui| {
+                                ui.add_space(12.0);
+                                ui.label(egui::RichText::new("No git operations yet.")
+                                    .color(theme::TEXT_MUTED).size(12.0));
+                            });
+                        } else {
+                            for line in &console_log {
+                                let color = if line.starts_with("error:") {
+                                    theme::ACCENT_RED
+                                } else if line.starts_with('$') {
+                                    theme::ACCENT_TEAL
+                                } else {
+                                    theme::TEXT_SECONDARY
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.add_space(12.0);
+                                    ui.label(egui::RichText::new(line)
+                                        .color(color)
+                                        .size(12.0)
+                                        .font(egui::FontId::monospace(12.0)));
+                                });
+                            }
+                        }
+                        ui.add_space(6.0);
+                    });
+            });
+            return;
+        }
 
         // --- No diff yet ---
         if diff_opt.is_none() {
