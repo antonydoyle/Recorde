@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use egui::{Context, RichText, Stroke};
 
@@ -184,15 +184,9 @@ impl Toolbar {
                                 });
 
                                 if !recent_repos.is_empty() {
-                                    let arrow = ui.add(
-                                        egui::Button::new(RichText::new("▾").color(theme::text_muted()).size(11.0))
-                                            .fill(theme::bg_panel())
-                                            .stroke(Stroke::new(1.0, theme::border()))
-                                            .min_size(egui::Vec2::new(20.0, 0.0))
-                                            .rounding(6.0),
-                                    )
-                                    .on_hover_text("Recent repositories");
-                                    arrow.context_menu(|ui| {
+                                    let recent = ui.menu_button(
+                                        RichText::new("▾").color(theme::text_muted()).size(12.0),
+                                        |ui| {
                                         ui.set_min_width(280.0);
                                         ui.label(RichText::new("Recent").color(theme::text_muted()).size(10.5));
                                         ui.separator();
@@ -205,7 +199,7 @@ impl Toolbar {
                                                         .fill(egui::Color32::TRANSPARENT)
                                                         .stroke(egui::Stroke::NONE)
                                                         .min_size(egui::Vec2::new(220.0, 0.0)),
-                                                ).clicked() {
+                                                ).on_hover_text(p.display().to_string()).clicked() {
                                                     action = Some(ToolbarAction::OpenRepo(p.clone()));
                                                     ui.close_menu();
                                                 }
@@ -225,6 +219,7 @@ impl Toolbar {
                                             action = Some(ToolbarAction::RemoveFromRecent(p));
                                         }
                                     });
+                                    recent.response.on_hover_text("Open recent repositories");
                                 }
                             }
 
