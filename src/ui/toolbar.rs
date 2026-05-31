@@ -34,6 +34,7 @@ pub enum ToolbarAction {
     OpenUserMenu,
     OpenReflog,
     OpenBisect,
+    OpenProvider,
 }
 
 pub struct Toolbar {
@@ -292,6 +293,12 @@ impl Toolbar {
                         // Reflog
                         if widgets::icon_btn_mat(ui, icons::HISTORY, 18.0, "Reflog").clicked()
                         { action = Some(ToolbarAction::OpenReflog); }
+
+                        ui.add_space(4.0);
+
+                        // Provider integrations (issues, CI, releases)
+                        if widgets::icon_btn_mat(ui, icons::BUG_REPORT, 18.0, "Provider integrations  (issues, CI, releases)").clicked()
+                        { action = Some(ToolbarAction::OpenProvider); }
 
                         ui.add_space(4.0);
 

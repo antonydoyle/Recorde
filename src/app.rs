@@ -2,8 +2,8 @@ use egui::{Color32, Context, Key, Modifiers, RichText, Stroke};
 
 use crate::auth::{ProviderKind, StoredAccount};
 use crate::config::{Config, PullStrategy};
-use crate::git::{branches, job::ActiveOp, job::JobProgress, lifecycle, merge, operations::{load_prs, load_repo}, rebase, remote, runner::GitRunner, staging};
-use crate::providers::PrFilter;
+use crate::git::{branches, job::ActiveOp, job::JobProgress, lifecycle, merge, operations::{load_ci_runs, load_issues, load_prs, load_releases, load_repo}, rebase, remote, runner::GitRunner, staging};
+use crate::providers::{CiStatus, IssueFilter, PrFilter};
 use crate::state::{ModalKind, PendingDiscard, RebaseEntry, new_shared_state, SharedState};
 use crate::theme;
 use crate::ui::{
@@ -19,6 +19,9 @@ use crate::ui::{
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum RightTab { Changes, Details }
+
+#[derive(PartialEq, Clone, Copy, Default)]
+enum ProviderTab { #[default] Issues, Ci, Releases }
 
 #[derive(PartialEq, Clone, Copy)]
 enum SettingsTab { App, Accounts, Repository, About }
@@ -70,6 +73,11 @@ pub struct RecordeApp {
     reflog_recover_input: String,
     reflog_recover_oid: Option<String>,
     compare_file_selected: Option<String>,
+    // Phase 13: Provider integrations
+    provider_open: bool,
+    provider_tab: ProviderTab,
+    branch_from_issue_input: String,
+    branch_from_issue_number: Option<u32>,
     // Phase 10: Auth & Accounts
     add_account_open: bool,
     add_account_provider: ProviderKind,
@@ -173,6 +181,10 @@ impl RecordeApp {
             reflog_recover_input: String::new(),
             reflog_recover_oid: None,
             compare_file_selected: None,
+            provider_open: false,
+            provider_tab: ProviderTab::Issues,
+            branch_from_issue_input: String::new(),
+            branch_from_issue_number: None,
             add_account_open: false,
             add_account_provider: ProviderKind::GitHubCom,
             add_account_host: String::new(),
@@ -253,8 +265,9 @@ impl RecordeApp {
                 let mut s = self.state.lock().unwrap();
                 s.show_all_branches = !s.show_all_branches;
             }
-            ToolbarAction::OpenReflog => self.state.lock().unwrap().modal = ModalKind::Reflog,
-            ToolbarAction::OpenBisect => self.state.lock().unwrap().modal = ModalKind::Bisect,
+            ToolbarAction::OpenReflog  => self.state.lock().unwrap().modal = ModalKind::Reflog,
+            ToolbarAction::OpenBisect  => self.state.lock().unwrap().modal = ModalKind::Bisect,
+            ToolbarAction::OpenProvider => self.provider_open = true,
         }
     }
 
@@ -481,6 +494,10 @@ impl RecordeApp {
 
         if self.pull_requests_open {
             self.render_pull_requests(ctx);
+        }
+
+        if self.provider_open {
+            self.render_provider(ctx);
         }
     }
 
@@ -2609,6 +2626,336 @@ fn modal_window(ctx: &Context, title: &str, add_contents: impl FnOnce(&mut egui:
             add_contents(ui);
             ui.add_space(4.0);
         });
+}
+
+impl RecordeApp {
+    fn render_provider(&mut self, ctx: &Context) {
+        use crate::providers::CiStatus as CS;
+
+        let (issue_list, issue_loading, issue_error, issue_sel, issue_filter,
+             ci_runs, ci_loading, ci_error,
+             releases, rel_loading, rel_error) = {
+            let s = self.state.lock().unwrap();
+            (s.issue_list.clone(), s.issue_loading, s.issue_error.clone(),
+             s.issue_selected, s.issue_filter,
+             s.ci_runs.clone(), s.ci_loading, s.ci_error.clone(),
+             s.releases.clone(), s.releases_loading, s.releases_error.clone())
+        };
+
+        let mut new_issue_filter: Option<IssueFilter> = None;
+        let mut new_issue_sel: Option<Option<usize>> = None;
+        let mut open_url_req: Option<String> = None;
+        let mut create_branch_for: Option<(u32, String)> = None;
+
+        egui::Window::new("Provider Integrations")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_size([820.0, 560.0])
+            .show(ctx, |ui| {
+                // ── Tab bar ─────────────────────────────────────────────
+                ui.horizontal(|ui| {
+                    for (tab, label) in [(ProviderTab::Issues, "Issues"),
+                                         (ProviderTab::Ci, "CI / Checks"),
+                                         (ProviderTab::Releases, "Releases")] {
+                        let active = self.provider_tab == tab;
+                        let color = if active { theme::text_primary() } else { theme::text_muted() };
+                        let btn = ui.add(egui::Button::new(RichText::new(label).size(12.5).color(color))
+                            .fill(Color32::TRANSPARENT));
+                        if active { ui.painter().line_segment([btn.rect.left_bottom(), btn.rect.right_bottom()], egui::Stroke::new(2.0, theme::ACCENT_TEAL)); }
+                        if btn.clicked() { self.provider_tab = tab; }
+                        ui.add_space(8.0);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new("✕").fill(Color32::TRANSPARENT)).clicked() {
+                            self.provider_open = false;
+                        }
+                    });
+                });
+                ui.separator();
+
+                match self.provider_tab {
+                    ProviderTab::Issues => {
+                        // Filter bar
+                        ui.horizontal(|ui| {
+                            for f in [IssueFilter::Open, IssueFilter::Closed, IssueFilter::All] {
+                                let active = issue_filter == f;
+                                let color = if active { theme::ACCENT_TEAL } else { theme::text_muted() };
+                                let btn = ui.add(egui::Button::new(RichText::new(f.label()).size(11.5).color(color))
+                                    .fill(Color32::TRANSPARENT));
+                                if active { ui.painter().line_segment([btn.rect.left_bottom(), btn.rect.right_bottom()], egui::Stroke::new(2.0, theme::ACCENT_TEAL)); }
+                                if btn.clicked() && !active { new_issue_filter = Some(f); }
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add(secondary_btn("Refresh")).clicked() { load_issues(self.state.clone()); }
+                            });
+                        });
+                        ui.add_space(4.0);
+
+                        if issue_list.is_empty() && !issue_loading && issue_error.is_none() {
+                            load_issues(self.state.clone());
+                        }
+                        if issue_loading {
+                            ui.centered_and_justified(|ui| { ui.label(RichText::new("Loading…").color(theme::text_muted())); });
+                            return;
+                        }
+                        if let Some(ref err) = issue_error {
+                            ui.label(RichText::new(err).color(theme::ACCENT_RED).size(12.0));
+                            return;
+                        }
+
+                        let visible: Vec<(usize, &crate::providers::IssueItem)> = issue_list.iter().enumerate()
+                            .filter(|(_, i)| issue_filter.matches(&i.state))
+                            .collect();
+
+                        ui.columns(2, |cols| {
+                            egui::ScrollArea::vertical().id_source("iss_list").show(&mut cols[0], |ui| {
+                                if visible.is_empty() { ui.label(RichText::new("No issues.").color(theme::text_muted()).size(12.0)); }
+                                for (i, issue) in &visible {
+                                    let is_sel = issue_sel == Some(*i);
+                                    let bg = if is_sel { theme::bg_selected() } else { Color32::TRANSPARENT };
+                                    let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
+                                    ui.painter().rect_filled(row, 0.0, bg);
+                                    ui.allocate_ui_at_rect(row, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(8.0);
+                                            let dot_color = if issue.state == crate::providers::IssueState::Open { theme::ACCENT_GREEN } else { theme::ACCENT_RED };
+                                            let (dr, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                                            ui.painter().circle_filled(dr.center(), 4.0, dot_color);
+                                            ui.add_space(4.0);
+                                            ui.vertical(|ui| {
+                                                ui.label(RichText::new(format!("#{} {}", issue.number, &issue.title))
+                                                    .color(theme::text_primary()).size(12.5));
+                                                ui.label(RichText::new(format!("@{}  •  {}",
+                                                    issue.author, crate::theme::relative_time(issue.updated_ts)))
+                                                    .color(theme::text_muted()).size(10.5));
+                                            });
+                                        });
+                                    });
+                                    if ui.interact(row, egui::Id::new(("iss_row", i)), egui::Sense::click()).clicked() {
+                                        new_issue_sel = Some(Some(*i));
+                                    }
+                                    ui.painter().line_segment([row.left_bottom(), row.right_bottom()],
+                                        egui::Stroke::new(1.0, theme::border()));
+                                }
+                            });
+
+                            if let Some(idx) = issue_sel {
+                                if let Some(issue) = issue_list.get(idx) {
+                                    cols[1].add_space(4.0);
+                                    cols[1].label(RichText::new(format!("#{} {}", issue.number, &issue.title))
+                                        .color(theme::text_primary()).size(13.0).strong());
+                                    cols[1].add_space(4.0);
+                                    cols[1].horizontal(|ui| {
+                                        ui.label(RichText::new(format!("@{}  updated {}",
+                                            issue.author, crate::theme::relative_time(issue.updated_ts)))
+                                            .color(theme::text_muted()).size(11.0));
+                                    });
+                                    if !issue.label_names.is_empty() {
+                                        cols[1].horizontal(|ui| {
+                                            for l in &issue.label_names {
+                                                ui.label(RichText::new(l).size(10.5).color(theme::ACCENT_BLUE)
+                                                    .background_color(theme::ACCENT_BLUE.gamma_multiply(0.15)));
+                                                ui.add_space(4.0);
+                                            }
+                                        });
+                                    }
+                                    cols[1].add_space(4.0);
+                                    cols[1].separator();
+                                    egui::ScrollArea::vertical().id_source("iss_body").max_height(200.0).show(&mut cols[1], |ui| {
+                                        let body = if issue.body.trim().is_empty() { "No description." } else { issue.body.trim() };
+                                        ui.label(RichText::new(body).color(theme::text_secondary()).size(12.0));
+                                    });
+                                    cols[1].add_space(8.0);
+                                    cols[1].separator();
+                                    cols[1].add_space(4.0);
+                                    cols[1].horizontal(|ui| {
+                                        if ui.add(primary_btn("Open in Browser")).clicked() {
+                                            open_url_req = Some(issue.url.clone());
+                                        }
+                                        if ui.add(secondary_btn("Create Branch…")).clicked() {
+                                            create_branch_for = Some((issue.number, issue.title.clone()));
+                                        }
+                                    });
+                                }
+                            } else {
+                                cols[1].centered_and_justified(|ui| {
+                                    ui.label(RichText::new("Select an issue to view details.").color(theme::text_muted()).size(12.0));
+                                });
+                            }
+                        });
+                    }
+
+                    ProviderTab::Ci => {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("CI runs for current branch").color(theme::text_muted()).size(11.5));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add(secondary_btn("Refresh")).clicked() { load_ci_runs(self.state.clone()); }
+                            });
+                        });
+                        ui.add_space(4.0);
+
+                        if ci_runs.is_empty() && !ci_loading && ci_error.is_none() {
+                            load_ci_runs(self.state.clone());
+                        }
+                        if ci_loading {
+                            ui.centered_and_justified(|ui| { ui.label(RichText::new("Loading…").color(theme::text_muted())); });
+                            return;
+                        }
+                        if let Some(ref err) = ci_error {
+                            ui.label(RichText::new(err).color(theme::ACCENT_RED).size(12.0));
+                            return;
+                        }
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if ci_runs.is_empty() {
+                                ui.label(RichText::new("No CI runs found for this branch.").color(theme::text_muted()).size(12.0));
+                            }
+                            for run in &ci_runs {
+                                let (status_color, status_icon) = match run.status {
+                                    CS::Success   => (theme::ACCENT_GREEN,  "✓"),
+                                    CS::Failure   => (theme::ACCENT_RED,    "✗"),
+                                    CS::Running   => (theme::ACCENT_YELLOW, "…"),
+                                    CS::Pending   => (theme::text_muted(),  "·"),
+                                    CS::Cancelled => (theme::text_muted(),  "—"),
+                                };
+                                let row = ui.horizontal(|ui| {
+                                    ui.add_space(8.0);
+                                    ui.label(RichText::new(status_icon).size(14.0).color(status_color));
+                                    ui.add_space(6.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new(&run.name).color(theme::text_primary()).size(12.5));
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(run.status.label()).color(status_color).size(11.0));
+                                            ui.label(RichText::new(format!("  •  {}", crate::theme::relative_time(run.updated_ts)))
+                                                .color(theme::text_muted()).size(11.0));
+                                        });
+                                    });
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.add(egui::Button::new(RichText::new("Open").size(11.5).color(theme::ACCENT_TEAL))
+                                            .fill(Color32::TRANSPARENT)).clicked()
+                                        {
+                                            open_url_req = Some(run.url.clone());
+                                        }
+                                    });
+                                }).response;
+                                ui.painter().line_segment([row.rect.left_bottom(), row.rect.right_bottom()],
+                                    egui::Stroke::new(1.0, theme::border()));
+                                ui.add_space(2.0);
+                            }
+                        });
+                    }
+
+                    ProviderTab::Releases => {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Releases").color(theme::text_muted()).size(11.5));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add(secondary_btn("Refresh")).clicked() { load_releases(self.state.clone()); }
+                            });
+                        });
+                        ui.add_space(4.0);
+
+                        if releases.is_empty() && !rel_loading && rel_error.is_none() {
+                            load_releases(self.state.clone());
+                        }
+                        if rel_loading {
+                            ui.centered_and_justified(|ui| { ui.label(RichText::new("Loading…").color(theme::text_muted())); });
+                            return;
+                        }
+                        if let Some(ref err) = rel_error {
+                            ui.label(RichText::new(err).color(theme::ACCENT_RED).size(12.0));
+                            return;
+                        }
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if releases.is_empty() {
+                                ui.label(RichText::new("No releases found.").color(theme::text_muted()).size(12.0));
+                            }
+                            for rel in &releases {
+                                let row = ui.horizontal(|ui| {
+                                    ui.add_space(8.0);
+                                    let tag_color = if rel.prerelease { theme::ACCENT_YELLOW } else { theme::ACCENT_TEAL };
+                                    ui.label(RichText::new(&rel.tag_name).color(tag_color).size(12.5).strong());
+                                    ui.add_space(6.0);
+                                    ui.label(RichText::new(&rel.name).color(theme::text_secondary()).size(12.0));
+                                    if rel.prerelease {
+                                        ui.label(RichText::new("pre-release").size(10.5).color(theme::ACCENT_YELLOW)
+                                            .background_color(theme::ACCENT_YELLOW.gamma_multiply(0.15)));
+                                    }
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(RichText::new(crate::theme::relative_time(rel.published_ts))
+                                            .color(theme::text_muted()).size(11.0));
+                                        ui.add_space(8.0);
+                                        if ui.add(egui::Button::new(RichText::new("Open").size(11.5).color(theme::ACCENT_TEAL))
+                                            .fill(Color32::TRANSPARENT)).clicked()
+                                        {
+                                            open_url_req = Some(rel.url.clone());
+                                        }
+                                    });
+                                }).response;
+                                ui.painter().line_segment([row.rect.left_bottom(), row.rect.right_bottom()],
+                                    egui::Stroke::new(1.0, theme::border()));
+                                ui.add_space(2.0);
+                            }
+                        });
+                    }
+                }
+            });
+
+        // ── Branch-from-issue form (inline modal) ─────────────────────────
+        if let Some((number, title)) = create_branch_for {
+            if self.branch_from_issue_number != Some(number) {
+                self.branch_from_issue_number = Some(number);
+                self.branch_from_issue_input = format!("{}-{}", number, slugify(&title).chars().take(40).collect::<String>());
+            }
+        }
+        if self.branch_from_issue_number.is_some() {
+            let mut close = false;
+            let mut do_create = false;
+            modal_window(ctx, "Create Branch from Issue", |ui| {
+                ui.label(styled_label("Branch name"));
+                ui.add_space(4.0);
+                let r = ui.add(egui::TextEdit::singleline(&mut self.branch_from_issue_input)
+                    .desired_width(f32::INFINITY));
+                r.request_focus();
+                ui.add_space(4.0);
+                let can = !self.branch_from_issue_input.trim().is_empty();
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(can, primary_btn("Create Branch")).clicked()
+                        || (can && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    { do_create = true; }
+                    if ui.add(secondary_btn("Cancel")).clicked() { close = true; }
+                });
+            });
+            if do_create {
+                branches::create_branch(&self.branch_from_issue_input.trim(), None, true, self.state.clone());
+                self.branch_from_issue_number = None;
+                self.branch_from_issue_input.clear();
+            } else if close {
+                self.branch_from_issue_number = None;
+                self.branch_from_issue_input.clear();
+            }
+        }
+
+        // Apply deferred mutations
+        if let Some(f) = new_issue_filter {
+            self.state.lock().unwrap().issue_filter = f;
+            load_issues(self.state.clone());
+        }
+        if let Some(sel) = new_issue_sel { self.state.lock().unwrap().issue_selected = sel; }
+        if let Some(ref url) = open_url_req { let _ = open_url(url); }
+    }
+}
+
+fn slugify(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn primary_btn(label: &str) -> egui::Button<'_> {
