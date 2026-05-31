@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::git::merge::run_git_seq;
 use crate::state::SharedState;
 
 // ── Re-exported reload helper ────────────────────────────────────────────────
@@ -83,6 +84,114 @@ fn do_create(path: &Path, name: &str, from_oid: Option<&str>, checkout: bool) ->
         repo.checkout_tree(obj, Some(&mut opts))?;
         repo.set_head(&format!("refs/heads/{}", name))?;
     }
+    Ok(())
+}
+
+// ── Rename branch ────────────────────────────────────────────────────────────
+
+pub fn rename_branch(old_name: &str, new_name: &str, state: SharedState) {
+    let old = old_name.to_string();
+    let new = new_name.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    std::thread::spawn(move || {
+        match do_rename(&path, &old, &new) {
+            Ok(()) => reload_repo(state),
+            Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+        }
+    });
+}
+
+fn do_rename(path: &Path, old: &str, new: &str) -> Result<(), git2::Error> {
+    let repo = git2::Repository::open(path)?;
+    let mut branch = repo.find_branch(old, git2::BranchType::Local)?;
+    branch.rename(new, false)?;
+    Ok(())
+}
+
+// ── Force-delete branch ───────────────────────────────────────────────────────
+
+pub fn force_delete_branch(name: &str, state: SharedState) {
+    let n = name.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    std::thread::spawn(move || {
+        match run_git_seq(&path, &["branch", "-D", &n]) {
+            Ok(()) => reload_repo(state),
+            Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+        }
+    });
+}
+
+// ── Publish branch ────────────────────────────────────────────────────────────
+
+pub fn publish_branch(name: &str, state: SharedState) {
+    let n = name.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    {
+        let mut s = state.lock().unwrap();
+        s.remote_op = Some(format!("Publishing {}…", n));
+        s.console_log.push(format!("$ git push -u origin {}", n));
+    }
+    std::thread::spawn(move || {
+        let result = run_git_seq(&path, &["push", "-u", "origin", &n]);
+        state.lock().unwrap().remote_op = None;
+        match result {
+            Ok(()) => reload_repo(state),
+            Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+        }
+    });
+}
+
+// ── Set upstream ──────────────────────────────────────────────────────────────
+
+pub fn set_upstream(branch: &str, remote: &str, state: SharedState) {
+    let b = branch.to_string();
+    let r = remote.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    std::thread::spawn(move || {
+        let upstream = format!("{}/{}", r, b);
+        match run_git_seq(&path, &["branch", &format!("--set-upstream-to={}", upstream), &b]) {
+            Ok(()) => reload_repo(state),
+            Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+        }
+    });
+}
+
+// ── Checkout detached HEAD ────────────────────────────────────────────────────
+
+pub fn checkout_detached(oid_str: &str, state: SharedState) {
+    let oid_s = oid_str.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    {
+        let mut s = state.lock().unwrap();
+        s.remote_op = Some("Checking out…".into());
+    }
+    std::thread::spawn(move || {
+        match do_checkout_detached(&path, &oid_s) {
+            Ok(()) => {
+                state.lock().unwrap().remote_op = None;
+                reload_repo(state);
+            }
+            Err(e) => {
+                let mut s = state.lock().unwrap();
+                s.remote_op = None;
+                s.error = Some(e.message().to_string());
+            }
+        }
+    });
+}
+
+fn do_checkout_detached(path: &Path, oid_str: &str) -> Result<(), git2::Error> {
+    let repo = git2::Repository::open(path)?;
+    let oid = git2::Oid::from_str(oid_str)?;
+    repo.set_head_detached(oid)?;
+    let mut opts = git2::build::CheckoutBuilder::new();
+    opts.force();
+    repo.checkout_head(Some(&mut opts))?;
     Ok(())
 }
 
@@ -234,18 +343,21 @@ fn do_cherry_pick(path: &Path, oid_str: &str) -> Result<(), git2::Error> {
 
 // ── Tags ──────────────────────────────────────────────────────────────────────
 
-pub fn create_tag(name: &str, from_oid: Option<&str>, state: SharedState) {
+/// Create a tag. If `message` is Some and non-empty, creates an annotated tag;
+/// otherwise creates a lightweight tag.
+pub fn create_tag(name: &str, from_oid: Option<&str>, message: Option<&str>, state: SharedState) {
     let name = name.to_string();
     let from_oid = from_oid.map(str::to_owned);
+    let message = message.map(str::to_owned);
     let path = state.lock().unwrap().repo_path.clone();
     let Some(path) = path else { return };
-    std::thread::spawn(move || match do_create_tag(&path, &name, from_oid.as_deref()) {
+    std::thread::spawn(move || match do_create_tag(&path, &name, from_oid.as_deref(), message.as_deref()) {
         Ok(()) => reload_repo(state),
         Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
     });
 }
 
-fn do_create_tag(path: &Path, name: &str, from_oid: Option<&str>) -> Result<(), git2::Error> {
+fn do_create_tag(path: &Path, name: &str, from_oid: Option<&str>, message: Option<&str>) -> Result<(), git2::Error> {
     let repo = git2::Repository::open(path)?;
     let obj = if let Some(oid_str) = from_oid {
         let oid = git2::Oid::from_str(oid_str)?;
@@ -253,8 +365,34 @@ fn do_create_tag(path: &Path, name: &str, from_oid: Option<&str>) -> Result<(), 
     } else {
         repo.head()?.peel(git2::ObjectType::Any)?
     };
-    repo.tag_lightweight(name, &obj, false)?;
+    match message {
+        Some(msg) if !msg.trim().is_empty() => {
+            let sig = repo.signature()?;
+            repo.tag(name, &obj, &sig, msg.trim(), false)?;
+        }
+        _ => { repo.tag_lightweight(name, &obj, false)?; }
+    }
     Ok(())
+}
+
+pub fn push_tag(name: &str, state: SharedState) {
+    let n = name.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    std::thread::spawn(move || match run_git_seq(&path, &["push", "origin", &n]) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+    });
+}
+
+pub fn delete_remote_tag(name: &str, state: SharedState) {
+    let n = name.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    std::thread::spawn(move || match run_git_seq(&path, &["push", "origin", "--delete", &n]) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+    });
 }
 
 pub fn delete_tag(name: &str, state: SharedState) {

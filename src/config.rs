@@ -1,8 +1,17 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 const MAX_RECENT: usize = 10;
+
+/// Per-repository persistent settings (column widths, etc.).
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct RepoConfig {
+    pub refs_w:  Option<f32>,
+    pub graph_w: Option<f32>,
+    pub time_w:  Option<f32>,
+    pub hash_w:  Option<f32>,
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -12,6 +21,8 @@ pub struct Config {
     pub dark_theme: bool,
     #[serde(default)]
     pub default_editor: String,
+    #[serde(default)]
+    pub per_repo: std::collections::HashMap<String, RepoConfig>,
 }
 
 fn default_true() -> bool { true }
@@ -39,6 +50,20 @@ impl Config {
         self.recent_repos.retain(|p| p != &path);
         self.recent_repos.insert(0, path);
         self.recent_repos.truncate(MAX_RECENT);
+        self.save();
+    }
+
+    pub fn get_repo_config(&self, path: &Path) -> RepoConfig {
+        self.per_repo.get(&path.display().to_string()).cloned().unwrap_or_default()
+    }
+
+    pub fn set_repo_column_widths(&mut self, path: &Path, refs_w: f32, graph_w: f32, time_w: f32, hash_w: f32) {
+        let key = path.display().to_string();
+        let cfg = self.per_repo.entry(key).or_default();
+        cfg.refs_w  = Some(refs_w);
+        cfg.graph_w = Some(graph_w);
+        cfg.time_w  = Some(time_w);
+        cfg.hash_w  = Some(hash_w);
         self.save();
     }
 

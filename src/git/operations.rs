@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::cell::RefCell;
 
+use std::collections::HashSet;
+
 use crate::git::{branches, capabilities, graph::CommitGraph, remote};
 use crate::state::{ChangedFile, CommitDetail, ConflictedFile, DiffHunk, DiffLine, FileDiff, WorkingDirFile, StashEntry, SharedState};
 
@@ -11,7 +13,7 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
         let result = load_repo_inner(&path);
         let mut s = state.lock().unwrap();
         match result {
-            Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, files, stashes, conflicts, caps)) => {
+            Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, files, stashes, conflicts, merged, caps)) => {
                 let n = graph.nodes.len();
                 s.console_log.push(format!("Opened {} ({} commits, branch: {})", path.display(), n, head_branch));
                 s.repo_path = Some(path);
@@ -23,6 +25,7 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
                 s.working_dir_files = files;
                 s.stashes = stashes;
                 s.conflicted_files = conflicts;
+                s.merged_into_head = merged;
                 s.capabilities = Some(caps);
                 s.error = None;
                 s.remote_op = None;
@@ -35,7 +38,7 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
     });
 }
 
-type RepoInnerResult = (CommitGraph, String, Option<(usize, usize)>, std::collections::HashMap<String,(usize,usize)>, usize, Vec<WorkingDirFile>, Vec<StashEntry>, Vec<ConflictedFile>, crate::git::capabilities::RepoCapabilities);
+type RepoInnerResult = (CommitGraph, String, Option<(usize, usize)>, std::collections::HashMap<String,(usize,usize)>, usize, Vec<WorkingDirFile>, Vec<StashEntry>, Vec<ConflictedFile>, HashSet<String>, crate::git::capabilities::RepoCapabilities);
 
 fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
     // Immutable pass: graph + head + status + ahead/behind
@@ -64,14 +67,29 @@ fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
         branches::collect_stashes(&mut repo)
     };
 
-    let conflicts = {
+    let (conflicts, merged) = {
         let repo = git2::Repository::open(path)?;
-        collect_conflicts(&repo)
+        (collect_conflicts(&repo), collect_merged_into_head(&repo))
     };
 
     let caps = capabilities::detect(path);
 
-    Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, status, stashes, conflicts, caps))
+    Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, status, stashes, conflicts, merged, caps))
+}
+
+fn collect_merged_into_head(repo: &git2::Repository) -> HashSet<String> {
+    let Ok(head) = repo.head() else { return HashSet::new() };
+    let Some(head_oid) = head.target() else { return HashSet::new() };
+    let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) else { return HashSet::new() };
+    branches.flatten()
+        .filter_map(|(b, _)| {
+            let name = b.name().ok().flatten()?.to_string();
+            let tip = b.get().target()?;
+            if tip == head_oid { return None; } // skip HEAD branch itself
+            let (ahead, _) = repo.graph_ahead_behind(tip, head_oid).ok()?;
+            if ahead == 0 { Some(name) } else { None }
+        })
+        .collect()
 }
 
 fn collect_conflicts(repo: &git2::Repository) -> Vec<ConflictedFile> {
