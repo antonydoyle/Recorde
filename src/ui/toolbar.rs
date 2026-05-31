@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::{Context, RichText, Stroke};
 
@@ -9,6 +9,12 @@ use crate::ui::widgets;
 
 pub enum ToolbarAction {
     OpenRepo(PathBuf),
+    CloneRepo,
+    InitRepo,
+    RemoveFromRecent(PathBuf),
+    OpenTerminal,
+    RevealInFolder,
+    CopyRepoPath,
     Stash,
     CreateBranch,
     Fetch,
@@ -71,12 +77,15 @@ impl Toolbar {
 
                     // ── Repo name pill ───────────────────────────────────
                     {
-                        let s = self.state.lock().unwrap();
-                        let name = s.repo_path.as_ref()
-                            .and_then(|p| p.file_name())
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "No repo".into());
-                        drop(s);
+                        let (repo_path, name) = {
+                            let s = self.state.lock().unwrap();
+                            let rp = s.repo_path.clone();
+                            let n = rp.as_ref()
+                                .and_then(|p| p.file_name())
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "No repo".into());
+                            (rp, n)
+                        };
 
                         let btn = widgets::toolbar_btn_icon(ui, icons::FOLDER_OPEN, &name, true);
                         if btn.clicked() {
@@ -84,6 +93,34 @@ impl Toolbar {
                                 action = Some(ToolbarAction::OpenRepo(path));
                             }
                         }
+                        // Right-click on the repo pill
+                        btn.context_menu(|ui| {
+                            ui.set_min_width(200.0);
+                            if let Some(ref rp) = repo_path {
+                                if ui.button("Copy Path").clicked() {
+                                    action = Some(ToolbarAction::CopyRepoPath);
+                                    ui.close_menu();
+                                }
+                                if ui.button("Open Terminal").clicked() {
+                                    action = Some(ToolbarAction::OpenTerminal);
+                                    ui.close_menu();
+                                }
+                                if ui.button("Reveal in File Manager").clicked() {
+                                    action = Some(ToolbarAction::RevealInFolder);
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                            }
+                            if ui.button("Clone Repository…").clicked() {
+                                action = Some(ToolbarAction::CloneRepo);
+                                ui.close_menu();
+                            }
+                            if ui.button("Initialize Repository…").clicked() {
+                                action = Some(ToolbarAction::InitRepo);
+                                ui.close_menu();
+                            }
+                        });
+
                         // Recent repos drop-down
                         if !recent_repos.is_empty() {
                             let arrow = ui.add(
@@ -94,15 +131,36 @@ impl Toolbar {
                                     .rounding(6.0),
                             );
                             arrow.context_menu(|ui| {
-                                ui.set_min_width(260.0);
+                                ui.set_min_width(280.0);
                                 ui.label(RichText::new("Recent").color(theme::TEXT_MUTED).size(10.5));
                                 ui.separator();
+                                let mut remove: Option<PathBuf> = None;
                                 for p in recent_repos {
                                     let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                                    if ui.button(RichText::new(n).size(12.5)).clicked() {
-                                        action = Some(ToolbarAction::OpenRepo(p.clone()));
-                                        ui.close_menu();
-                                    }
+                                    ui.horizontal(|ui| {
+                                        if ui.add(
+                                            egui::Button::new(RichText::new(&n).size(12.5))
+                                                .fill(egui::Color32::TRANSPARENT)
+                                                .stroke(egui::Stroke::NONE)
+                                                .min_size(egui::Vec2::new(220.0, 0.0)),
+                                        ).clicked() {
+                                            action = Some(ToolbarAction::OpenRepo(p.clone()));
+                                            ui.close_menu();
+                                        }
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.add(
+                                                egui::Button::new(RichText::new("×").color(theme::TEXT_MUTED).size(12.0))
+                                                    .fill(egui::Color32::TRANSPARENT)
+                                                    .stroke(egui::Stroke::NONE),
+                                            ).on_hover_text("Remove from list").clicked() {
+                                                remove = Some(p.clone());
+                                                ui.close_menu();
+                                            }
+                                        });
+                                    });
+                                }
+                                if let Some(p) = remove {
+                                    action = Some(ToolbarAction::RemoveFromRecent(p));
                                 }
                             });
                         }
