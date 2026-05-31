@@ -40,6 +40,8 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub dark_theme: bool,
     #[serde(default)]
+    pub high_contrast: bool,
+    #[serde(default)]
     pub default_editor: String,
     #[serde(default)]
     pub per_repo: std::collections::HashMap<String, RepoConfig>,
@@ -74,6 +76,12 @@ pub struct Config {
     pub show_right_panel: bool,
     #[serde(default = "default_true")]
     pub show_diff_panel: bool,
+    #[serde(default)]
+    pub sidebar_width: Option<f32>,
+    #[serde(default)]
+    pub right_panel_width: Option<f32>,
+    #[serde(default)]
+    pub diff_panel_height: Option<f32>,
 }
 
 fn default_true() -> bool { true }

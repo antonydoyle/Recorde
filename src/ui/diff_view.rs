@@ -274,6 +274,7 @@ impl DiffView {
                         .on_hover_text("Show line blame for the selected file");
                     if btn.clicked() {
                         self.show_blame = true; self.show_console = false;
+                        self.state.lock().unwrap().show_blame = true;
                         if let Some(ref fp) = *selected_file {
                             crate::git::operations::load_blame(fp, self.state.clone());
                         }
@@ -288,7 +289,7 @@ impl DiffView {
                     let btn = ui.add(egui::Button::new(egui::RichText::new("Console").size(12.5).color(tc))
                         .fill(Color32::TRANSPARENT).stroke(Stroke::NONE))
                         .on_hover_text("Show Git operation output");
-                    if btn.clicked() { self.show_console = true; self.show_blame = false; }
+                    if btn.clicked() { self.show_console = true; self.show_blame = false; self.state.lock().unwrap().show_blame = false; }
                     if active { let br = btn.rect; ui.painter().line_segment([br.left_bottom(), br.right_bottom()], Stroke::new(2.0, theme::ACCENT_TEAL)); }
                     ui.add_space(10.0);
                 }
@@ -389,7 +390,12 @@ impl DiffView {
                     ui.add_space(4.0);
                     if blame_lines.is_empty() {
                         ui.centered_and_justified(|ui| {
-                            ui.label(egui::RichText::new("Loading blame…").color(theme::text_muted()).size(12.0));
+                            let message = if selected_file.is_some() {
+                                "Loading blame..."
+                            } else {
+                                "Select a file to view blame."
+                            };
+                            ui.label(egui::RichText::new(message).color(theme::text_muted()).size(12.0));
                         });
                     } else {
                         let mut last_oid = "";

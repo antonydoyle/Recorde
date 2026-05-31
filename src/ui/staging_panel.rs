@@ -321,9 +321,9 @@ impl StagingPanel {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.add(
+                    ui.add_sized(
+                        [available_width_after(ui, 12.0), 28.0],
                         egui::TextEdit::singleline(&mut self.subject)
-                            .desired_width(available_width_after(ui, 12.0))
                             .hint_text("Summary (required)")
                             .font(egui::FontId::proportional(12.5)),
                     );
@@ -346,9 +346,9 @@ impl StagingPanel {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.add(
+                    ui.add_sized(
+                        [available_width_after(ui, 68.0), 28.0],
                         egui::TextEdit::singleline(&mut self.co_author_input)
-                            .desired_width(available_width_after(ui, 68.0))
                             .hint_text("Co-author: Name <email>")
                             .font(egui::FontId::proportional(11.5)),
                     );

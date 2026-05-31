@@ -2,9 +2,12 @@ use egui::Color32;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static DARK_MODE: AtomicBool = AtomicBool::new(true);
+static HIGH_CONTRAST: AtomicBool = AtomicBool::new(false);
 
 #[inline] fn dark() -> bool { DARK_MODE.load(Ordering::Relaxed) }
+#[inline] fn high_contrast() -> bool { HIGH_CONTRAST.load(Ordering::Relaxed) }
 pub fn set_dark(d: bool) { DARK_MODE.store(d, Ordering::Relaxed); }
+pub fn set_high_contrast(enabled: bool) { HIGH_CONTRAST.store(enabled, Ordering::Relaxed); }
 
 // ── Light mode palette ────────────────────────────────────────────────────────
 pub mod light {
@@ -27,25 +30,75 @@ pub mod light {
     pub const BG_DIFF_HUNK:  Color32 = Color32::from_rgb(222, 230, 250);
 }
 
+pub mod high_contrast_light {
+    use egui::Color32;
+    pub const BG_APP:        Color32 = Color32::from_rgb(255, 255, 255);
+    pub const BG_TITLEBAR:   Color32 = Color32::from_rgb(226, 229, 235);
+    pub const BG_TOOLBAR:    Color32 = Color32::from_rgb(238, 241, 247);
+    pub const BG_PANEL:      Color32 = Color32::from_rgb(255, 255, 255);
+    pub const BG_PANEL_ALT:  Color32 = Color32::from_rgb(236, 240, 247);
+    pub const BG_HOVER:      Color32 = Color32::from_rgb(196, 210, 234);
+    pub const BG_SELECTED:   Color32 = Color32::from_rgb(180, 204, 244);
+    pub const BG_ELEVATED:   Color32 = Color32::from_rgb(248, 250, 253);
+    pub const BORDER:        Color32 = Color32::from_rgb(128, 139, 158);
+    pub const BORDER_STRONG: Color32 = Color32::from_rgb(48,  60,  82);
+    pub const TEXT_PRIMARY:  Color32 = Color32::from_rgb(0,   0,   0);
+    pub const TEXT_SECONDARY:Color32 = Color32::from_rgb(18,  25,  38);
+    pub const TEXT_MUTED:    Color32 = Color32::from_rgb(48,  58,  78);
+    pub const BG_DIFF_ADD:   Color32 = Color32::from_rgb(188, 238, 198);
+    pub const BG_DIFF_DEL:   Color32 = Color32::from_rgb(250, 196, 196);
+    pub const BG_DIFF_HUNK:  Color32 = Color32::from_rgb(206, 220, 250);
+}
+
+pub mod high_contrast_dark {
+    use egui::Color32;
+    pub const BG_APP:        Color32 = Color32::from_rgb(0,   0,   0);
+    pub const BG_TITLEBAR:   Color32 = Color32::from_rgb(0,   0,   0);
+    pub const BG_TOOLBAR:    Color32 = Color32::from_rgb(8,   10,  14);
+    pub const BG_PANEL:      Color32 = Color32::from_rgb(12,  15,  22);
+    pub const BG_PANEL_ALT:  Color32 = Color32::from_rgb(22,  27,  38);
+    pub const BG_HOVER:      Color32 = Color32::from_rgb(58,  72,  98);
+    pub const BG_SELECTED:   Color32 = Color32::from_rgb(38,  78,  126);
+    pub const BG_ELEVATED:   Color32 = Color32::from_rgb(26,  32,  44);
+    pub const BORDER:        Color32 = Color32::from_rgb(108, 124, 154);
+    pub const BORDER_STRONG: Color32 = Color32::from_rgb(174, 194, 224);
+    pub const TEXT_PRIMARY:  Color32 = Color32::from_rgb(255, 255, 255);
+    pub const TEXT_SECONDARY:Color32 = Color32::from_rgb(226, 234, 246);
+    pub const TEXT_MUTED:    Color32 = Color32::from_rgb(174, 188, 212);
+    pub const BG_DIFF_ADD:   Color32 = Color32::from_rgb(10,  58,  22);
+    pub const BG_DIFF_DEL:   Color32 = Color32::from_rgb(72,  12,  16);
+    pub const BG_DIFF_HUNK:  Color32 = Color32::from_rgb(22,  42,  82);
+}
+
+#[inline]
+fn pick(normal_dark: Color32, normal_light: Color32, contrast_dark: Color32, contrast_light: Color32) -> Color32 {
+    match (dark(), high_contrast()) {
+        (true, true) => contrast_dark,
+        (true, false) => normal_dark,
+        (false, true) => contrast_light,
+        (false, false) => normal_light,
+    }
+}
+
 // ── Dynamic colour accessors — use these in UI paint calls ────────────────────
-#[inline] pub fn bg_app()        -> Color32 { if dark() { BG_APP       } else { light::BG_APP       } }
-#[inline] pub fn bg_titlebar()   -> Color32 { if dark() { BG_TITLEBAR  } else { light::BG_TITLEBAR  } }
-#[inline] pub fn bg_toolbar()    -> Color32 { if dark() { BG_TOOLBAR   } else { light::BG_TOOLBAR   } }
-#[inline] pub fn bg_panel()      -> Color32 { if dark() { BG_PANEL     } else { light::BG_PANEL     } }
-#[inline] pub fn bg_panel_alt()  -> Color32 { if dark() { BG_PANEL_ALT } else { light::BG_PANEL_ALT } }
-#[inline] pub fn bg_hover()      -> Color32 { if dark() { BG_HOVER     } else { light::BG_HOVER     } }
-#[inline] pub fn bg_selected()   -> Color32 { if dark() { BG_SELECTED  } else { light::BG_SELECTED  } }
-#[inline] pub fn bg_elevated()   -> Color32 { if dark() { BG_ELEVATED  } else { light::BG_ELEVATED  } }
+#[inline] pub fn bg_app()        -> Color32 { pick(BG_APP, light::BG_APP, high_contrast_dark::BG_APP, high_contrast_light::BG_APP) }
+#[inline] pub fn bg_titlebar()   -> Color32 { pick(BG_TITLEBAR, light::BG_TITLEBAR, high_contrast_dark::BG_TITLEBAR, high_contrast_light::BG_TITLEBAR) }
+#[inline] pub fn bg_toolbar()    -> Color32 { pick(BG_TOOLBAR, light::BG_TOOLBAR, high_contrast_dark::BG_TOOLBAR, high_contrast_light::BG_TOOLBAR) }
+#[inline] pub fn bg_panel()      -> Color32 { pick(BG_PANEL, light::BG_PANEL, high_contrast_dark::BG_PANEL, high_contrast_light::BG_PANEL) }
+#[inline] pub fn bg_panel_alt()  -> Color32 { pick(BG_PANEL_ALT, light::BG_PANEL_ALT, high_contrast_dark::BG_PANEL_ALT, high_contrast_light::BG_PANEL_ALT) }
+#[inline] pub fn bg_hover()      -> Color32 { pick(BG_HOVER, light::BG_HOVER, high_contrast_dark::BG_HOVER, high_contrast_light::BG_HOVER) }
+#[inline] pub fn bg_selected()   -> Color32 { pick(BG_SELECTED, light::BG_SELECTED, high_contrast_dark::BG_SELECTED, high_contrast_light::BG_SELECTED) }
+#[inline] pub fn bg_elevated()   -> Color32 { pick(BG_ELEVATED, light::BG_ELEVATED, high_contrast_dark::BG_ELEVATED, high_contrast_light::BG_ELEVATED) }
 #[inline] pub fn bg_surface()    -> Color32 { bg_panel() }
 #[inline] pub fn bg_base()       -> Color32 { bg_app()   }
-#[inline] pub fn border()        -> Color32 { if dark() { BORDER       } else { light::BORDER       } }
-#[inline] pub fn border_strong() -> Color32 { if dark() { BORDER_STRONG} else { light::BORDER_STRONG} }
-#[inline] pub fn text_primary()  -> Color32 { if dark() { TEXT_PRIMARY  } else { light::TEXT_PRIMARY  } }
-#[inline] pub fn text_secondary()-> Color32 { if dark() { TEXT_SECONDARY} else { light::TEXT_SECONDARY} }
-#[inline] pub fn text_muted()    -> Color32 { if dark() { TEXT_MUTED    } else { light::TEXT_MUTED    } }
-#[inline] pub fn bg_diff_add()   -> Color32 { if dark() { BG_DIFF_ADD  } else { light::BG_DIFF_ADD  } }
-#[inline] pub fn bg_diff_del()   -> Color32 { if dark() { BG_DIFF_DEL  } else { light::BG_DIFF_DEL  } }
-#[inline] pub fn bg_diff_hunk()  -> Color32 { if dark() { BG_DIFF_HUNK } else { light::BG_DIFF_HUNK } }
+#[inline] pub fn border()        -> Color32 { pick(BORDER, light::BORDER, high_contrast_dark::BORDER, high_contrast_light::BORDER) }
+#[inline] pub fn border_strong() -> Color32 { pick(BORDER_STRONG, light::BORDER_STRONG, high_contrast_dark::BORDER_STRONG, high_contrast_light::BORDER_STRONG) }
+#[inline] pub fn text_primary()  -> Color32 { pick(TEXT_PRIMARY, light::TEXT_PRIMARY, high_contrast_dark::TEXT_PRIMARY, high_contrast_light::TEXT_PRIMARY) }
+#[inline] pub fn text_secondary()-> Color32 { pick(TEXT_SECONDARY, light::TEXT_SECONDARY, high_contrast_dark::TEXT_SECONDARY, high_contrast_light::TEXT_SECONDARY) }
+#[inline] pub fn text_muted()    -> Color32 { pick(TEXT_MUTED, light::TEXT_MUTED, high_contrast_dark::TEXT_MUTED, high_contrast_light::TEXT_MUTED) }
+#[inline] pub fn bg_diff_add()   -> Color32 { pick(BG_DIFF_ADD, light::BG_DIFF_ADD, high_contrast_dark::BG_DIFF_ADD, high_contrast_light::BG_DIFF_ADD) }
+#[inline] pub fn bg_diff_del()   -> Color32 { pick(BG_DIFF_DEL, light::BG_DIFF_DEL, high_contrast_dark::BG_DIFF_DEL, high_contrast_light::BG_DIFF_DEL) }
+#[inline] pub fn bg_diff_hunk()  -> Color32 { pick(BG_DIFF_HUNK, light::BG_DIFF_HUNK, high_contrast_dark::BG_DIFF_HUNK, high_contrast_light::BG_DIFF_HUNK) }
 
 // ── Background layers ─────────────────────────────────────────────────────────
 pub const BG_APP:        Color32 = Color32::from_rgb(18,  23,  32);   // #121720 window/app
@@ -163,43 +216,44 @@ pub fn relative_time(ts: i64) -> String {
 }
 
 // ── Apply to egui context ─────────────────────────────────────────────────────
-pub fn apply(ctx: &egui::Context, dark: bool) {
+pub fn apply(ctx: &egui::Context, dark: bool, contrast: bool) {
     set_dark(dark);
+    set_high_contrast(contrast);
     if !dark {
         let mut v = egui::Visuals::light();
-        v.panel_fill          = light::BG_PANEL;
-        v.window_fill         = light::BG_APP;
-        v.faint_bg_color      = light::BG_PANEL_ALT;
-        v.extreme_bg_color    = light::BG_APP;
-        v.override_text_color = Some(light::TEXT_PRIMARY);
+        v.panel_fill          = bg_panel();
+        v.window_fill         = bg_app();
+        v.faint_bg_color      = bg_panel_alt();
+        v.extreme_bg_color    = bg_app();
+        v.override_text_color = Some(text_primary());
 
-        v.widgets.noninteractive.bg_fill   = light::BG_PANEL;
-        v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, light::TEXT_SECONDARY);
-        v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, light::BORDER);
+        v.widgets.noninteractive.bg_fill   = bg_panel();
+        v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text_secondary());
+        v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border());
         v.widgets.noninteractive.rounding  = egui::Rounding::same(5.0);
 
-        v.widgets.inactive.bg_fill         = light::BG_PANEL_ALT;
-        v.widgets.inactive.fg_stroke       = egui::Stroke::new(1.0, light::TEXT_SECONDARY);
-        v.widgets.inactive.bg_stroke       = egui::Stroke::new(1.0, light::BORDER);
+        v.widgets.inactive.bg_fill         = bg_panel_alt();
+        v.widgets.inactive.fg_stroke       = egui::Stroke::new(1.0, text_secondary());
+        v.widgets.inactive.bg_stroke       = egui::Stroke::new(1.0, border());
         v.widgets.inactive.rounding        = egui::Rounding::same(5.0);
 
-        v.widgets.hovered.bg_fill          = light::BG_HOVER;
-        v.widgets.hovered.fg_stroke        = egui::Stroke::new(1.0, light::TEXT_PRIMARY);
-        v.widgets.hovered.bg_stroke        = egui::Stroke::new(1.0, light::BORDER_STRONG);
+        v.widgets.hovered.bg_fill          = bg_hover();
+        v.widgets.hovered.fg_stroke        = egui::Stroke::new(1.0, text_primary());
+        v.widgets.hovered.bg_stroke        = egui::Stroke::new(1.0, border_strong());
         v.widgets.hovered.rounding         = egui::Rounding::same(5.0);
 
-        v.widgets.active.bg_fill           = light::BG_SELECTED;
-        v.widgets.active.fg_stroke         = egui::Stroke::new(1.0, light::TEXT_PRIMARY);
-        v.widgets.active.bg_stroke         = egui::Stroke::new(1.0, light::BORDER_STRONG);
+        v.widgets.active.bg_fill           = bg_selected();
+        v.widgets.active.fg_stroke         = egui::Stroke::new(1.0, text_primary());
+        v.widgets.active.bg_stroke         = egui::Stroke::new(1.0, border_strong());
         v.widgets.active.rounding          = egui::Rounding::same(5.0);
 
-        v.widgets.open.bg_fill             = light::BG_SELECTED;
-        v.widgets.open.fg_stroke           = egui::Stroke::new(1.0, light::TEXT_PRIMARY);
+        v.widgets.open.bg_fill             = bg_selected();
+        v.widgets.open.fg_stroke           = egui::Stroke::new(1.0, text_primary());
 
         v.selection.bg_fill = Color32::from_rgba_premultiplied(82, 150, 255, 80);
         v.selection.stroke  = egui::Stroke::new(1.0, Color32::from_rgb(82, 150, 255));
 
-        v.window_stroke  = egui::Stroke::new(1.0, light::BORDER);
+        v.window_stroke  = egui::Stroke::new(1.0, border());
         v.popup_shadow   = egui::Shadow::NONE;
         v.window_shadow  = egui::Shadow::NONE;
         v.window_rounding = egui::Rounding::same(8.0);
@@ -209,7 +263,7 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
             s.spacing.item_spacing    = egui::Vec2::new(8.0, 5.0);
             s.spacing.window_margin   = egui::Margin::same(0.0);
             s.spacing.button_padding  = egui::Vec2::new(12.0, 7.0);
-            s.spacing.interact_size.y = 26.0;
+            s.spacing.interact_size.y = 28.0;
             s.visuals.widgets.inactive.rounding = egui::Rounding::same(5.0);
             s.visuals.widgets.hovered.rounding  = egui::Rounding::same(5.0);
             s.visuals.widgets.active.rounding   = egui::Rounding::same(5.0);
@@ -220,39 +274,39 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     }
 
     let mut v = egui::Visuals::dark();
-    v.panel_fill               = BG_PANEL;
-    v.window_fill              = BG_APP;
-    v.faint_bg_color           = BG_PANEL_ALT;
-    v.extreme_bg_color         = BG_APP;
-    v.override_text_color      = Some(TEXT_PRIMARY);
+    v.panel_fill               = bg_panel();
+    v.window_fill              = bg_app();
+    v.faint_bg_color           = bg_panel_alt();
+    v.extreme_bg_color         = bg_app();
+    v.override_text_color      = Some(text_primary());
 
-    v.widgets.noninteractive.bg_fill     = BG_PANEL;
-    v.widgets.noninteractive.fg_stroke   = egui::Stroke::new(1.0, TEXT_SECONDARY);
-    v.widgets.noninteractive.bg_stroke   = egui::Stroke::new(1.0, BORDER);
+    v.widgets.noninteractive.bg_fill     = bg_panel();
+    v.widgets.noninteractive.fg_stroke   = egui::Stroke::new(1.0, text_secondary());
+    v.widgets.noninteractive.bg_stroke   = egui::Stroke::new(1.0, border());
     v.widgets.noninteractive.rounding    = egui::Rounding::same(5.0);
 
-    v.widgets.inactive.bg_fill           = BG_PANEL_ALT;
-    v.widgets.inactive.fg_stroke         = egui::Stroke::new(1.0, TEXT_SECONDARY);
-    v.widgets.inactive.bg_stroke         = egui::Stroke::new(1.0, BORDER);
+    v.widgets.inactive.bg_fill           = bg_panel_alt();
+    v.widgets.inactive.fg_stroke         = egui::Stroke::new(1.0, text_secondary());
+    v.widgets.inactive.bg_stroke         = egui::Stroke::new(1.0, border());
     v.widgets.inactive.rounding          = egui::Rounding::same(5.0);
 
-    v.widgets.hovered.bg_fill            = BG_HOVER;
-    v.widgets.hovered.fg_stroke          = egui::Stroke::new(1.0, TEXT_PRIMARY);
-    v.widgets.hovered.bg_stroke          = egui::Stroke::new(1.0, BORDER_STRONG);
+    v.widgets.hovered.bg_fill            = bg_hover();
+    v.widgets.hovered.fg_stroke          = egui::Stroke::new(1.0, text_primary());
+    v.widgets.hovered.bg_stroke          = egui::Stroke::new(1.0, border_strong());
     v.widgets.hovered.rounding           = egui::Rounding::same(5.0);
 
-    v.widgets.active.bg_fill             = BG_SELECTED;
-    v.widgets.active.fg_stroke           = egui::Stroke::new(1.0, TEXT_PRIMARY);
+    v.widgets.active.bg_fill             = bg_selected();
+    v.widgets.active.fg_stroke           = egui::Stroke::new(1.0, text_primary());
     v.widgets.active.bg_stroke           = egui::Stroke::new(1.0, ACCENT_TEAL);
     v.widgets.active.rounding            = egui::Rounding::same(5.0);
 
-    v.widgets.open.bg_fill               = BG_SELECTED;
-    v.widgets.open.fg_stroke             = egui::Stroke::new(1.0, TEXT_PRIMARY);
+    v.widgets.open.bg_fill               = bg_selected();
+    v.widgets.open.fg_stroke             = egui::Stroke::new(1.0, text_primary());
 
     v.selection.bg_fill  = Color32::from_rgba_premultiplied(82, 150, 255, 55);
     v.selection.stroke   = egui::Stroke::new(1.0, ACCENT_BLUE);
 
-    v.window_stroke  = egui::Stroke::new(1.0, BORDER);
+    v.window_stroke  = egui::Stroke::new(1.0, border());
     v.popup_shadow   = egui::Shadow::NONE;
     v.window_shadow  = egui::Shadow::NONE;
     v.window_rounding = egui::Rounding::same(8.0);
@@ -262,7 +316,7 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         s.spacing.item_spacing     = egui::Vec2::new(8.0, 5.0);
         s.spacing.window_margin    = egui::Margin::same(0.0);
         s.spacing.button_padding   = egui::Vec2::new(12.0, 7.0);
-        s.spacing.interact_size.y  = 26.0;
+        s.spacing.interact_size.y  = 28.0;
         s.visuals.widgets.inactive.rounding = egui::Rounding::same(5.0);
         s.visuals.widgets.hovered.rounding  = egui::Rounding::same(5.0);
         s.visuals.widgets.active.rounding   = egui::Rounding::same(5.0);
