@@ -15,6 +15,8 @@ pub enum SidebarAction {
     StashApply(usize),
     StashPop(usize),
     StashDrop(usize),
+    MergeBranch(String),
+    RebaseOnto(String),
 }
 
 pub struct Sidebar {
@@ -92,7 +94,7 @@ impl Sidebar {
                             let ab = ab_map.get(*name).copied();
                             let resp = branch_row(ui, name, is_head, false, ab);
                             resp.context_menu(|ui| {
-                                ui.set_min_width(160.0);
+                                ui.set_min_width(180.0);
                                 if !is_head {
                                     if ui.button("Checkout").clicked() {
                                         action = Some(SidebarAction::CheckoutBranch(name.to_string()));
@@ -105,6 +107,15 @@ impl Sidebar {
                                     ui.close_menu();
                                 }
                                 if !is_head {
+                                    ui.separator();
+                                    if ui.button("Merge into current").clicked() {
+                                        action = Some(SidebarAction::MergeBranch(name.to_string()));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Rebase onto").clicked() {
+                                        action = Some(SidebarAction::RebaseOnto(name.to_string()));
+                                        ui.close_menu();
+                                    }
                                     ui.separator();
                                     if ui.add(egui::Button::new(
                                         RichText::new("Delete Branch").color(theme::ACCENT_RED),

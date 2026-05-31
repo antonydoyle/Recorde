@@ -172,6 +172,32 @@ fn do_stash_drop(path: &Path, index: usize) -> Result<(), git2::Error> {
     Ok(())
 }
 
+// ── Cherry-pick / revert sequencing ──────────────────────────────────────────
+
+pub fn continue_cherry_pick(state: SharedState) {
+    crate::git::merge::seq_op_pub("cherry-pick --continue", state, |path| {
+        crate::git::merge::run_git_seq(path, &["cherry-pick", "--continue", "--no-edit"])
+    });
+}
+
+pub fn abort_cherry_pick(state: SharedState) {
+    crate::git::merge::seq_op_pub("cherry-pick --abort", state, |path| {
+        crate::git::merge::run_git_seq(path, &["cherry-pick", "--abort"])
+    });
+}
+
+pub fn continue_revert(state: SharedState) {
+    crate::git::merge::seq_op_pub("revert --continue", state, |path| {
+        crate::git::merge::run_git_seq(path, &["revert", "--continue", "--no-edit"])
+    });
+}
+
+pub fn abort_revert(state: SharedState) {
+    crate::git::merge::seq_op_pub("revert --abort", state, |path| {
+        crate::git::merge::run_git_seq(path, &["revert", "--abort"])
+    });
+}
+
 // ── Cherry-pick ───────────────────────────────────────────────────────────────
 
 pub fn cherry_pick(oid_str: &str, state: SharedState) {
