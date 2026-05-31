@@ -39,6 +39,7 @@ pub struct RecordeApp {
     right_tab: RightTab,
     config: Config,
     dark_theme: bool,
+    high_contrast: bool,
     // Modal form inputs
     create_branch_name: String,
     create_branch_checkout: bool,
@@ -95,6 +96,7 @@ impl RecordeApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_repo: Option<std::path::PathBuf>) -> Self {
         let config = Config::load();
         let dark_theme = config.dark_theme;
+        let high_contrast = config.high_contrast;
         let colorblind_graph = config.colorblind_graph;
         let default_editor = config.default_editor.clone();
         let terminal = config.terminal.clone();
@@ -121,7 +123,7 @@ impl RecordeApp {
         }
         cc.egui_ctx.set_fonts(fonts);
 
-        theme::apply(&cc.egui_ctx, dark_theme);
+        theme::apply(&cc.egui_ctx, dark_theme, high_contrast);
         if config.font_scale != 1.0 {
             cc.egui_ctx.set_pixels_per_point(config.font_scale);
         }
@@ -153,6 +155,7 @@ impl RecordeApp {
             right_tab: RightTab::Changes,
             config,
             dark_theme,
+            high_contrast,
             state,
             create_branch_name: String::new(),
             create_branch_checkout: true,
@@ -251,7 +254,7 @@ impl RecordeApp {
                 self.dark_theme = !self.dark_theme;
                 self.config.dark_theme = self.dark_theme;
                 self.config.save();
-                theme::apply(ctx, self.dark_theme);
+                theme::apply(ctx, self.dark_theme, self.high_contrast);
             }
             ToolbarAction::ToggleSearch => {
                 let mut s = self.state.lock().unwrap();
@@ -595,7 +598,7 @@ impl RecordeApp {
                             self.dark_theme = !self.dark_theme;
                             self.config.dark_theme = self.dark_theme;
                             self.config.save();
-                            theme::apply(ctx, self.dark_theme);
+                            theme::apply(ctx, self.dark_theme, self.high_contrast);
                         }
                         _ => {}
                     }
@@ -706,15 +709,22 @@ impl RecordeApp {
         if ui.checkbox(&mut self.dark_theme, RichText::new("Dark theme").color(theme::text_secondary())).changed() {
             self.config.dark_theme = self.dark_theme;
             self.config.save();
-            theme::apply(ctx, self.dark_theme);
+            theme::apply(ctx, self.dark_theme, self.high_contrast);
+        }
+        if ui.checkbox(&mut self.high_contrast, RichText::new("High contrast").color(theme::text_secondary())).changed() {
+            self.config.high_contrast = self.high_contrast;
+            self.config.save();
+            theme::apply(ctx, self.dark_theme, self.high_contrast);
         }
         ui.add_space(8.0);
         ui.label(RichText::new("Default editor").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.default_editor_input)
-                .desired_width(340.0)
-                .hint_text("code, codium, zed, vim, ..."));
+            ui.add_sized(
+                [340.0, 28.0],
+                egui::TextEdit::singleline(&mut self.default_editor_input)
+                    .hint_text("code, codium, zed, vim, ..."),
+            );
             if ui.add(secondary_btn("Save")).clicked() {
                 self.config.default_editor = self.default_editor_input.trim().to_string();
                 self.config.save();
@@ -758,7 +768,7 @@ impl RecordeApp {
             ui.add_enabled_ui(self.config.auto_fetch, |ui| {
                 ui.label(RichText::new("Interval (seconds)").color(theme::text_secondary()));
                 let mut interval_str = self.config.auto_fetch_interval_secs.to_string();
-                if ui.add(egui::TextEdit::singleline(&mut interval_str).desired_width(80.0)).changed() {
+                if ui.add_sized([80.0, 28.0], egui::TextEdit::singleline(&mut interval_str)).changed() {
                     if let Ok(v) = interval_str.trim().parse::<u32>() {
                         self.config.auto_fetch_interval_secs = v;
                         self.config.save();
@@ -773,9 +783,11 @@ impl RecordeApp {
         ui.add_space(4.0);
         ui.label(RichText::new("Terminal").color(theme::text_secondary()));
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.terminal_input)
-                .desired_width(340.0)
-                .hint_text("xterm, gnome-terminal, konsole, ..."));
+            ui.add_sized(
+                [340.0, 28.0],
+                egui::TextEdit::singleline(&mut self.terminal_input)
+                    .hint_text("xterm, gnome-terminal, konsole, ..."),
+            );
             if ui.add(secondary_btn("Save")).clicked() {
                 self.config.terminal = self.terminal_input.trim().to_string();
                 self.config.save();
@@ -784,9 +796,11 @@ impl RecordeApp {
         ui.add_space(4.0);
         ui.label(RichText::new("Diff tool").color(theme::text_secondary()));
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.diff_tool_input)
-                .desired_width(340.0)
-                .hint_text("meld, kdiff3, vimdiff, ..."));
+            ui.add_sized(
+                [340.0, 28.0],
+                egui::TextEdit::singleline(&mut self.diff_tool_input)
+                    .hint_text("meld, kdiff3, vimdiff, ..."),
+            );
             if ui.add(secondary_btn("Save")).clicked() {
                 self.config.diff_tool = self.diff_tool_input.trim().to_string();
                 self.config.save();
@@ -795,9 +809,11 @@ impl RecordeApp {
         ui.add_space(4.0);
         ui.label(RichText::new("Merge tool").color(theme::text_secondary()));
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.merge_tool_input)
-                .desired_width(340.0)
-                .hint_text("meld, kdiff3, ..."));
+            ui.add_sized(
+                [340.0, 28.0],
+                egui::TextEdit::singleline(&mut self.merge_tool_input)
+                    .hint_text("meld, kdiff3, ..."),
+            );
             if ui.add(secondary_btn("Save")).clicked() {
                 self.config.merge_tool = self.merge_tool_input.trim().to_string();
                 self.config.save();
@@ -893,10 +909,14 @@ impl RecordeApp {
             }
             settings_text_field(ui, "Username", &mut self.add_account_username);
             ui.horizontal(|ui| {
-                ui.set_min_height(22.0);
+                ui.set_min_height(28.0);
                 ui.label(RichText::new(format!("{:<12}", "Token (PAT)")).monospace().color(theme::text_muted()).size(11.5));
-                ui.add(egui::TextEdit::singleline(&mut self.add_account_token)
-                    .password(true).desired_width(260.0).hint_text("ghp_… / glpat-…"));
+                ui.add_sized(
+                    [260.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.add_account_token)
+                        .password(true)
+                        .hint_text("ghp_… / glpat-…"),
+                );
             });
             if let Some(ref err) = self.add_account_error.clone() {
                 ui.label(RichText::new(err).color(theme::ACCENT_RED).size(11.5));
@@ -1098,8 +1118,11 @@ impl RecordeApp {
                 .unwrap_or_default();
         }
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.origin_url_input)
-                .desired_width(340.0).hint_text("https://github.com/owner/repo.git"));
+            ui.add_sized(
+                [340.0, 28.0],
+                egui::TextEdit::singleline(&mut self.origin_url_input)
+                    .hint_text("https://github.com/owner/repo.git"),
+            );
             if ui.add(secondary_btn("Save")).clicked() {
                 let url = self.origin_url_input.trim().to_string();
                 if !url.is_empty() {
@@ -1351,6 +1374,9 @@ impl RecordeApp {
         self.config.show_sidebar = true;
         self.config.show_right_panel = true;
         self.config.show_diff_panel = true;
+        self.config.sidebar_width = None;
+        self.config.right_panel_width = None;
+        self.config.diff_panel_height = None;
         if let Some(ref path) = self.state.lock().unwrap().repo_path.clone() {
             self.config.reset_repo_column_widths(path);
         }
@@ -1506,9 +1532,9 @@ impl eframe::App for RecordeApp {
         if let Some(a) = toolbar_action { self.handle_toolbar(ctx, a); }
 
         if self.config.show_diff_panel {
-            egui::TopBottomPanel::bottom("diff_panel")
+            let diff_response = egui::TopBottomPanel::bottom("diff_panel")
                 .resizable(true)
-                .default_height(300.0)
+                .default_height(self.config.diff_panel_height.unwrap_or(300.0))
                 .height_range(160.0..=480.0)
                 .frame(egui::Frame::none().fill(theme::bg_app()))
                 .show(ctx, |ui| {
@@ -1522,13 +1548,18 @@ impl eframe::App for RecordeApp {
                         focus_ring(ui);
                     }
                 });
+            let h = diff_response.response.rect.height();
+            if self.config.diff_panel_height.map_or(true, |old| (old - h).abs() > 1.0) {
+                self.config.diff_panel_height = Some(h);
+                self.config.save();
+            }
         }
 
         if self.config.show_sidebar {
-            egui::SidePanel::left("sidebar")
+            let sidebar_response = egui::SidePanel::left("sidebar")
                 .resizable(true)
-                .default_width(250.0)
-                .width_range(200.0..=340.0)
+                .default_width(self.config.sidebar_width.unwrap_or(250.0))
+                .width_range(180.0..=360.0)
                 .frame(egui::Frame::none())
                 .show(ctx, |ui| {
                     let a = self.sidebar.show(ui);
@@ -1537,13 +1568,18 @@ impl eframe::App for RecordeApp {
                         focus_ring(ui);
                     }
                 });
+            let w = sidebar_response.response.rect.width();
+            if self.config.sidebar_width.map_or(true, |old| (old - w).abs() > 1.0) {
+                self.config.sidebar_width = Some(w);
+                self.config.save();
+            }
         }
 
         if self.config.show_right_panel {
-            egui::SidePanel::right("right_panel_v2")
+            let right_response = egui::SidePanel::right("right_panel_v2")
                 .resizable(true)
-                .default_width(260.0)
-                .width_range(180.0..=560.0)
+                .default_width(self.config.right_panel_width.unwrap_or(240.0))
+                .width_range(160.0..=560.0)
                 .frame(egui::Frame::none())
                 .show(ctx, |ui| {
                 let has_commit = self.state.lock().unwrap().selected_commit.is_some();
@@ -1611,6 +1647,11 @@ impl eframe::App for RecordeApp {
                     focus_ring(ui);
                 }
             });
+            let w = right_response.response.rect.width();
+            if self.config.right_panel_width.map_or(true, |old| (old - w).abs() > 1.0) {
+                self.config.right_panel_width = Some(w);
+                self.config.save();
+            }
         }
 
         // Central panel — commit graph (always)
@@ -3116,7 +3157,7 @@ fn settings_text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
         ui.set_width(460.0);
         ui.label(RichText::new(label).color(theme::text_muted()).font(egui::FontId::monospace(11.0)));
         ui.add_space(8.0);
-        ui.add(egui::TextEdit::singleline(value).desired_width(340.0));
+        ui.add_sized([340.0, 28.0], egui::TextEdit::singleline(value));
     });
 }
 
