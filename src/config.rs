@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::auth::StoredAccount;
+
 const MAX_RECENT: usize = 10;
 
 /// Per-repository persistent settings (column widths, etc.).
@@ -11,6 +13,24 @@ pub struct RepoConfig {
     pub graph_w: Option<f32>,
     pub time_w:  Option<f32>,
     pub hash_w:  Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum PullStrategy {
+    #[default]
+    Merge,
+    Rebase,
+    FfOnly,
+}
+
+impl PullStrategy {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Merge   => "Merge",
+            Self::Rebase  => "Rebase",
+            Self::FfOnly  => "Fast-forward only",
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -27,10 +47,28 @@ pub struct Config {
     pub signoff_default: bool,
     #[serde(default = "default_protected")]
     pub protected_branches: Vec<String>,
+    /// Provider accounts (no tokens — tokens live in the token store).
+    #[serde(default)]
+    pub accounts: Vec<StoredAccount>,
+    #[serde(default)]
+    pub pull_strategy: PullStrategy,
+    #[serde(default)]
+    pub fetch_prune: bool,
+    #[serde(default)]
+    pub auto_fetch: bool,
+    #[serde(default = "default_300")]
+    pub auto_fetch_interval_secs: u32,
+    #[serde(default)]
+    pub terminal: String,
+    #[serde(default)]
+    pub diff_tool: String,
+    #[serde(default)]
+    pub merge_tool: String,
 }
 
 fn default_true() -> bool { true }
 fn default_protected() -> Vec<String> { vec!["main".into(), "master".into()] }
+fn default_300() -> u32 { 300 }
 
 impl Config {
     pub fn load() -> Self {
