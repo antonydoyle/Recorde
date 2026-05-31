@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::git::patch;
+use crate::git::{merge::run_git_seq, patch};
 use crate::state::{PendingDiscard, SharedState};
 
 fn reload(state: SharedState) {
@@ -51,23 +51,77 @@ pub fn unstage_all(state: SharedState) {
 
 // ── Commit ────────────────────────────────────────────────────────────────────
 
-pub fn create_commit(message: &str, state: SharedState) {
+pub fn create_commit(message: &str, signoff: bool, state: SharedState) {
     let msg = message.to_string();
     let rp = state.lock().unwrap().repo_path.clone();
     let Some(rp) = rp else { return };
-    std::thread::spawn(move || match do_commit(&rp, &msg) {
-        Ok(()) => reload(state),
-        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+    std::thread::spawn(move || {
+        match git_commit(&rp, &msg, false, signoff) {
+            Ok(out) => {
+                state.lock().unwrap().console_log.push(out.trim().to_string());
+                reload(state);
+            }
+            Err(e) => {
+                let mut s = state.lock().unwrap();
+                s.console_log.push(format!("error: {}", e.trim()));
+                s.error = Some(e.trim().to_string());
+            }
+        }
     });
 }
 
-pub fn amend_commit(message: &str, state: SharedState) {
+pub fn amend_commit(message: &str, signoff: bool, state: SharedState) {
     let msg = message.to_string();
     let rp = state.lock().unwrap().repo_path.clone();
     let Some(rp) = rp else { return };
-    std::thread::spawn(move || match do_amend(&rp, &msg) {
+    std::thread::spawn(move || {
+        match git_commit(&rp, &msg, true, signoff) {
+            Ok(out) => {
+                state.lock().unwrap().console_log.push(out.trim().to_string());
+                reload(state);
+            }
+            Err(e) => {
+                let mut s = state.lock().unwrap();
+                s.console_log.push(format!("error: {}", e.trim()));
+                s.error = Some(e.trim().to_string());
+            }
+        }
+    });
+}
+
+// ── Reset ─────────────────────────────────────────────────────────────────────
+
+pub fn reset_soft(state: SharedState) {
+    let rp = state.lock().unwrap().repo_path.clone();
+    let Some(rp) = rp else { return };
+    std::thread::spawn(move || match run_git_seq(&rp, &["reset", "--soft", "HEAD~1"]) {
         Ok(()) => reload(state),
-        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+        Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+    });
+}
+
+pub fn reset_mixed(state: SharedState) {
+    let rp = state.lock().unwrap().repo_path.clone();
+    let Some(rp) = rp else { return };
+    std::thread::spawn(move || match run_git_seq(&rp, &["reset", "--mixed", "HEAD~1"]) {
+        Ok(()) => reload(state),
+        Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+    });
+}
+
+pub fn reset_hard(state: SharedState) {
+    let rp = state.lock().unwrap().repo_path.clone();
+    let Some(rp) = rp else {
+        state.lock().unwrap().pending_discard = None;
+        return;
+    };
+    std::thread::spawn(move || {
+        let result = run_git_seq(&rp, &["reset", "--hard", "HEAD~1"]);
+        state.lock().unwrap().pending_discard = None;
+        match result {
+            Ok(()) => reload(state),
+            Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+        }
     });
 }
 
@@ -232,16 +286,24 @@ fn do_unstage_all(repo_path: &Path) -> Result<(), git2::Error> {
     Ok(())
 }
 
-fn do_commit(repo_path: &Path, message: &str) -> Result<(), git2::Error> {
-    let repo = git2::Repository::open(repo_path)?;
-    let mut index = repo.index()?;
-    let tree_id = index.write_tree()?;
-    let tree = repo.find_tree(tree_id)?;
-    let sig = repo.signature()?;
-    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
-    Ok(())
+/// Shell out to `git commit -m <msg>` so hooks (pre-commit, commit-msg, post-commit) run.
+/// Returns combined stdout+stderr on success, Err(combined) on failure.
+fn git_commit(repo_path: &Path, message: &str, amend: bool, signoff: bool) -> Result<String, String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(repo_path)
+       .arg("commit")
+       .arg("-m").arg(message);
+    if amend   { cmd.arg("--amend"); }
+    if signoff { cmd.arg("--signoff"); }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    if out.status.success() { Ok(combined) } else { Err(combined) }
 }
 
 fn do_discard_file(repo_path: &Path, file_path: &str) -> Result<(), git2::Error> {
@@ -249,16 +311,5 @@ fn do_discard_file(repo_path: &Path, file_path: &str) -> Result<(), git2::Error>
     let mut co = git2::build::CheckoutBuilder::new();
     co.path(file_path).force();
     repo.checkout_index(None, Some(&mut co))?;
-    Ok(())
-}
-
-fn do_amend(repo_path: &Path, message: &str) -> Result<(), git2::Error> {
-    let repo = git2::Repository::open(repo_path)?;
-    let mut index = repo.index()?;
-    let tree_id = index.write_tree()?;
-    let tree = repo.find_tree(tree_id)?;
-    let sig = repo.signature()?;
-    let head = repo.head()?.peel_to_commit()?;
-    head.amend(Some("HEAD"), Some(&sig), Some(&sig), None, Some(message), Some(&tree))?;
     Ok(())
 }
