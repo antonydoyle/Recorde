@@ -241,6 +241,21 @@ pub struct AppState {
     pub pr_selected: Option<usize>,
     pub pr_filter: crate::providers::PrFilter,
 
+    // ── Phase 13: Provider Integrations ──────────────────────────────────────
+    pub issue_list: Vec<crate::providers::IssueItem>,
+    pub issue_loading: bool,
+    pub issue_error: Option<String>,
+    pub issue_selected: Option<usize>,
+    pub issue_filter: crate::providers::IssueFilter,
+
+    pub ci_runs: Vec<crate::providers::CiRun>,
+    pub ci_loading: bool,
+    pub ci_error: Option<String>,
+
+    pub releases: Vec<crate::providers::ReleaseItem>,
+    pub releases_loading: bool,
+    pub releases_error: Option<String>,
+
     // ── Phase 7: History, Search, Review ─────────────────────────────────────
     /// When set, the commit graph dims commits NOT in this set (file history mode).
     pub file_history_path: Option<String>,
