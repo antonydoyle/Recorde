@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Recorde
+Comment=Git client
+Exec=recorde
+Icon=recorde
+Type=Application
+Categories=Development;VersionControl;
+Keywords=git;version-control;repository;
+StartupWMClass=recorde

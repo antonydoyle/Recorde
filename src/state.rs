@@ -105,6 +105,13 @@ pub enum DiffContext {
     UnstagedFile,
 }
 
+/// A recently-deleted branch that can be restored.
+#[derive(Debug, Clone)]
+pub struct DeletedBranch {
+    pub name: String,
+    pub oid: String,
+}
+
 /// A destructive action pending user confirmation.
 #[derive(Debug, Clone)]
 pub enum PendingDiscard {
@@ -183,6 +190,8 @@ pub struct AppState {
     pub focused_pane: u8,
     /// Set by the graph context menu to trigger opening the rebase modal.
     pub pending_open_rebase: Option<String>,
+    /// Recently deleted branches (up to 5) that can be restored. Persists until app is closed.
+    pub deleted_branches: Vec<DeletedBranch>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
