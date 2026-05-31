@@ -16,15 +16,23 @@ pub struct JobHandle {
 pub enum JobKind {
     FetchAll,
     PullBranch,
+    PullWithRebase,
+    PullFfOnly,
     PushBranch,
+    PushWithLease,
+    PushSetUpstream,
 }
 
 impl JobKind {
     pub fn label(&self) -> &'static str {
         match self {
-            JobKind::FetchAll  => "Fetching…",
-            JobKind::PullBranch => "Pulling…",
-            JobKind::PushBranch => "Pushing…",
+            JobKind::FetchAll       => "Fetching…",
+            JobKind::PullBranch     => "Pulling…",
+            JobKind::PullWithRebase => "Pulling (rebase)…",
+            JobKind::PullFfOnly     => "Pulling (ff-only)…",
+            JobKind::PushBranch     => "Pushing…",
+            JobKind::PushWithLease  => "Pushing (with lease)…",
+            JobKind::PushSetUpstream => "Pushing (set upstream)…",
         }
     }
 }

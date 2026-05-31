@@ -4,6 +4,7 @@ use std::sync::{mpsc::Sender, Arc};
 
 use crate::git::error::GitError;
 use crate::git::job::{JobId, JobKind, JobProgress};
+use crate::git::merge::run_git_seq;
 use crate::git::runner::GitRunner;
 use crate::state::SharedState;
 
@@ -14,14 +15,34 @@ pub fn fetch_all(runner: &mut GitRunner, state: &SharedState) {
     runner.submit(JobKind::FetchAll, path);
 }
 
+pub fn pull_branch(runner: &mut GitRunner, state: &SharedState) {
+    let Some(path) = repo_path(state) else { return };
+    runner.submit(JobKind::PullBranch, path);
+}
+
+pub fn pull_with_rebase(runner: &mut GitRunner, state: &SharedState) {
+    let Some(path) = repo_path(state) else { return };
+    runner.submit(JobKind::PullWithRebase, path);
+}
+
+pub fn pull_ff_only(runner: &mut GitRunner, state: &SharedState) {
+    let Some(path) = repo_path(state) else { return };
+    runner.submit(JobKind::PullFfOnly, path);
+}
+
 pub fn push_branch(runner: &mut GitRunner, state: &SharedState) {
     let Some(path) = repo_path(state) else { return };
     runner.submit(JobKind::PushBranch, path);
 }
 
-pub fn pull_branch(runner: &mut GitRunner, state: &SharedState) {
+pub fn push_with_lease(runner: &mut GitRunner, state: &SharedState) {
     let Some(path) = repo_path(state) else { return };
-    runner.submit(JobKind::PullBranch, path);
+    runner.submit(JobKind::PushWithLease, path);
+}
+
+pub fn push_set_upstream(runner: &mut GitRunner, state: &SharedState) {
+    let Some(path) = repo_path(state) else { return };
+    runner.submit(JobKind::PushSetUpstream, path);
 }
 
 fn repo_path(state: &SharedState) -> Option<PathBuf> {
@@ -29,6 +50,49 @@ fn repo_path(state: &SharedState) -> Option<PathBuf> {
 }
 
 // ── Runner dispatch functions (called from runner::dispatch) ──────────────────
+
+pub fn run_pull_with_rebase(
+    path: &Path,
+    cancel: &Arc<AtomicBool>,
+    job_id: JobId,
+    progress_tx: &Sender<JobProgress>,
+) -> Result<(), GitError> {
+    run_fetch_all(path, cancel, job_id, progress_tx)?;
+    if cancel.load(Ordering::Relaxed) { return Err(GitError::Cancelled); }
+    // Rebase current branch onto its upstream
+    run_git_seq(path, &["rebase", "@{u}"])
+}
+
+pub fn run_pull_ff_only(
+    path: &Path,
+    cancel: &Arc<AtomicBool>,
+    job_id: JobId,
+    progress_tx: &Sender<JobProgress>,
+) -> Result<(), GitError> {
+    run_fetch_all(path, cancel, job_id, progress_tx)?;
+    if cancel.load(Ordering::Relaxed) { return Err(GitError::Cancelled); }
+    run_git_seq(path, &["merge", "--ff-only", "@{u}"])
+}
+
+pub fn run_push_with_lease(
+    path: &Path,
+    cancel: &Arc<AtomicBool>,
+    _job_id: JobId,
+    _progress_tx: &Sender<JobProgress>,
+) -> Result<(), GitError> {
+    if cancel.load(Ordering::Relaxed) { return Err(GitError::Cancelled); }
+    run_git_seq(path, &["push", "--force-with-lease"])
+}
+
+pub fn run_push_set_upstream(
+    path: &Path,
+    cancel: &Arc<AtomicBool>,
+    _job_id: JobId,
+    _progress_tx: &Sender<JobProgress>,
+) -> Result<(), GitError> {
+    if cancel.load(Ordering::Relaxed) { return Err(GitError::Cancelled); }
+    run_git_seq(path, &["push", "--set-upstream", "origin", "HEAD"])
+}
 
 pub fn run_fetch_all(
     path: &Path,

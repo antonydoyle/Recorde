@@ -1,7 +1,7 @@
 use egui::{Color32, Context, Key, Modifiers, RichText, Stroke};
 
 use crate::config::Config;
-use crate::git::{branches, job::ActiveOp, job::JobProgress, operations::load_repo, rebase, remote, runner::GitRunner, staging};
+use crate::git::{branches, job::ActiveOp, job::JobProgress, merge, operations::load_repo, rebase, remote, runner::GitRunner, staging};
 use crate::state::{ModalKind, PendingDiscard, RebaseEntry, new_shared_state, SharedState};
 use crate::theme;
 use crate::ui::{
@@ -134,9 +134,15 @@ impl RecordeApp {
             ToolbarAction::CreateBranch => {
                 self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None };
             }
-            ToolbarAction::Fetch => remote::fetch_all(&mut self.runner, &self.state),
-            ToolbarAction::Pull  => remote::pull_branch(&mut self.runner, &self.state),
-            ToolbarAction::Push  => remote::push_branch(&mut self.runner, &self.state),
+            ToolbarAction::Fetch          => remote::fetch_all(&mut self.runner, &self.state),
+            ToolbarAction::Pull           => remote::pull_branch(&mut self.runner, &self.state),
+            ToolbarAction::PullWithRebase => remote::pull_with_rebase(&mut self.runner, &self.state),
+            ToolbarAction::PullFfOnly     => remote::pull_ff_only(&mut self.runner, &self.state),
+            ToolbarAction::Push           => remote::push_branch(&mut self.runner, &self.state),
+            ToolbarAction::PushWithLease  => remote::push_with_lease(&mut self.runner, &self.state),
+            ToolbarAction::PushSetUpstream => remote::push_set_upstream(&mut self.runner, &self.state),
+            ToolbarAction::MergeBranch    => { self.state.lock().unwrap().modal = ModalKind::MergeBranch; }
+            ToolbarAction::RebaseOnto     => { self.state.lock().unwrap().modal = ModalKind::RebaseOnto; }
             ToolbarAction::ToggleTheme => {
                 self.dark_theme = !self.dark_theme;
                 self.config.dark_theme = self.dark_theme;
@@ -169,9 +175,11 @@ impl RecordeApp {
                 self.state.lock().unwrap().modal = ModalKind::CreateTag { from_oid: None },
             SidebarAction::DeleteTag(n)     =>
                 self.state.lock().unwrap().modal = ModalKind::ConfirmDeleteTag { tag_name: n },
-            SidebarAction::StashApply(i) => branches::stash_apply(i, self.state.clone()),
-            SidebarAction::StashPop(i)   => branches::stash_pop(i, self.state.clone()),
-            SidebarAction::StashDrop(i)  => branches::stash_drop(i, self.state.clone()),
+            SidebarAction::StashApply(i)  => branches::stash_apply(i, self.state.clone()),
+            SidebarAction::StashPop(i)    => branches::stash_pop(i, self.state.clone()),
+            SidebarAction::StashDrop(i)   => branches::stash_drop(i, self.state.clone()),
+            SidebarAction::MergeBranch(n) => merge::merge_branch(&n, self.state.clone()),
+            SidebarAction::RebaseOnto(n)  => rebase::rebase_onto(&n, self.state.clone()),
         }
     }
 
@@ -296,6 +304,18 @@ impl RecordeApp {
                     if cancel { self.state.lock().unwrap().modal = ModalKind::None; }
                 });
             }),
+
+            ModalKind::MergeBranch => self.render_branch_picker(ctx, "Merge Branch",
+                "Select a branch to merge into the current branch:",
+                |app, branch| {
+                    merge::merge_branch(&branch, app.state.clone());
+                }),
+
+            ModalKind::RebaseOnto => self.render_branch_picker(ctx, "Rebase Onto",
+                "Select a branch to rebase current onto:",
+                |app, branch| {
+                    rebase::rebase_onto(&branch, app.state.clone());
+                }),
         }
 
         // ── Command palette ───────────────────────────────────────────────
@@ -696,6 +716,9 @@ impl eframe::App for RecordeApp {
         // ── Drain runner progress events ──────────────────────────────────
         self.apply_runner_progress();
 
+        // ── In-progress operation banner (rebase/merge/cherry-pick/revert) ─
+        self.show_in_progress_banner(ctx);
+
         // ── Pending actions from graph context menu ───────────────────────
         let pending_rebase = self.state.lock().unwrap().pending_open_rebase.take();
         if let Some(oid) = pending_rebase {
@@ -883,6 +906,130 @@ impl eframe::App for RecordeApp {
 }
 
 impl RecordeApp {
+    /// Generic branch-picker modal used for Merge and Rebase.
+    fn render_branch_picker(&mut self, ctx: &Context, title: &str, hint: &str, on_confirm: impl Fn(&mut Self, String)) {
+        let branches_list: Vec<String> = {
+            let s = self.state.lock().unwrap();
+            let head = s.head_branch.clone().unwrap_or_default();
+            s.commit_graph.as_ref()
+                .map(|g| {
+                    let mut refs: Vec<&str> = g.nodes.iter()
+                        .flat_map(|n| n.refs.iter().map(|r| r.as_str()))
+                        .collect();
+                    refs.sort_unstable(); refs.dedup();
+                    refs.iter()
+                        .filter(|r| !r.contains('/') && **r != head.as_str())
+                        .map(|s| s.to_string()).collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let mut close = false;
+        let mut chosen: Option<String> = None;
+
+        egui::Window::new(title)
+            .collapsible(false).resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+            .show(ctx, |ui| {
+                ui.set_min_width(340.0);
+                ui.label(RichText::new(title).color(theme::TEXT_PRIMARY).size(15.0).strong());
+                ui.add_space(6.0);
+                ui.label(styled_muted(hint));
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for name in &branches_list {
+                        if ui.selectable_label(false, RichText::new(name).color(theme::TEXT_SECONDARY).size(12.5)).clicked() {
+                            chosen = Some(name.clone());
+                        }
+                    }
+                    if branches_list.is_empty() {
+                        ui.label(styled_muted("No other local branches."));
+                    }
+                });
+                ui.add_space(8.0);
+                if ui.add(secondary_btn("Cancel")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                    close = true;
+                }
+            });
+
+        if let Some(branch) = chosen {
+            self.state.lock().unwrap().modal = ModalKind::None;
+            on_confirm(self, branch);
+        } else if close {
+            self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
+    /// Persistent banner shown when a git sequencing operation is in progress.
+    fn show_in_progress_banner(&mut self, ctx: &Context) {
+        let caps = { self.state.lock().unwrap().capabilities.clone() };
+        let Some(caps) = caps else { return };
+
+        let (label, show_skip) = if caps.rebase_in_progress {
+            ("Rebase in progress", true)
+        } else if caps.merge_in_progress {
+            ("Merge in progress", false)
+        } else if caps.cherry_pick_in_progress {
+            ("Cherry-pick in progress", false)
+        } else if caps.revert_in_progress {
+            ("Revert in progress", false)
+        } else {
+            return;
+        };
+
+        let mut do_continue = false;
+        let mut do_skip = false;
+        let mut do_abort = false;
+
+        egui::TopBottomPanel::top("in_progress_banner")
+            .exact_height(36.0)
+            .frame(egui::Frame::none()
+                .fill(Color32::from_rgb(0x4A, 0x32, 0x00))
+                .inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.label(RichText::new("⟳").color(theme::ACCENT_YELLOW).size(14.0));
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(label).color(theme::ACCENT_YELLOW).size(12.5).strong());
+                    ui.add_space(16.0);
+                    ui.label(styled_muted("Resolve conflicts, stage changes, then:"));
+                    ui.add_space(10.0);
+                    if ui.add(egui::Button::new(RichText::new("Continue").color(Color32::WHITE).size(12.0))
+                        .fill(theme::ACCENT_TEAL).rounding(5.0)
+                        .min_size(egui::Vec2::new(72.0, 24.0))).clicked() { do_continue = true; }
+                    if show_skip {
+                        ui.add_space(4.0);
+                        if ui.add(egui::Button::new(RichText::new("Skip").color(theme::TEXT_SECONDARY).size(12.0))
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::new(1.0, theme::BORDER))
+                            .rounding(5.0)
+                            .min_size(egui::Vec2::new(52.0, 24.0))).clicked() { do_skip = true; }
+                    }
+                    ui.add_space(4.0);
+                    if ui.add(egui::Button::new(RichText::new("Abort").color(theme::ACCENT_RED).size(12.0))
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::new(1.0, theme::ACCENT_RED.gamma_multiply(0.5)))
+                        .rounding(5.0)
+                        .min_size(egui::Vec2::new(52.0, 24.0))).clicked() { do_abort = true; }
+                });
+            });
+
+        if do_continue {
+            if caps.rebase_in_progress       { rebase::continue_rebase(self.state.clone()); }
+            else if caps.merge_in_progress   { merge::continue_merge(self.state.clone()); }
+            else if caps.cherry_pick_in_progress { branches::continue_cherry_pick(self.state.clone()); }
+            else if caps.revert_in_progress  { branches::continue_revert(self.state.clone()); }
+        }
+        if do_skip && caps.rebase_in_progress { rebase::skip_rebase(self.state.clone()); }
+        if do_abort {
+            if caps.rebase_in_progress       { rebase::abort_rebase(self.state.clone()); }
+            else if caps.merge_in_progress   { merge::abort_merge(self.state.clone()); }
+            else if caps.cherry_pick_in_progress { branches::abort_cherry_pick(self.state.clone()); }
+            else if caps.revert_in_progress  { branches::abort_revert(self.state.clone()); }
+        }
+    }
+
     fn apply_runner_progress(&mut self) {
         let events = self.runner.drain_progress();
         if events.is_empty() { return; }
@@ -1183,6 +1330,16 @@ impl RecordeApp {
                             self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None };
                             ui.close_menu();
                         }
+                        ui.separator();
+                        if ui.add_enabled(has_repo, egui::Button::new("Merge Branch…")).clicked() {
+                            self.state.lock().unwrap().modal = ModalKind::MergeBranch;
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Rebase Onto…")).clicked() {
+                            self.state.lock().unwrap().modal = ModalKind::RebaseOnto;
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         if ui.add_enabled(has_repo, egui::Button::new("Stash Changes")).clicked() {
                             branches::stash_save(self.state.clone());
                             ui.close_menu();

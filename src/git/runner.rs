@@ -71,8 +71,12 @@ fn worker_loop(job_rx: Receiver<RawJob>, progress_tx: Sender<JobProgress>) {
 fn dispatch(job: &RawJob) -> Result<(), GitError> {
     use crate::git::remote;
     match job.kind {
-        JobKind::FetchAll  => remote::run_fetch_all(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
-        JobKind::PullBranch => remote::run_pull(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
-        JobKind::PushBranch => remote::run_push(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
+        JobKind::FetchAll        => remote::run_fetch_all(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
+        JobKind::PullBranch      => remote::run_pull(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
+        JobKind::PullWithRebase  => remote::run_pull_with_rebase(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
+        JobKind::PullFfOnly      => remote::run_pull_ff_only(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
+        JobKind::PushBranch      => remote::run_push(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
+        JobKind::PushWithLease   => remote::run_push_with_lease(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
+        JobKind::PushSetUpstream => remote::run_push_set_upstream(&job.repo_path, &job.cancel, job.id, &job.progress_tx),
     }
 }
