@@ -1,6 +1,6 @@
 use egui::{Color32, RichText, Ui, Vec2};
 
-use crate::git::{conflicts, operations::load_workdir_diff, staging};
+use crate::git::{conflicts, operations::{load_blame, load_file_history, load_workdir_diff}, staging};
 use crate::state::{ConflictedFile, DiffContext, PendingDiscard, SharedState, WorkingDirFile};
 use crate::theme;
 
@@ -156,6 +156,20 @@ impl StagingPanel {
                                 }
                             });
                             resp.context_menu(|ui| {
+                                if ui.button("Show File History").clicked() {
+                                    load_file_history(&f.path, self.state.clone());
+                                    ui.close_menu();
+                                }
+                                if ui.button("Blame").clicked() {
+                                    {
+                                        let mut s = self.state.lock().unwrap();
+                                        s.selected_file = Some(f.path.clone());
+                                        s.show_blame = true;
+                                    }
+                                    load_blame(&f.path, self.state.clone());
+                                    ui.close_menu();
+                                }
+                                ui.separator();
                                 if ui.button("Stash This File").clicked() {
                                     do_stash_file = Some(f.path.clone());
                                     ui.close_menu();

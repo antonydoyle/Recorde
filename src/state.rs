@@ -105,6 +105,26 @@ pub enum DiffContext {
     UnstagedFile,
 }
 
+/// One entry from `git reflog`.
+#[derive(Debug, Clone)]
+pub struct ReflogEntry {
+    pub oid: String,
+    pub short_oid: String,
+    pub refname: String,  // e.g. "HEAD@{0}"
+    pub message: String,  // e.g. "commit: fix typo"
+    pub timestamp: i64,
+}
+
+/// Per-line annotation produced by `git blame`.
+#[derive(Debug, Clone)]
+pub struct BlameLine {
+    pub lineno: usize,
+    pub short_oid: String,
+    pub author: String,
+    pub timestamp: i64,
+    pub content: String,
+}
+
 /// A recently-deleted branch that can be restored.
 #[derive(Debug, Clone)]
 pub struct DeletedBranch {
@@ -146,6 +166,9 @@ pub enum ModalKind {
     ConfirmDetachedCheckout { oid: String },
     StashWithMessage,
     CreateBranchFromStash { stash_index: usize },
+    Reflog,
+    Bisect,
+    Compare { base_oid: String, compare_oid: String },
 }
 
 #[derive(Default)]
@@ -192,6 +215,26 @@ pub struct AppState {
     pub pending_open_rebase: Option<String>,
     /// Recently deleted branches (up to 5) that can be restored. Persists until app is closed.
     pub deleted_branches: Vec<DeletedBranch>,
+
+    // ── Phase 7: History, Search, Review ─────────────────────────────────────
+    /// When set, the commit graph dims commits NOT in this set (file history mode).
+    pub file_history_path: Option<String>,
+    pub file_history_oids: std::collections::HashSet<String>,
+    /// First commit selected for a two-commit comparison.
+    pub compare_base_oid: Option<String>,
+    /// Files changed between compare_base and compare_oid (loaded on demand).
+    pub compare_files: Vec<ChangedFile>,
+    /// Current file diff shown inside the Compare modal.
+    pub compare_diff: Option<FileDiff>,
+    pub compare_selected_file: Option<String>,
+    /// Reflog entries loaded for the current repo.
+    pub reflog_entries: Vec<ReflogEntry>,
+    /// Blame annotations for the currently-selected file.
+    pub blame_lines: Vec<BlameLine>,
+    pub show_blame: bool,
+    /// Bisect state (set when `git bisect start` is active).
+    pub bisect_in_progress: bool,
+    pub bisect_current_oid: Option<String>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
