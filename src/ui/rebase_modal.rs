@@ -28,7 +28,7 @@ impl RebaseModal {
         ui.label(
             RichText::new("Interactive Rebase")
                 .size(15.0)
-                .color(theme::TEXT_PRIMARY)
+                .color(theme::text_primary())
                 .strong(),
         );
         ui.add_space(2.0);
@@ -41,7 +41,7 @@ impl RebaseModal {
                 self.upstream_summary,
             ))
             .size(11.5)
-            .color(theme::TEXT_MUTED),
+            .color(theme::text_muted()),
         );
 
         ui.add_space(8.0);
@@ -49,10 +49,10 @@ impl RebaseModal {
         // Column headers
         ui.horizontal(|ui| {
             ui.add_space(26.0);
-            ui.label(RichText::new("Action").color(theme::TEXT_MUTED).size(10.5).strong());
+            ui.label(RichText::new("Action").color(theme::text_muted()).size(10.5).strong());
             ui.add_space(72.0);
-            ui.label(RichText::new("SHA    ").color(theme::TEXT_MUTED).size(10.5).strong());
-            ui.label(RichText::new("Summary").color(theme::TEXT_MUTED).size(10.5).strong());
+            ui.label(RichText::new("SHA    ").color(theme::text_muted()).size(10.5).strong());
+            ui.label(RichText::new("Summary").color(theme::text_muted()).size(10.5).strong());
         });
         ui.add_space(2.0);
         ui.separator();
@@ -82,7 +82,7 @@ impl RebaseModal {
                     let item = ui.dnd_drag_source(row_id, i, |ui| {
                         ui.horizontal(|ui| {
                             // Drag handle
-                            ui.label(RichText::new("⠿").color(theme::TEXT_MUTED).size(14.0));
+                            ui.label(RichText::new("⠿").color(theme::text_muted()).size(14.0));
 
                             // Action ComboBox — must avoid shadowing the free fn `action_color`
                             let mut selected_action = cur_action;
@@ -119,11 +119,11 @@ impl RebaseModal {
                             ui.label(
                                 RichText::new(&short_sha)
                                     .font(FontId::monospace(11.5))
-                                    .color(if is_drop { theme::TEXT_MUTED } else { theme::ACCENT_BLUE }),
+                                    .color(if is_drop { theme::text_muted() } else { theme::ACCENT_BLUE }),
                             );
 
                             // Summary (dimmed for drop)
-                            let text_col = if is_drop { theme::TEXT_MUTED } else { theme::TEXT_SECONDARY };
+                            let text_col = if is_drop { theme::text_muted() } else { theme::text_secondary() };
                             ui.label(RichText::new(&summary).size(12.5).color(text_col));
                         });
                     });
@@ -161,7 +161,7 @@ impl RebaseModal {
                 (RebaseAction::Drop,   "remove commit"),
             ] {
                 ui.label(RichText::new(a.label()).color(action_color(*a)).monospace().size(10.5));
-                ui.label(RichText::new(*desc).color(theme::TEXT_MUTED).size(10.5));
+                ui.label(RichText::new(*desc).color(theme::text_muted()).size(10.5));
             }
         });
 
@@ -185,9 +185,9 @@ impl RebaseModal {
             ui.add_space(8.0);
             if ui
                 .add(
-                    egui::Button::new(RichText::new("Cancel").color(theme::TEXT_SECONDARY))
+                    egui::Button::new(RichText::new("Cancel").color(theme::text_secondary()))
                         .fill(Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::new(1.0, theme::BORDER)),
+                        .stroke(egui::Stroke::new(1.0, theme::border())),
                 )
                 .clicked()
                 || ui.input(|i| i.key_pressed(egui::Key::Escape))
@@ -231,7 +231,7 @@ fn receive_drop(
                     egui::Sense::hover(),
                 );
                 let hovered = inner_is_hovered(ui, rect);
-                let color = if hovered { theme::ACCENT_BLUE } else { theme::BORDER };
+                let color = if hovered { theme::ACCENT_BLUE } else { theme::border() };
                 ui.painter().line_segment(
                     [rect.left_center(), rect.right_center()],
                     egui::Stroke::new(if hovered { 2.0 } else { 1.0 }, color),

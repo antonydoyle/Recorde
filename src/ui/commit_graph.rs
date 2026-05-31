@@ -95,11 +95,11 @@ impl CommitGraphView {
              s.file_history_path.clone(), s.file_history_oids.clone())
         };
 
-        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_APP);
+        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::bg_app());
 
         let Some(graph) = graph_opt else {
             ui.centered_and_justified(|ui| {
-                ui.label(egui::RichText::new("Open a repository to view commits.").color(theme::TEXT_MUTED).size(14.0));
+                ui.label(egui::RichText::new("Open a repository to view commits.").color(theme::text_muted()).size(14.0));
             });
             return;
         };
@@ -120,12 +120,12 @@ impl CommitGraphView {
 
         if search_active {
             let bar_rect = Rect::from_min_size(ui.min_rect().min, Vec2::new(avail, search_h));
-            ui.painter().rect_filled(bar_rect, 0.0, theme::BG_PANEL);
-            ui.painter().line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], Stroke::new(1.0, theme::BORDER));
+            ui.painter().rect_filled(bar_rect, 0.0, theme::bg_panel());
+            ui.painter().line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], Stroke::new(1.0, theme::border()));
             ui.allocate_ui_at_rect(bar_rect, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(10.0);
-                    ui.label(egui::RichText::new("⌕").size(13.0).color(theme::TEXT_MUTED));
+                    ui.label(egui::RichText::new("⌕").size(13.0).color(theme::text_muted()));
                     ui.add_space(6.0);
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut new_query)
@@ -139,11 +139,11 @@ impl CommitGraphView {
                         let q = new_query.to_lowercase();
                         let n = graph.nodes.iter().filter(|n| node_matches(n, &q)).count();
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new(format!("{} match{}", n, if n==1{""} else {"es"})).color(theme::TEXT_MUTED).size(11.0));
+                        ui.label(egui::RichText::new(format!("{} match{}", n, if n==1{""} else {"es"})).color(theme::text_muted()).size(11.0));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
-                        if ui.small_button(egui::RichText::new("✕").color(theme::TEXT_MUTED)).clicked() { close_search = true; }
+                        if ui.small_button(egui::RichText::new("✕").color(theme::text_muted())).clicked() { close_search = true; }
                     });
                 });
             });
@@ -162,16 +162,16 @@ impl CommitGraphView {
                 Vec2::new(avail, fh_h),
             );
             ui.painter().rect_filled(banner_rect, 0.0, theme::ACCENT_TEAL.gamma_multiply(0.15));
-            ui.painter().line_segment([banner_rect.left_bottom(), banner_rect.right_bottom()], Stroke::new(1.0, theme::BORDER));
+            ui.painter().line_segment([banner_rect.left_bottom(), banner_rect.right_bottom()], Stroke::new(1.0, theme::border()));
             ui.allocate_ui_at_rect(banner_rect, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(10.0);
                     let fname = fp.rsplit('/').next().unwrap_or(fp.as_str());
                     ui.label(egui::RichText::new(format!("File History: {}", fname)).size(11.5).color(theme::ACCENT_TEAL).strong());
-                    ui.label(egui::RichText::new(format!("({} commits)", file_history_oids.len())).size(11.0).color(theme::TEXT_MUTED));
+                    ui.label(egui::RichText::new(format!("({} commits)", file_history_oids.len())).size(11.0).color(theme::text_muted()));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
-                        if ui.small_button(egui::RichText::new("✕ Clear").color(theme::TEXT_MUTED)).clicked() {
+                        if ui.small_button(egui::RichText::new("✕ Clear").color(theme::text_muted())).clicked() {
                             let mut s = self.state.lock().unwrap();
                             s.file_history_path = None;
                             s.file_history_oids.clear();
@@ -184,8 +184,8 @@ impl CommitGraphView {
         // ── Column headers ────────────────────────────────────────────────
         let header_top = ui.min_rect().min.y + search_h + fh_h;
         let header_rect = Rect::from_min_size(Pos2::new(ui.min_rect().min.x, header_top), Vec2::new(avail, HEADER_H));
-        ui.painter().rect_filled(header_rect, 0.0, theme::BG_PANEL_ALT);
-        ui.painter().line_segment([header_rect.left_bottom(), header_rect.right_bottom()], Stroke::new(1.0, theme::BORDER));
+        ui.painter().rect_filled(header_rect, 0.0, theme::bg_panel_alt());
+        ui.painter().line_segment([header_rect.left_bottom(), header_rect.right_bottom()], Stroke::new(1.0, theme::border()));
 
         self.fit_columns(avail);
 
@@ -210,7 +210,7 @@ impl CommitGraphView {
         self.resize_handle(ui, header_rect, hash_x, ColumnDivider::TimeHash);
         ui.painter().line_segment(
             [Pos2::new(end_x, header_rect.min.y), Pos2::new(end_x, header_rect.max.y)],
-            Stroke::new(1.0, theme::BORDER),
+            Stroke::new(1.0, theme::border()),
         );
 
         // ── Scroll area (graph + list) ────────────────────────────────────
@@ -292,8 +292,8 @@ impl CommitGraphView {
                         let row_rect = Rect::from_min_size(Pos2::new(origin.x, row_top), Vec2::new(avail, ROW_H));
                         let row_resp = ui.interact(row_rect, egui::Id::new(("row_bg", i)), Sense::click());
                         let is_sel = selected.as_deref() == Some(&node.oid);
-                        let row_bg = if is_sel { theme::BG_SELECTED }
-                                     else if row_resp.hovered() { theme::BG_HOVER }
+                        let row_bg = if is_sel { theme::bg_selected() }
+                                     else if row_resp.hovered() { theme::bg_hover() }
                                      else { Color32::TRANSPARENT };
                         if row_bg != Color32::TRANSPARENT { painter.rect_filled(row_rect, 0.0, row_bg); }
 
@@ -361,9 +361,9 @@ impl CommitGraphView {
 
                         // Node circle
                         painter.circle_filled(Pos2::new(dot_x, cy), DOT_R, lane_col);
-                        painter.circle_stroke(Pos2::new(dot_x, cy), DOT_R, Stroke::new(1.5, theme::BG_APP));
+                        painter.circle_stroke(Pos2::new(dot_x, cy), DOT_R, Stroke::new(1.5, theme::bg_app()));
                         if is_sel {
-                            painter.circle_stroke(Pos2::new(dot_x, cy), DOT_R_SEL, Stroke::new(2.0, theme::TEXT_PRIMARY));
+                            painter.circle_stroke(Pos2::new(dot_x, cy), DOT_R_SEL, Stroke::new(2.0, theme::text_primary()));
                         }
 
                         // Right columns
@@ -379,13 +379,13 @@ impl CommitGraphView {
                         painter.text(
                             Pos2::new(hash_right, cy), egui::Align2::RIGHT_CENTER,
                             &node.oid[..7.min(node.oid.len())],
-                            FontId::monospace(11.0), dim_col(theme::TEXT_MUTED),
+                            FontId::monospace(11.0), dim_col(theme::text_muted()),
                         );
                         // Time
                         painter.text(
                             Pos2::new(time_right, cy), egui::Align2::RIGHT_CENTER,
                             &theme::relative_time(node.time),
-                            FontId::proportional(11.5), dim_col(theme::TEXT_MUTED),
+                            FontId::proportional(11.5), dim_col(theme::text_muted()),
                         );
                         // Author indicator attached to the graph, icon-only.
                         let author_x = (dot_x + 18.0).min(origin.x + refs_w + graph_w - 14.0);
@@ -404,7 +404,7 @@ impl CommitGraphView {
                         let summary_start = msg_start + 8.0;
                         let summary_end   = time_start - 8.0;
                         if summary_end > summary_start + 20.0 {
-                            let tc = if is_sel { theme::TEXT_PRIMARY } else { dim_col(Color32::from_rgb(200, 207, 218)) };
+                            let tc = if is_sel { theme::text_primary() } else { dim_col(Color32::from_rgb(200, 207, 218)) };
                             painter.with_clip_rect(Rect::from_min_max(
                                 Pos2::new(summary_start, row_top),
                                 Pos2::new(summary_end, row_top + ROW_H),
@@ -532,7 +532,7 @@ impl CommitGraphView {
         } else {
             ui.painter().line_segment(
                 [Pos2::new(x, header_rect.min.y), Pos2::new(x, header_rect.max.y)],
-                Stroke::new(1.0, theme::BORDER),
+                Stroke::new(1.0, theme::border()),
             );
         }
 
