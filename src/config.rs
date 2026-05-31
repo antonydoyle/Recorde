@@ -64,11 +64,16 @@ pub struct Config {
     pub diff_tool: String,
     #[serde(default)]
     pub merge_tool: String,
+    #[serde(default = "default_font_scale")]
+    pub font_scale: f32,
+    #[serde(default)]
+    pub colorblind_graph: bool,
 }
 
 fn default_true() -> bool { true }
 fn default_protected() -> Vec<String> { vec!["main".into(), "master".into()] }
 fn default_300() -> u32 { 300 }
+fn default_font_scale() -> f32 { 1.0 }
 
 impl Config {
     pub fn load() -> Self {

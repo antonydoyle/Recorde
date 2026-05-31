@@ -234,6 +234,13 @@ pub struct AppState {
     /// Recently deleted branches (up to 5) that can be restored. Persists until app is closed.
     pub deleted_branches: Vec<DeletedBranch>,
 
+    // ── Phase 9: Pull Requests / Merge Requests ───────────────────────────────
+    pub pr_list: Vec<crate::providers::PrItem>,
+    pub pr_loading: bool,
+    pub pr_error: Option<String>,
+    pub pr_selected: Option<usize>,
+    pub pr_filter: crate::providers::PrFilter,
+
     // ── Phase 7: History, Search, Review ─────────────────────────────────────
     /// When set, the commit graph dims commits NOT in this set (file history mode).
     pub file_history_path: Option<String>,
