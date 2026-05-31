@@ -4,6 +4,7 @@ pub mod error;
 pub mod graph;
 pub mod job;
 pub mod operations;
+pub mod patch;
 pub mod rebase;
 pub mod remote;
 pub mod repo;

@@ -1,15 +1,14 @@
 use egui::{Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::git::operations::{load_diff, load_workdir_diff};
-use crate::state::{FileDiff, SharedState};
+use crate::git::staging;
+use crate::state::{DiffContext, FileDiff, PendingDiscard, SharedState};
 use crate::theme;
 
 const ROW_HEIGHT: f32 = 19.0;
 const FONT_SIZE: f32 = 12.0;
-// Unified gutter: "  1234   1234  "
 const U_GUTTER: f32 = 76.0;
 const BAR_W: f32 = 3.0;
-// Split gutter per side: "  1234  "
 const S_GUTTER: f32 = 44.0;
 
 use crate::theme::{BG_DIFF_ADD as BG_ADD, BG_DIFF_DEL as BG_DEL, BG_DIFF_HUNK as BG_HUNK};
@@ -18,8 +17,8 @@ use crate::theme::{BG_DIFF_ADD as BG_ADD, BG_DIFF_DEL as BG_DEL, BG_DIFF_HUNK as
 
 #[derive(Clone)]
 enum Item {
-    HunkHeader(String),
-    Line { origin: char, old_no: String, new_no: String, content: String },
+    HunkHeader { text: String, hunk_index: usize },
+    Line { origin: char, old_no: String, new_no: String, content: String, hunk_index: usize, line_index: usize },
     Binary,
 }
 
@@ -36,6 +35,17 @@ struct SideLine {
 enum SplitRow {
     HunkHeader(String),
     Pair { left: Option<SideLine>, right: Option<SideLine> },
+}
+
+// ── Actions emitted by the diff renderer ─────────────────────────────────────
+
+#[derive(Debug)]
+enum DiffAction {
+    StageHunk(usize),
+    UnstageHunk(usize),
+    DiscardHunk(usize),
+    StageLine(usize, usize),
+    UnstageLine(usize, usize),
 }
 
 // ── DiffView ──────────────────────────────────────────────────────────────────
@@ -62,7 +72,7 @@ impl DiffView {
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        let (diff_opt, selected_file, console_log, commit_files, workdir_files, selected_commit) = {
+        let (diff_opt, selected_file, console_log, commit_files, workdir_files, selected_commit, diff_context) = {
             let s = self.state.lock().unwrap();
             (
                 s.current_diff.clone(),
@@ -71,31 +81,29 @@ impl DiffView {
                 s.selected_commit_detail.as_ref().map(|d| d.changed_files.clone()),
                 s.working_dir_files.clone(),
                 s.selected_commit.clone(),
+                s.diff_context,
             )
         };
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_APP);
 
-        // ── Left file list (230 px) ───────────────────────────────────────
         let file_list_w = 230.0;
         let full_rect = ui.max_rect();
         let list_rect = Rect::from_min_max(full_rect.min, egui::pos2(full_rect.min.x + file_list_w, full_rect.max.y));
         let diff_rect = Rect::from_min_max(egui::pos2(full_rect.min.x + file_list_w, full_rect.min.y), full_rect.max);
 
-        // Divider
         ui.painter().line_segment(
             [egui::pos2(full_rect.min.x + file_list_w, full_rect.min.y),
              egui::pos2(full_rect.min.x + file_list_w, full_rect.max.y)],
             Stroke::new(1.0, theme::BORDER),
         );
 
-        // File list content
+        // ── Left file list ────────────────────────────────────────────────
         ui.allocate_ui_at_rect(list_rect, |ui| {
             ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_PANEL);
             egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
                 ui.add_space(4.0);
                 if let Some(ref files) = commit_files {
-                    // Commit changed files
                     let oid = selected_commit.clone().unwrap_or_default();
                     ui.horizontal(|ui| {
                         ui.add_space(8.0);
@@ -109,8 +117,7 @@ impl DiffView {
                         let mut clicked = false;
                         ui.horizontal(|ui| {
                             ui.add_space(8.0);
-                            ui.label(egui::RichText::new(icon).color(col).size(11.0)
-                                .font(FontId::monospace(11.0)));
+                            ui.label(egui::RichText::new(icon).color(col).size(11.0).font(FontId::monospace(11.0)));
                             ui.add_space(3.0);
                             let name = f.path.rsplit('/').next().unwrap_or(&f.path);
                             let r = ui.selectable_label(is_sel,
@@ -124,12 +131,15 @@ impl DiffView {
                             let path = f.path.clone();
                             let oid2 = oid.clone();
                             let state = self.state.clone();
-                            self.state.lock().unwrap().selected_file = Some(path.clone());
+                            {
+                                let mut s = self.state.lock().unwrap();
+                                s.selected_file = Some(path.clone());
+                                s.diff_context = DiffContext::CommitDiff;
+                            }
                             load_diff(&oid2, &path, state);
                         }
                     }
                 } else {
-                    // Working directory files
                     let has_any = !workdir_files.is_empty();
                     if has_any {
                         ui.horizontal(|ui| {
@@ -145,8 +155,7 @@ impl DiffView {
                             let mut clicked = false;
                             ui.horizontal(|ui| {
                                 ui.add_space(8.0);
-                                ui.label(egui::RichText::new(icon).color(col).size(11.0)
-                                    .font(FontId::monospace(11.0)));
+                                ui.label(egui::RichText::new(icon).color(col).size(11.0).font(FontId::monospace(11.0)));
                                 ui.add_space(3.0);
                                 let name = f.path.rsplit('/').next().unwrap_or(&f.path);
                                 let r = ui.selectable_label(is_sel,
@@ -158,18 +167,22 @@ impl DiffView {
                             });
                             if clicked {
                                 let path = f.path.clone();
-                                let staged = f.staged_status.is_some() && f.unstaged_status.is_none();
+                                let is_staged_only = f.staged_status.is_some() && f.unstaged_status.is_none();
+                                let ctx = if is_staged_only { DiffContext::StagedFile } else { DiffContext::UnstagedFile };
                                 let state = self.state.clone();
-                                self.state.lock().unwrap().selected_file = Some(path.clone());
-                                load_workdir_diff(&path, staged, state);
+                                {
+                                    let mut s = self.state.lock().unwrap();
+                                    s.selected_file = Some(path.clone());
+                                    s.diff_context = ctx;
+                                }
+                                load_workdir_diff(&path, is_staged_only, state);
                             }
                         }
                     } else {
                         ui.add_space(16.0);
                         ui.horizontal(|ui| {
                             ui.add_space(12.0);
-                            ui.label(egui::RichText::new("Working tree clean")
-                                .color(theme::TEXT_MUTED).size(11.5));
+                            ui.label(egui::RichText::new("Working tree clean").color(theme::TEXT_MUTED).size(11.5));
                         });
                     }
                 }
@@ -177,9 +190,22 @@ impl DiffView {
             });
         });
 
-        // Diff area (right of file list)
+        // ── Diff area ─────────────────────────────────────────────────────
         let mut diff_child = ui.child_ui(diff_rect, egui::Layout::top_down(egui::Align::LEFT), None);
-        self.show_diff_area(&mut diff_child, &diff_opt, &selected_file, &console_log);
+        let actions = self.show_diff_area(&mut diff_child, &diff_opt, &selected_file, &console_log, diff_context);
+
+        // Apply actions from the diff renderer
+        for action in actions {
+            match action {
+                DiffAction::StageHunk(i)       => staging::stage_hunk(i, self.state.clone()),
+                DiffAction::UnstageHunk(i)     => staging::unstage_hunk(i, self.state.clone()),
+                DiffAction::DiscardHunk(i)     => {
+                    self.state.lock().unwrap().pending_discard = Some(PendingDiscard::Hunk { hunk_index: i });
+                }
+                DiffAction::StageLine(h, l)   => staging::stage_lines(h, vec![l], self.state.clone()),
+                DiffAction::UnstageLine(h, l) => staging::unstage_lines(h, vec![l], self.state.clone()),
+            }
+        }
     }
 
     fn show_diff_area(
@@ -188,8 +214,9 @@ impl DiffView {
         diff_opt: &Option<FileDiff>,
         selected_file: &Option<String>,
         console_log: &[String],
-    ) {
-        // Rebuild item caches when diff changes.
+        diff_context: DiffContext,
+    ) -> Vec<DiffAction> {
+        // Rebuild item caches when diff changes
         if let Some(ref diff) = diff_opt {
             let key = (diff.commit_oid.clone(), diff.file_path.clone());
             if self.last_key.as_ref() != Some(&key) {
@@ -208,8 +235,7 @@ impl DiffView {
         let header_rect = Rect::from_min_size(ui.min_rect().min, Vec2::new(ui.available_width(), header_h));
         ui.painter().rect_filled(header_rect, 0.0, theme::BG_PANEL);
         ui.painter().line_segment(
-            [Pos2::new(header_rect.min.x, header_rect.max.y),
-             Pos2::new(header_rect.max.x, header_rect.max.y)],
+            [Pos2::new(header_rect.min.x, header_rect.max.y), Pos2::new(header_rect.max.x, header_rect.max.y)],
             Stroke::new(1.0, theme::BORDER),
         );
 
@@ -233,8 +259,9 @@ impl DiffView {
                 if let Some(ref diff) = diff_opt {
                     let filename = diff.file_path.rsplit('/').next().unwrap_or(&diff.file_path);
                     ui.label(egui::RichText::new(filename).color(theme::TEXT_PRIMARY).size(12.5).strong());
-                    if diff.file_path != filename {
-                        ui.label(egui::RichText::new(&diff.file_path).color(theme::TEXT_MUTED).size(11.0));
+                    if diff_context != DiffContext::CommitDiff {
+                        let ctx_label = if diff_context == DiffContext::StagedFile { "staged" } else { "unstaged" };
+                        ui.label(egui::RichText::new(ctx_label).color(theme::ACCENT_TEAL).size(10.5));
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -296,10 +323,10 @@ impl DiffView {
                     ui.add_space(6.0);
                 });
             });
-            return;
+            return Vec::new();
         }
 
-        // ── Empty / binary / no-changes states ───────────────────────────
+        // ── Empty / binary / no-changes ───────────────────────────────────
         let empty_msg = if diff_opt.is_none() {
             Some(if selected_file.is_some() { "Loading diff…" } else { "Select a file to view its diff." })
         } else if diff_opt.as_ref().map_or(false, |d| d.is_binary) {
@@ -315,29 +342,37 @@ impl DiffView {
                     ui.label(egui::RichText::new(msg).color(theme::TEXT_MUTED).size(12.0));
                 });
             });
-            return;
+            return Vec::new();
         }
 
-        // ── Dispatch to unified or split renderer ─────────────────────────
+        // ── Dispatch to renderer ──────────────────────────────────────────
         if self.split_view {
             render_split(ui, content_rect, &self.split_rows);
+            Vec::new()
         } else {
-            render_unified(ui, content_rect, &self.items);
+            render_unified(ui, content_rect, &self.items, diff_context)
         }
     }
 }
 
 // ── Unified renderer ──────────────────────────────────────────────────────────
 
-fn render_unified(ui: &mut Ui, rect: Rect, items: &[Item]) {
+fn render_unified(ui: &mut Ui, rect: Rect, items: &[Item], diff_context: DiffContext) -> Vec<DiffAction> {
+    let is_workdir = diff_context != DiffContext::CommitDiff;
+    let is_staged = diff_context == DiffContext::StagedFile;
     let avail_w = rect.width();
     let total_h = items.len() as f32 * ROW_HEIGHT;
+    let actions = std::cell::RefCell::new(Vec::<DiffAction>::new());
 
     ui.allocate_ui_at_rect(rect, |ui| {
         egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-            let (resp, painter) = ui.allocate_painter(Vec2::new(avail_w, total_h), Sense::hover());
+            let sense = if is_workdir { Sense::click() } else { Sense::hover() };
+            let (resp, painter) = ui.allocate_painter(Vec2::new(avail_w, total_h), sense);
             let origin = resp.rect.min;
             let clip = painter.clip_rect();
+
+            let click_pos = if resp.clicked() { resp.interact_pointer_pos() } else { None };
+            let hover_pos = resp.hover_pos();
 
             let first = ((clip.top() - origin.y) / ROW_HEIGHT).floor().max(0.0) as usize;
             let last = (((clip.bottom() - origin.y) / ROW_HEIGHT).ceil() as usize + 1).min(items.len());
@@ -347,17 +382,67 @@ fn render_unified(ui: &mut Ui, rect: Rect, items: &[Item]) {
                 let row_rect = Rect::from_min_size(Pos2::new(origin.x, y), Vec2::new(avail_w, ROW_HEIGHT));
 
                 match &items[i] {
-                    Item::HunkHeader(text) => {
+                    Item::HunkHeader { text, hunk_index } => {
                         painter.rect_filled(row_rect, 0.0, BG_HUNK);
                         painter.line_segment(
                             [Pos2::new(row_rect.min.x, row_rect.max.y - 0.5),
                              Pos2::new(row_rect.max.x, row_rect.max.y - 0.5)],
                             Stroke::new(0.5, theme::BORDER),
                         );
-                        painter.text(Pos2::new(origin.x + 10.0, y + ROW_HEIGHT / 2.0),
-                            egui::Align2::LEFT_CENTER, text, FontId::monospace(FONT_SIZE), theme::TEXT_MUTED);
+                        let text_end_x = if is_workdir { avail_w - 220.0 } else { avail_w - 10.0 };
+                        painter.with_clip_rect(Rect::from_min_max(
+                            Pos2::new(origin.x + 10.0, y),
+                            Pos2::new(origin.x + text_end_x, y + ROW_HEIGHT),
+                        )).text(
+                            Pos2::new(origin.x + 10.0, y + ROW_HEIGHT / 2.0),
+                            egui::Align2::LEFT_CENTER, text, FontId::monospace(FONT_SIZE), theme::TEXT_MUTED,
+                        );
+
+                        if is_workdir {
+                            let hi = *hunk_index;
+                            let btns: &[(&str, Color32, bool)] = if is_staged {
+                                &[("Unstage Hunk", theme::ACCENT_TEAL, false)]
+                            } else {
+                                &[
+                                    ("Stage Hunk",   theme::ACCENT_TEAL, false),
+                                    ("Discard Hunk", theme::ACCENT_RED,  true),
+                                ]
+                            };
+
+                            let btn_w = 94.0;
+                            let btn_h = ROW_HEIGHT - 4.0;
+                            let mut btn_x = origin.x + avail_w - (btns.len() as f32 * (btn_w + 4.0)) - 4.0;
+
+                            for (label, col, is_discard) in btns {
+                                let btn_rect = Rect::from_min_size(
+                                    Pos2::new(btn_x, y + 2.0),
+                                    Vec2::new(btn_w, btn_h),
+                                );
+                                let hovered = hover_pos.map_or(false, |p| btn_rect.contains(p));
+                                painter.rect_filled(btn_rect, 3.0,
+                                    if hovered { col.gamma_multiply(0.25) } else { Color32::TRANSPARENT });
+                                painter.rect_stroke(btn_rect, 3.0, Stroke::new(1.0, *col));
+                                painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER,
+                                    *label, FontId::proportional(10.5), *col);
+
+                                if let Some(cp) = click_pos {
+                                    if btn_rect.contains(cp) {
+                                        let mut acts = actions.borrow_mut();
+                                        if *is_discard {
+                                            acts.push(DiffAction::DiscardHunk(hi));
+                                        } else if is_staged {
+                                            acts.push(DiffAction::UnstageHunk(hi));
+                                        } else {
+                                            acts.push(DiffAction::StageHunk(hi));
+                                        }
+                                    }
+                                }
+                                btn_x += btn_w + 4.0;
+                            }
+                        }
                     }
-                    Item::Line { origin: ch, old_no, new_no, content } => {
+
+                    Item::Line { origin: ch, old_no, new_no, content, hunk_index, line_index } => {
                         let (row_bg, bar_col, text_col) = line_colors(*ch);
                         if row_bg != Color32::TRANSPARENT { painter.rect_filled(row_rect, 0.0, row_bg); }
                         if bar_col != Color32::TRANSPARENT {
@@ -382,7 +467,34 @@ fn render_unified(ui: &mut Ui, rect: Rect, items: &[Item]) {
                             Pos2::new(cx, y), Pos2::new(origin.x + avail_w - 4.0, y + ROW_HEIGHT),
                         )).text(Pos2::new(cx, cy), egui::Align2::LEFT_CENTER, content,
                             FontId::monospace(FONT_SIZE), text_col);
+
+                        // Line-level staging: show clickable glyph in gutter on hover for +/- lines
+                        if is_workdir && (*ch == '+' || *ch == '-') {
+                            let is_hovered = hover_pos.map_or(false, |p| row_rect.contains(p));
+                            if is_hovered {
+                                let gutter_rect = Rect::from_min_size(
+                                    Pos2::new(origin.x, y),
+                                    Vec2::new(BAR_W + 4.0, ROW_HEIGHT),
+                                );
+                                // Highlight gutter for click hint
+                                painter.rect_filled(gutter_rect, 0.0, bar_col.gamma_multiply(0.5));
+
+                                if let Some(cp) = click_pos {
+                                    if row_rect.contains(cp) {
+                                        let hi = *hunk_index;
+                                        let li = *line_index;
+                                        let mut acts = actions.borrow_mut();
+                                        if is_staged {
+                                            acts.push(DiffAction::UnstageLine(hi, li));
+                                        } else {
+                                            acts.push(DiffAction::StageLine(hi, li));
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
+
                     Item::Binary => {
                         painter.text(Pos2::new(origin.x + 12.0, y + ROW_HEIGHT / 2.0),
                             egui::Align2::LEFT_CENTER, "Binary file", FontId::proportional(12.0), theme::TEXT_MUTED);
@@ -391,6 +503,8 @@ fn render_unified(ui: &mut Ui, rect: Rect, items: &[Item]) {
             }
         });
     });
+
+    actions.into_inner()
 }
 
 // ── Split renderer ────────────────────────────────────────────────────────────
@@ -406,7 +520,6 @@ fn render_split(ui: &mut Ui, rect: Rect, rows: &[SplitRow]) {
             let origin = resp.rect.min;
             let clip = painter.clip_rect();
 
-            // Centre divider
             let div_x = origin.x + half;
             painter.line_segment(
                 [Pos2::new(div_x, clip.top()), Pos2::new(div_x, clip.bottom())],
@@ -418,7 +531,6 @@ fn render_split(ui: &mut Ui, rect: Rect, rows: &[SplitRow]) {
 
             for i in first..last {
                 let y = origin.y + i as f32 * ROW_HEIGHT;
-
                 match &rows[i] {
                     SplitRow::HunkHeader(text) => {
                         let full = Rect::from_min_size(Pos2::new(origin.x, y), Vec2::new(avail_w, ROW_HEIGHT));
@@ -439,12 +551,7 @@ fn render_split(ui: &mut Ui, rect: Rect, rows: &[SplitRow]) {
     });
 }
 
-fn render_split_side(
-    painter: &egui::Painter,
-    x0: f32, y: f32, width: f32,
-    side: &Option<SideLine>,
-    is_left: bool,
-) {
+fn render_split_side(painter: &egui::Painter, x0: f32, y: f32, width: f32, side: &Option<SideLine>, is_left: bool) {
     let cy = y + ROW_HEIGHT / 2.0;
     let (bg, bar_col, text_col) = match side {
         Some(sl) if sl.changed && is_left  => (BG_DEL, theme::ACCENT_RED,   Color32::from_rgb(0xF0, 0xA0, 0xA0)),
@@ -455,36 +562,24 @@ fn render_split_side(
 
     let row_rect = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(width, ROW_HEIGHT));
     if bg != Color32::TRANSPARENT { painter.rect_filled(row_rect, 0.0, bg); }
-
     if bar_col != Color32::TRANSPARENT {
-        painter.rect_filled(
-            Rect::from_min_size(Pos2::new(x0, y), Vec2::new(BAR_W, ROW_HEIGHT)),
-            0.0, bar_col);
+        painter.rect_filled(Rect::from_min_size(Pos2::new(x0, y), Vec2::new(BAR_W, ROW_HEIGHT)), 0.0, bar_col);
     }
 
     if let Some(sl) = side {
-        // Line number
         painter.text(Pos2::new(x0 + BAR_W + 4.0 + S_GUTTER - 6.0, cy),
             egui::Align2::RIGHT_CENTER, &sl.lineno, FontId::monospace(10.5), theme::TEXT_MUTED);
-
-        // Gutter divider
         painter.line_segment(
             [Pos2::new(x0 + S_GUTTER, y), Pos2::new(x0 + S_GUTTER, y + ROW_HEIGHT)],
             Stroke::new(0.5, theme::BORDER));
-
-        // +/- sigil
         if sl.changed {
             let sigil = if is_left { "-" } else { "+" };
             painter.text(Pos2::new(x0 + S_GUTTER + 6.0, cy),
                 egui::Align2::LEFT_CENTER, sigil, FontId::monospace(FONT_SIZE), bar_col);
         }
-
-        // Content
         let cx = x0 + S_GUTTER + 16.0;
-        painter.with_clip_rect(Rect::from_min_max(
-            Pos2::new(cx, y), Pos2::new(x0 + width - 2.0, y + ROW_HEIGHT),
-        )).text(Pos2::new(cx, cy), egui::Align2::LEFT_CENTER, &sl.content,
-            FontId::monospace(FONT_SIZE), text_col);
+        painter.with_clip_rect(Rect::from_min_max(Pos2::new(cx, y), Pos2::new(x0 + width - 2.0, y + ROW_HEIGHT)))
+            .text(Pos2::new(cx, cy), egui::Align2::LEFT_CENTER, &sl.content, FontId::monospace(FONT_SIZE), text_col);
     }
 }
 
@@ -492,32 +587,30 @@ fn render_split_side(
 
 fn line_colors(ch: char) -> (Color32, Color32, Color32) {
     match ch {
-        '+' => (BG_ADD, theme::ACCENT_GREEN,  Color32::from_rgb(0xAB, 0xE0, 0xAB)),
-        '-' => (BG_DEL, theme::ACCENT_RED,    Color32::from_rgb(0xF0, 0xA0, 0xA0)),
+        '+' => (BG_ADD, theme::ACCENT_GREEN, Color32::from_rgb(0xAB, 0xE0, 0xAB)),
+        '-' => (BG_DEL, theme::ACCENT_RED,   Color32::from_rgb(0xF0, 0xA0, 0xA0)),
         _   => (Color32::TRANSPARENT, Color32::TRANSPARENT, theme::TEXT_PRIMARY),
     }
 }
 
-// ── Flatten: unified ──────────────────────────────────────────────────────────
-
 fn flatten_unified(diff: &FileDiff) -> Vec<Item> {
     if diff.is_binary { return vec![Item::Binary]; }
     let mut items = Vec::new();
-    for hunk in &diff.hunks {
-        items.push(Item::HunkHeader(hunk.header.clone()));
-        for line in &hunk.lines {
+    for (hunk_index, hunk) in diff.hunks.iter().enumerate() {
+        items.push(Item::HunkHeader { text: hunk.header.clone(), hunk_index });
+        for (line_index, line) in hunk.lines.iter().enumerate() {
             items.push(Item::Line {
                 origin: line.origin,
                 old_no: line.old_lineno.map(|n| n.to_string()).unwrap_or_default(),
                 new_no: line.new_lineno.map(|n| n.to_string()).unwrap_or_default(),
                 content: line.content.trim_end_matches('\n').to_string(),
+                hunk_index,
+                line_index,
             });
         }
     }
     items
 }
-
-// ── Flatten: split ────────────────────────────────────────────────────────────
 
 fn flatten_split(diff: &FileDiff) -> Vec<SplitRow> {
     if diff.is_binary { return vec![SplitRow::HunkHeader("Binary file".into())]; }
@@ -525,18 +618,13 @@ fn flatten_split(diff: &FileDiff) -> Vec<SplitRow> {
     let mut rows = Vec::new();
     for hunk in &diff.hunks {
         rows.push(SplitRow::HunkHeader(hunk.header.clone()));
-
-        // Collect deleted and added lines; emit context immediately.
         let mut dels: Vec<SideLine> = Vec::new();
         let mut adds: Vec<SideLine> = Vec::new();
 
         let flush = |rows: &mut Vec<SplitRow>, dels: &mut Vec<SideLine>, adds: &mut Vec<SideLine>| {
             let n = dels.len().max(adds.len());
             for i in 0..n {
-                rows.push(SplitRow::Pair {
-                    left:  dels.get(i).cloned(),
-                    right: adds.get(i).cloned(),
-                });
+                rows.push(SplitRow::Pair { left: dels.get(i).cloned(), right: adds.get(i).cloned() });
             }
             dels.clear();
             adds.clear();
@@ -545,24 +633,12 @@ fn flatten_split(diff: &FileDiff) -> Vec<SplitRow> {
         for line in &hunk.lines {
             let content = line.content.trim_end_matches('\n').to_string();
             match line.origin {
-                '-' => dels.push(SideLine {
-                    lineno: line.old_lineno.map(|n| n.to_string()).unwrap_or_default(),
-                    content, changed: true,
-                }),
-                '+' => adds.push(SideLine {
-                    lineno: line.new_lineno.map(|n| n.to_string()).unwrap_or_default(),
-                    content, changed: false,
-                }),
+                '-' => dels.push(SideLine { lineno: line.old_lineno.map(|n| n.to_string()).unwrap_or_default(), content, changed: true }),
+                '+' => adds.push(SideLine { lineno: line.new_lineno.map(|n| n.to_string()).unwrap_or_default(), content, changed: false }),
                 _ => {
                     flush(&mut rows, &mut dels, &mut adds);
-                    let sl = SideLine {
-                        lineno: line.old_lineno.map(|n| n.to_string()).unwrap_or_default(),
-                        content: content.clone(), changed: false,
-                    };
-                    let sl2 = SideLine {
-                        lineno: line.new_lineno.map(|n| n.to_string()).unwrap_or_default(),
-                        content, changed: false,
-                    };
+                    let sl = SideLine { lineno: line.old_lineno.map(|n| n.to_string()).unwrap_or_default(), content: content.clone(), changed: false };
+                    let sl2 = SideLine { lineno: line.new_lineno.map(|n| n.to_string()).unwrap_or_default(), content, changed: false };
                     rows.push(SplitRow::Pair { left: Some(sl), right: Some(sl2) });
                 }
             }
