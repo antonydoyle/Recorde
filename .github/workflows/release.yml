@@ -21,7 +21,7 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME}"
           if [[ ! "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Tag '${tag}' is not a semver tag like v1.2.3, v1.2.3-rc.1, or v1.2.3+build.1" >&2
+            echo "Tag '${tag}' is not a valid semver tag (expected v1.2.3, v1.2.3-rc.1, etc.)" >&2
             exit 1
           fi
           echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
@@ -35,51 +35,90 @@ jobs:
       matrix:
         include:
           - name: Linux x86_64
-            os: ubuntu-latest
+            os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             archive: recorde-linux-x86_64
             binary: recorde
+            deb: true
+
           - name: Windows x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: recorde-windows-x86_64
             binary: recorde.exe
+            deb: false
+
           - name: macOS x86_64
             os: macos-13
             target: x86_64-apple-darwin
             archive: recorde-macos-x86_64
             binary: recorde
+            deb: false
+
           - name: macOS aarch64
-            os: macos-14
+            os: macos-latest
             target: aarch64-apple-darwin
             archive: recorde-macos-aarch64
             binary: recorde
+            deb: false
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            pkg-config \
+            cmake pkg-config patchelf \
             libssl-dev \
-            libgtk-3-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-dev
+            libgtk-3-dev libglib2.0-dev \
+            libfontconfig1-dev libfreetype6-dev \
+            libgl1-mesa-dev \
+            libx11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
+            libwayland-dev libxkbcommon-dev
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install cmake (macOS, for vendored libgit2)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      # ── Linux: also produce a .deb via cargo-deb ────────────────────────────
+      - name: Install cargo-deb
+        if: ${{ matrix.deb }}
+        run: cargo install cargo-deb --locked
+
+      - name: Build .deb package
+        if: ${{ matrix.deb }}
+        run: cargo deb --no-build --target ${{ matrix.target }}
+
+      - name: Rename .deb with version
+        if: ${{ matrix.deb }}
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate-tag.outputs.version }}"
+          DEB=$(ls target/${{ matrix.target }}/debian/*.deb target/debian/*.deb 2>/dev/null | head -1)
+          cp "$DEB" "recorde_${VERSION}_amd64.deb"
+
+      - name: Upload .deb artifact
+        if: ${{ matrix.deb }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: "*.deb"
+          if-no-files-found: error
+
+      # ── Stage binary + extras for tar/zip ──────────────────────────────────
       - name: Stage artifact
         shell: bash
         run: |
@@ -91,21 +130,19 @@ jobs:
             cp assets/icon.png "dist/${{ matrix.archive }}/recorde.png"
           fi
 
-      - name: Package Unix artifact
+      - name: Package (Unix)
         if: runner.os != 'Windows'
-        shell: bash
         run: |
           cd dist
           tar -czf "${{ matrix.archive }}.tar.gz" "${{ matrix.archive }}"
 
-      - name: Package Windows artifact
+      - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Compress-Archive -Path "dist/${{ matrix.archive }}" -DestinationPath "dist/${{ matrix.archive }}.zip"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
           path: |
@@ -114,18 +151,16 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish GitHub release
+    name: Publish GitHub Release
     needs: [validate-tag, build]
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           name: Recorde ${{ needs.validate-tag.outputs.version }}
           tag_name: ${{ github.ref_name }}
@@ -134,3 +169,4 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb
