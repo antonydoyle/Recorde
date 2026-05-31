@@ -23,6 +23,8 @@ pub enum SidebarAction {
     ForceDeleteBranch(String),
     PushTag(String),
     DeleteRemoteTag(String),
+    PreviewStash(usize, String),   // (index, oid)
+    StashBranch(usize),            // index
 }
 
 pub struct Sidebar {
@@ -229,7 +231,11 @@ impl Sidebar {
                         ui.add_space(2.0);
                         for stash in &stashes {
                             let idx = stash.index;
-                            let display = stash.message.trim_start_matches("On ").to_string();
+                            let oid = stash.oid.clone();
+                            let display = stash.message
+                                .trim_start_matches("On ")
+                                .trim_start_matches("WIP on ")
+                                .to_string();
                             let resp = ui.horizontal(|ui| {
                                 ui.add_space(14.0);
                                 let (dr, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
@@ -238,9 +244,16 @@ impl Sidebar {
                                 ui.label(RichText::new(&display).color(theme::TEXT_SECONDARY).size(12.0));
                             }).response;
                             resp.context_menu(|ui| {
-                                ui.set_min_width(110.0);
+                                ui.set_min_width(155.0);
+                                if ui.button("Preview Diff").clicked() {
+                                    action = Some(SidebarAction::PreviewStash(idx, oid.clone())); ui.close_menu();
+                                }
+                                ui.separator();
                                 if ui.button("Apply").clicked()  { action = Some(SidebarAction::StashApply(idx)); ui.close_menu(); }
                                 if ui.button("Pop").clicked()    { action = Some(SidebarAction::StashPop(idx)); ui.close_menu(); }
+                                if ui.button("Create Branch Here…").clicked() {
+                                    action = Some(SidebarAction::StashBranch(idx)); ui.close_menu();
+                                }
                                 ui.separator();
                                 if ui.add(egui::Button::new(RichText::new("Drop").color(theme::ACCENT_RED))).clicked() {
                                     action = Some(SidebarAction::StashDrop(idx)); ui.close_menu();
