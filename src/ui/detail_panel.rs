@@ -1,4 +1,4 @@
-use egui::{Color32, FontId, RichText, Ui};
+use egui::{FontId, RichText, Ui};
 
 use crate::git::operations::{load_blame, load_diff, load_file_history};
 use crate::state::SharedState;
@@ -166,7 +166,7 @@ impl DetailPanel {
                     // Row hover highlight
                     if row_resp.hovered() {
                         ui.painter()
-                            .rect_filled(row_resp.rect, 0.0, Color32::from_white_alpha(6));
+                            .rect_filled(row_resp.rect, 0.0, theme::bg_hover());
                     }
 
                     if row_resp.interact(egui::Sense::click()).clicked() {

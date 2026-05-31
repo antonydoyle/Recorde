@@ -14,14 +14,14 @@ pub mod light {
     pub const BG_TOOLBAR:    Color32 = Color32::from_rgb(240, 242, 247);
     pub const BG_PANEL:      Color32 = Color32::from_rgb(255, 255, 255);
     pub const BG_PANEL_ALT:  Color32 = Color32::from_rgb(245, 247, 250);
-    pub const BG_HOVER:      Color32 = Color32::from_rgb(228, 232, 242);
+    pub const BG_HOVER:      Color32 = Color32::from_rgb(216, 223, 238);
     pub const BG_SELECTED:   Color32 = Color32::from_rgb(210, 222, 245);
     pub const BG_ELEVATED:   Color32 = Color32::from_rgb(250, 251, 253);
     pub const BORDER:        Color32 = Color32::from_rgb(210, 215, 226);
     pub const BORDER_STRONG: Color32 = Color32::from_rgb(168, 178, 200);
-    pub const TEXT_PRIMARY:  Color32 = Color32::from_rgb(22,  28,  42);
-    pub const TEXT_SECONDARY:Color32 = Color32::from_rgb(66,  76,  98);
-    pub const TEXT_MUTED:    Color32 = Color32::from_rgb(122, 134, 158);
+    pub const TEXT_PRIMARY:  Color32 = Color32::from_rgb(18,  23,  34);
+    pub const TEXT_SECONDARY:Color32 = Color32::from_rgb(42,  50,  68);
+    pub const TEXT_MUTED:    Color32 = Color32::from_rgb(82,  94, 118);
     pub const BG_DIFF_ADD:   Color32 = Color32::from_rgb(205, 242, 213);
     pub const BG_DIFF_DEL:   Color32 = Color32::from_rgb(252, 210, 210);
     pub const BG_DIFF_HUNK:  Color32 = Color32::from_rgb(222, 230, 250);
@@ -53,7 +53,7 @@ pub const BG_TITLEBAR:   Color32 = Color32::from_rgb(13,  17,  23);   // #0D1117
 pub const BG_TOOLBAR:    Color32 = Color32::from_rgb(20,  26,  36);   // #141A24 toolbar
 pub const BG_PANEL:      Color32 = Color32::from_rgb(25,  31,  42);   // #191F2A panels
 pub const BG_PANEL_ALT:  Color32 = Color32::from_rgb(30,  37,  49);   // #1E2531 alt surface
-pub const BG_HOVER:      Color32 = Color32::from_rgb(38,  47,  62);   // #262F3E hover
+pub const BG_HOVER:      Color32 = Color32::from_rgb(48,  59,  78);   // #303B4E hover
 pub const BG_SELECTED:   Color32 = Color32::from_rgb(47,  57,  75);   // #2F394B selected row
 pub const BG_ELEVATED:   Color32 = Color32::from_rgb(34,  42,  56);   // #222A38 elevated card
 
