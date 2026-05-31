@@ -1,7 +1,7 @@
 use egui::{Color32, Context, Key, Modifiers, RichText, Stroke};
 
 use crate::config::Config;
-use crate::git::{branches, job::ActiveOp, job::JobProgress, merge, operations::load_repo, rebase, remote, runner::GitRunner, staging};
+use crate::git::{branches, job::ActiveOp, job::JobProgress, lifecycle, merge, operations::load_repo, rebase, remote, runner::GitRunner, staging};
 use crate::state::{ModalKind, PendingDiscard, RebaseEntry, new_shared_state, SharedState};
 use crate::theme;
 use crate::ui::{
@@ -53,6 +53,11 @@ pub struct RecordeApp {
     pull_requests_open: bool,
     // Interactive rebase
     rebase_modal: Option<RebaseModal>,
+    // Lifecycle modals
+    clone_url: String,
+    clone_dest: Option<std::path::PathBuf>,
+    init_repo_path: Option<std::path::PathBuf>,
+    origin_url_input: String,
 }
 
 impl RecordeApp {
@@ -119,6 +124,10 @@ impl RecordeApp {
             default_editor_input: default_editor,
             pull_requests_open: false,
             rebase_modal: None,
+            clone_url: String::new(),
+            clone_dest: None,
+            init_repo_path: None,
+            origin_url_input: String::new(),
         }
     }
 
@@ -129,6 +138,30 @@ impl RecordeApp {
             ToolbarAction::OpenRepo(path) => {
                 self.config.add_recent(path.clone());
                 load_repo(path, self.state.clone());
+            }
+            ToolbarAction::CloneRepo => {
+                self.state.lock().unwrap().modal = ModalKind::CloneRepo;
+            }
+            ToolbarAction::InitRepo => {
+                self.state.lock().unwrap().modal = ModalKind::InitRepo;
+            }
+            ToolbarAction::RemoveFromRecent(path) => {
+                self.config.remove_recent(&path);
+            }
+            ToolbarAction::OpenTerminal => {
+                if let Some(ref rp) = self.state.lock().unwrap().repo_path.clone() {
+                    lifecycle::open_terminal(rp);
+                }
+            }
+            ToolbarAction::RevealInFolder => {
+                if let Some(ref rp) = self.state.lock().unwrap().repo_path.clone() {
+                    lifecycle::reveal_in_file_manager(rp);
+                }
+            }
+            ToolbarAction::CopyRepoPath => {
+                let path_str = self.state.lock().unwrap().repo_path
+                    .as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+                ctx.output_mut(|o| o.copied_text = path_str);
             }
             ToolbarAction::Stash        => branches::stash_save(self.state.clone()),
             ToolbarAction::CreateBranch => {
@@ -304,6 +337,9 @@ impl RecordeApp {
                     if cancel { self.state.lock().unwrap().modal = ModalKind::None; }
                 });
             }),
+
+            ModalKind::CloneRepo => self.render_clone_modal(ctx),
+            ModalKind::InitRepo  => self.render_init_modal(ctx),
 
             ModalKind::MergeBranch => self.render_branch_picker(ctx, "Merge Branch",
                 "Select a branch to merge into the current branch:",
@@ -592,7 +628,17 @@ impl RecordeApp {
     }
 
     fn render_repo_settings(&mut self, ui: &mut egui::Ui) {
-        let repo_path = self.state.lock().unwrap().repo_path.clone();
+        let (repo_path, head_branch, ahead_behind, dirty_count, conflict_count, caps) = {
+            let s = self.state.lock().unwrap();
+            (
+                s.repo_path.clone(),
+                s.head_branch.clone().unwrap_or_else(|| "—".into()),
+                s.ahead_behind,
+                s.dirty_count,
+                s.conflicted_files.len(),
+                s.capabilities.clone(),
+            )
+        };
         let Some(path) = repo_path else {
             ui.label(styled_muted("Open a repository to edit repository settings."));
             return;
@@ -601,6 +647,65 @@ impl RecordeApp {
         ui.label(RichText::new("Repository").color(theme::TEXT_SECONDARY).size(12.5).strong());
         ui.label(styled_muted(&path.display().to_string()));
         ui.add_space(10.0);
+
+        // ── Health ──────────────────────────────────────────────────────
+        ui.label(RichText::new("Repository Health").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(4.0);
+        let ab_str = match ahead_behind {
+            Some((a, b)) => format!("↑{} ↓{}", a, b),
+            None => "no upstream".into(),
+        };
+        health_row(ui, "Branch", &format!("{} {}", head_branch, ab_str));
+        let dirty_str = if dirty_count == 0 && conflict_count == 0 {
+            "clean".into()
+        } else {
+            let mut parts = Vec::new();
+            if dirty_count > 0 { parts.push(format!("{} changed", dirty_count)); }
+            if conflict_count > 0 { parts.push(format!("{} conflicted", conflict_count)); }
+            parts.join(", ")
+        };
+        health_row(ui, "Working tree", &dirty_str);
+        if let Some(ref caps) = caps {
+            let state_str = if caps.rebase_in_progress { "Rebasing" }
+                else if caps.merge_in_progress { "Merging" }
+                else if caps.cherry_pick_in_progress { "Cherry-picking" }
+                else if caps.revert_in_progress { "Reverting" }
+                else { "Normal" };
+            health_row(ui, "State", state_str);
+            health_row(ui, "LFS", if caps.lfs_installed { "installed" } else { "not installed" });
+            health_row(ui, "Submodules", if caps.has_submodules { "present" } else { "none" });
+            health_row(ui, "Provider", &format!("{:?}", caps.provider));
+        }
+        let git_ver = std::process::Command::new("git").arg("--version")
+            .output().ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_else(|| "unknown".into());
+        health_row(ui, "Git", git_ver.trim());
+
+        ui.add_space(12.0);
+
+        // ── Origin URL ───────────────────────────────────────────────────
+        ui.label(RichText::new("Origin URL").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(4.0);
+        if self.origin_url_input.is_empty() {
+            // Pre-populate on first open
+            self.origin_url_input = git_config_value(Some(&path), "remote.origin.url")
+                .unwrap_or_default();
+        }
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.origin_url_input)
+                .desired_width(340.0).hint_text("https://github.com/owner/repo.git"));
+            if ui.add(secondary_btn("Save")).clicked() {
+                let url = self.origin_url_input.trim().to_string();
+                if !url.is_empty() {
+                    let _ = crate::git::merge::run_git_seq(&path, &["remote", "set-url", "origin", &url]);
+                }
+            }
+        });
+
+        ui.add_space(14.0);
+
+        // ── Git identity ─────────────────────────────────────────────────
         ui.label(RichText::new("Repository Git identity").color(theme::TEXT_SECONDARY).size(12.5).strong());
         settings_text_field(ui, "Name", &mut self.repo_git_name_input);
         settings_text_field(ui, "Email", &mut self.repo_git_email_input);
@@ -906,6 +1011,111 @@ impl eframe::App for RecordeApp {
 }
 
 impl RecordeApp {
+    fn render_clone_modal(&mut self, ctx: &Context) {
+        let mut close = false;
+        let mut do_clone = false;
+
+        modal_window(ctx, "Clone Repository", |ui| {
+            ui.label(styled_label("Repository URL"));
+            ui.add_space(4.0);
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut self.clone_url)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("https://github.com/owner/repo.git"),
+            );
+            r.request_focus();
+            ui.add_space(8.0);
+            ui.label(styled_label("Destination"));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let dest_str = self.clone_dest.as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "Choose folder…".into());
+                ui.label(RichText::new(dest_str).color(theme::TEXT_SECONDARY).size(12.0));
+                if ui.add(secondary_btn("Browse")).clicked() {
+                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        self.clone_dest = Some(p);
+                    }
+                }
+            });
+            ui.add_space(16.0);
+            let can_clone = !self.clone_url.trim().is_empty() && self.clone_dest.is_some();
+            ui.horizontal(|ui| {
+                let ok = ui.add_enabled(can_clone, primary_btn("Clone")).clicked()
+                    || (can_clone && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                let cancel = ui.add(secondary_btn("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if ok     { do_clone = true; }
+                if cancel { close = true; }
+            });
+        });
+
+        if do_clone {
+            if let Some(dest) = self.clone_dest.clone() {
+                let mut dest_path = dest;
+                // Append the repo name from the URL as the subdirectory
+                let repo_name = self.clone_url.trim_end_matches('/')
+                    .trim_end_matches(".git")
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("repo")
+                    .to_string();
+                dest_path.push(&repo_name);
+                self.config.add_recent(dest_path.clone());
+                lifecycle::clone_repo(self.clone_url.trim(), dest_path, self.state.clone());
+            }
+            self.clone_url.clear();
+            self.clone_dest = None;
+            self.state.lock().unwrap().modal = ModalKind::None;
+        } else if close {
+            self.clone_url.clear();
+            self.clone_dest = None;
+            self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
+    fn render_init_modal(&mut self, ctx: &Context) {
+        let mut close = false;
+        let mut do_init = false;
+
+        modal_window(ctx, "Initialize Repository", |ui| {
+            ui.label(styled_label("Choose an empty folder to initialise as a git repository:"));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let path_str = self.init_repo_path.as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "No folder selected".into());
+                ui.label(RichText::new(path_str).color(theme::TEXT_SECONDARY).size(12.0));
+                if ui.add(secondary_btn("Browse")).clicked() {
+                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        self.init_repo_path = Some(p);
+                    }
+                }
+            });
+            ui.add_space(16.0);
+            let can_init = self.init_repo_path.is_some();
+            ui.horizontal(|ui| {
+                let ok = ui.add_enabled(can_init, primary_btn("Initialize")).clicked();
+                let cancel = ui.add(secondary_btn("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if ok     { do_init = true; }
+                if cancel { close = true; }
+            });
+        });
+
+        if do_init {
+            if let Some(path) = self.init_repo_path.clone() {
+                self.config.add_recent(path.clone());
+                lifecycle::init_repo(path, self.state.clone());
+            }
+            self.init_repo_path = None;
+            self.state.lock().unwrap().modal = ModalKind::None;
+        } else if close {
+            self.init_repo_path = None;
+            self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
     /// Generic branch-picker modal used for Merge and Rebase.
     fn render_branch_picker(&mut self, ctx: &Context, title: &str, hint: &str, on_confirm: impl Fn(&mut Self, String)) {
         let branches_list: Vec<String> = {
@@ -1211,11 +1421,19 @@ impl RecordeApp {
         ui.add_space(6.0);
         egui::menu::bar(ui, |ui| {
                     ui.menu_button("File", |ui| {
-                        if ui.button("Open Repository...").clicked() {
+                        if ui.button("Open Repository…").clicked() {
                             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                                 self.config.add_recent(path.clone());
                                 load_repo(path, self.state.clone());
                             }
+                            ui.close_menu();
+                        }
+                        if ui.button("Clone Repository…").clicked() {
+                            self.state.lock().unwrap().modal = ModalKind::CloneRepo;
+                            ui.close_menu();
+                        }
+                        if ui.button("Initialize Repository…").clicked() {
+                            self.state.lock().unwrap().modal = ModalKind::InitRepo;
                             ui.close_menu();
                         }
                         if !self.config.recent_repos.is_empty() {
@@ -1290,7 +1508,25 @@ impl RecordeApp {
                             }
                             ui.close_menu();
                         }
-                        if ui.add_enabled(has_repo, egui::Button::new("Pull Requests...")).clicked() {
+                        if ui.add_enabled(has_repo, egui::Button::new("Open Terminal")).clicked() {
+                            if let Some(rp) = self.state.lock().unwrap().repo_path.clone() {
+                                lifecycle::open_terminal(&rp);
+                            }
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Reveal in File Manager")).clicked() {
+                            if let Some(rp) = self.state.lock().unwrap().repo_path.clone() {
+                                lifecycle::reveal_in_file_manager(&rp);
+                            }
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Copy Path")).clicked() {
+                            let path_str = self.state.lock().unwrap().repo_path
+                                .as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+                            ctx.output_mut(|o| o.copied_text = path_str);
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Pull Requests…")).clicked() {
                             self.pull_requests_open = true;
                             ui.close_menu();
                         }
@@ -1399,6 +1635,13 @@ fn secondary_btn(label: &str) -> egui::Button<'_> {
         .stroke(Stroke::new(1.0, theme::BORDER))
         .rounding(6.0)
         .min_size(egui::Vec2::new(0.0, 28.0))
+}
+
+fn health_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("{:<14}", label)).color(theme::TEXT_MUTED).size(11.5).monospace());
+        ui.label(RichText::new(value).color(theme::TEXT_SECONDARY).size(11.5));
+    });
 }
 
 fn styled_label(text: &str) -> RichText {
