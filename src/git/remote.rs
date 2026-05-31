@@ -292,6 +292,11 @@ fn build_creds(
     }
 
     if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+        // Check Recorde's own token store first
+        if let Some((u, token)) = crate::auth::store::lookup_for_url(url) {
+            return git2::Cred::userpass_plaintext(&u, &token);
+        }
+        // Fall back to the system git credential helper
         if let Some((u, p)) = git_credential_fill(url) {
             return git2::Cred::userpass_plaintext(&u, &p);
         }
