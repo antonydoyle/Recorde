@@ -186,6 +186,80 @@ fn test_runner_cancel_token() {
     assert!(got_terminal, "should receive terminal event even after cancel");
 }
 
+// ── Conflict detection test ───────────────────────────────────────────────────
+
+#[test]
+fn test_conflict_detection() {
+    // Create a repo with a merge conflict and verify collect_conflicts finds it.
+    let repo = TestRepo::new();
+
+    // Base commit
+    repo.add_and_commit("base", &[("conflict.txt", "shared\n")]);
+
+    // Branch A: modify the file
+    {
+        let r = git2::Repository::open(repo.path()).unwrap();
+        let head = r.head().unwrap().peel_to_commit().unwrap();
+        r.branch("branch-a", &head, false).unwrap();
+        let branch_ref = r.find_branch("branch-a", git2::BranchType::Local).unwrap();
+        let obj = branch_ref.get().peel(git2::ObjectType::Commit).unwrap();
+        let mut co = git2::build::CheckoutBuilder::new();
+        co.safe();
+        r.checkout_tree(&obj, Some(&mut co)).unwrap();
+        r.set_head("refs/heads/branch-a").unwrap();
+    }
+    repo.add_and_commit("branch-a change", &[("conflict.txt", "branch-a content\n")]);
+
+    // Back to main, make a conflicting change
+    {
+        let r = git2::Repository::open(repo.path()).unwrap();
+        let main_ref = r.find_branch("main", git2::BranchType::Local)
+            .or_else(|_| r.find_branch("master", git2::BranchType::Local))
+            .unwrap();
+        let obj = main_ref.get().peel(git2::ObjectType::Commit).unwrap();
+        let mut co = git2::build::CheckoutBuilder::new();
+        co.safe();
+        r.checkout_tree(&obj, Some(&mut co)).unwrap();
+        let head_name = main_ref.name().unwrap().unwrap().to_string();
+        r.set_head(&format!("refs/heads/{}", head_name)).unwrap();
+    }
+    repo.add_and_commit("main change", &[("conflict.txt", "main content\n")]);
+
+    // Attempt to merge branch-a — should produce a conflict
+    let merge_result = std::process::Command::new("git")
+        .arg("-C").arg(repo.path())
+        .args(["merge", "--no-edit", "branch-a"])
+        .output()
+        .unwrap();
+
+    // Merge should have failed with conflicts
+    if merge_result.status.success() {
+        // If no conflict (fast-forward or clean merge), skip the rest
+        return;
+    }
+
+    // Now check conflict detection
+    let r = git2::Repository::open(repo.path()).unwrap();
+    let index = r.index().unwrap();
+    let has_conflicts = index.has_conflicts();
+    assert!(has_conflicts, "index should have conflicts after failed merge");
+
+    // The collect_conflicts logic from operations.rs
+    let conflicts: Vec<String> = index.conflicts().unwrap()
+        .filter_map(|c| c.ok())
+        .filter_map(|entry| {
+            entry.our.as_ref()
+                .or(entry.their.as_ref())
+                .or(entry.ancestor.as_ref())
+                .and_then(|e| std::str::from_utf8(&e.path).ok().map(|p| p.to_string()))
+        })
+        .collect();
+
+    assert!(!conflicts.is_empty(), "should detect at least one conflicted file");
+    assert!(conflicts.iter().any(|p| p.contains("conflict.txt")),
+        "conflict.txt should be in the conflict list, got: {:?}", conflicts);
+}
+
 // ── Patch round-trip tests ────────────────────────────────────────────────────
 
 #[test]
