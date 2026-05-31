@@ -63,7 +63,7 @@ pub fn section_header(ui: &mut Ui, title: &str, count: usize, open: &mut bool) -
     let row_h = 24.0;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, theme::BG_HOVER);
+        ui.painter().rect_filled(rect, 0.0, theme::bg_hover());
     }
     let chevron = if *open { icons::EXPAND_MORE } else { icons::CHEVRON_RIGHT };
     ui.painter().text(
@@ -71,28 +71,28 @@ pub fn section_header(ui: &mut Ui, title: &str, count: usize, open: &mut bool) -
         egui::Align2::LEFT_CENTER,
         chevron.to_string(),
         icons::font(16.0),
-        theme::TEXT_MUTED,
+        theme::text_muted(),
     );
     ui.painter().text(
         Pos2::new(rect.left() + 30.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         title,
         FontId::proportional(theme::font_size::SECTION),
-        theme::TEXT_MUTED,
+        theme::text_muted(),
     );
     if count > 0 {
         let text = count.to_string();
         let font = FontId::proportional(10.5);
-        let galley = ui.painter().layout_no_wrap(text, font, theme::TEXT_MUTED);
+        let galley = ui.painter().layout_no_wrap(text, font, theme::text_muted());
         let pill = Rect::from_min_size(
             Pos2::new(rect.right() - galley.size().x - 22.0, rect.center().y - 8.0),
             Vec2::new(galley.size().x + 14.0, 16.0),
         );
-        ui.painter().rect_filled(pill, 8.0, theme::BG_ELEVATED);
+        ui.painter().rect_filled(pill, 8.0, theme::bg_elevated());
         ui.painter().galley(
             Pos2::new(pill.center().x - galley.size().x / 2.0, pill.center().y - galley.size().y / 2.0),
             galley,
-            theme::TEXT_MUTED,
+            theme::text_muted(),
         );
     }
 
@@ -109,18 +109,18 @@ pub fn toolbar_btn(ui: &mut Ui, label: &str, enabled: bool) -> Response {
         enabled,
         egui::Button::new(
             RichText::new(label)
-                .color(if enabled { theme::TEXT_SECONDARY } else { theme::TEXT_MUTED })
+                .color(if enabled { theme::text_secondary() } else { theme::text_muted() })
                 .size(theme::font_size::BODY),
         )
-        .fill(theme::BG_PANEL_ALT)
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(theme::bg_panel_alt())
+        .stroke(Stroke::new(1.0, theme::border()))
         .rounding(6.0),
     )
 }
 
 /// Toolbar button with a Material Icon glyph followed by a text label.
 pub fn toolbar_btn_icon(ui: &mut Ui, icon: char, label: &str, enabled: bool) -> Response {
-    let col = if enabled { theme::TEXT_SECONDARY } else { theme::TEXT_MUTED };
+    let col = if enabled { theme::text_secondary() } else { theme::text_muted() };
     let mut job = egui::text::LayoutJob::default();
     job.append(
         &icon.to_string(),
@@ -135,8 +135,8 @@ pub fn toolbar_btn_icon(ui: &mut Ui, icon: char, label: &str, enabled: bool) -> 
     ui.add_enabled(
         enabled,
         egui::Button::new(job)
-            .fill(theme::BG_PANEL_ALT)
-            .stroke(Stroke::new(1.0, theme::BORDER))
+            .fill(theme::bg_panel_alt())
+            .stroke(Stroke::new(1.0, theme::border()))
             .rounding(6.0)
             .min_size(Vec2::new(0.0, 28.0)),
     )
@@ -145,7 +145,7 @@ pub fn toolbar_btn_icon(ui: &mut Ui, icon: char, label: &str, enabled: bool) -> 
 /// Icon-only button using Material Icons font.
 pub fn icon_btn_mat(ui: &mut Ui, icon: char, size: f32, tip: &str) -> Response {
     ui.add(
-        egui::Button::new(icons::rich(icon, size).color(theme::TEXT_MUTED))
+        egui::Button::new(icons::rich(icon, size).color(theme::text_muted()))
             .fill(egui::Color32::TRANSPARENT)
             .stroke(Stroke::NONE)
             .min_size(Vec2::splat(28.0)),

@@ -15,7 +15,7 @@ impl DetailPanel {
 
     pub fn show(&mut self, ui: &mut Ui) {
         ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, theme::BG_SURFACE);
+            .rect_filled(ui.max_rect(), 0.0, theme::bg_surface());
 
         // Snapshot everything we need, then release the lock.
         let (selected_commit, detail, selected_file) = {
@@ -31,7 +31,7 @@ impl DetailPanel {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     RichText::new("Select a commit to view details.")
-                        .color(theme::TEXT_MUTED)
+                        .color(theme::text_muted())
                         .size(12.0),
                 );
             });
@@ -40,7 +40,7 @@ impl DetailPanel {
 
         let Some(detail) = detail else {
             ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("Loading…").color(theme::TEXT_MUTED).size(12.0));
+                ui.label(RichText::new("Loading…").color(theme::text_muted()).size(12.0));
             });
             return;
         };
@@ -65,7 +65,7 @@ impl DetailPanel {
                     ui.add_space(6.0);
                     if ui
                         .small_button(
-                            RichText::new("Copy").color(theme::TEXT_MUTED).size(10.5),
+                            RichText::new("Copy").color(theme::text_muted()).size(10.5),
                         )
                         .clicked()
                     {
@@ -95,7 +95,7 @@ impl DetailPanel {
                     .show(ui, |ui| {
                     ui.label(
                         RichText::new(first_line)
-                            .color(theme::TEXT_PRIMARY)
+                            .color(theme::text_primary())
                             .size(13.0)
                             .strong(),
                     );
@@ -108,7 +108,7 @@ impl DetailPanel {
                         .show(ui, |ui| {
                         ui.label(
                             RichText::new(rest)
-                                .color(theme::TEXT_SECONDARY)
+                                .color(theme::text_secondary())
                                 .size(12.0),
                         );
                     });
@@ -123,7 +123,7 @@ impl DetailPanel {
                     ui.add_space(12.0);
                     ui.label(
                         RichText::new(format!("Changed files  ({})", detail.changed_files.len()))
-                            .color(theme::TEXT_MUTED)
+                            .color(theme::text_muted())
                             .size(10.5)
                             .strong(),
                     );
@@ -149,9 +149,9 @@ impl DetailPanel {
                                 is_sel,
                                 RichText::new(display)
                                     .color(if is_sel {
-                                        theme::BG_APP
+                                        theme::bg_app()
                                     } else {
-                                        theme::TEXT_SECONDARY
+                                        theme::text_secondary()
                                     })
                                     .size(12.0),
                             );
@@ -220,10 +220,10 @@ fn meta_row(ui: &mut Ui, label: &str, value: &str) {
         ui.add_space(12.0);
         ui.label(
             RichText::new(format!("{:<8}", label))
-                .color(theme::TEXT_MUTED)
+                .color(theme::text_muted())
                 .font(FontId::monospace(11.0)),
         );
         ui.add_space(4.0);
-        ui.label(RichText::new(value).color(theme::TEXT_SECONDARY).size(12.0));
+        ui.label(RichText::new(value).color(theme::text_secondary()).size(12.0));
     });
 }
