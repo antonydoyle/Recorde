@@ -136,6 +136,8 @@ pub struct AppState {
     pub search_active: bool,
     pub search_query: String,
     pub show_all_branches: bool,
+    /// 1=sidebar, 2=graph, 3=changes, 4=diff. 0=none.
+    pub focused_pane: u8,
     /// Set by the graph context menu to trigger opening the rebase modal.
     pub pending_open_rebase: Option<String>,
 }
