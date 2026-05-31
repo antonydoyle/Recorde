@@ -134,6 +134,8 @@ pub enum ModalKind {
     RebaseOnto,
     CloneRepo,
     InitRepo,
+    RenameBranch { old_name: String },
+    ConfirmDetachedCheckout { oid: String },
 }
 
 #[derive(Default)]
@@ -156,6 +158,7 @@ pub struct AppState {
     pub stashes: Vec<StashEntry>,
 
     pub conflicted_files: Vec<ConflictedFile>,
+    pub merged_into_head: std::collections::HashSet<String>,
     pub modal: ModalKind,
     /// Context for the currently-loaded diff (commit vs staged vs unstaged).
     pub diff_context: DiffContext,
