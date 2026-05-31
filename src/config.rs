@@ -40,6 +40,8 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub dark_theme: bool,
     #[serde(default)]
+    pub high_contrast: bool,
+    #[serde(default)]
     pub default_editor: String,
     #[serde(default)]
     pub per_repo: std::collections::HashMap<String, RepoConfig>,
@@ -68,6 +70,18 @@ pub struct Config {
     pub font_scale: f32,
     #[serde(default)]
     pub colorblind_graph: bool,
+    #[serde(default = "default_true")]
+    pub show_sidebar: bool,
+    #[serde(default = "default_true")]
+    pub show_right_panel: bool,
+    #[serde(default = "default_true")]
+    pub show_diff_panel: bool,
+    #[serde(default)]
+    pub sidebar_width: Option<f32>,
+    #[serde(default)]
+    pub right_panel_width: Option<f32>,
+    #[serde(default)]
+    pub diff_panel_height: Option<f32>,
 }
 
 fn default_true() -> bool { true }
@@ -112,6 +126,17 @@ impl Config {
         cfg.graph_w = Some(graph_w);
         cfg.time_w  = Some(time_w);
         cfg.hash_w  = Some(hash_w);
+        self.save();
+    }
+
+    pub fn reset_repo_column_widths(&mut self, path: &Path) {
+        let key = path.display().to_string();
+        if let Some(cfg) = self.per_repo.get_mut(&key) {
+            cfg.refs_w = None;
+            cfg.graph_w = None;
+            cfg.time_w = None;
+            cfg.hash_w = None;
+        }
         self.save();
     }
 

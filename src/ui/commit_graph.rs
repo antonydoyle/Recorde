@@ -24,6 +24,7 @@ const DOT_R:        f32 = 6.0;
 const DOT_R_SEL:    f32 = 8.0;
 const GRAPH_LEFT:   f32 = 10.0;
 const HEADER_H:     f32 = 28.0;
+const RESIZE_HIT_W: f32 = 14.0;
 
 pub struct CommitGraphView {
     state: SharedState,
@@ -68,6 +69,17 @@ impl CommitGraphView {
         if let Some(w) = hash_w  { self.hash_w  = w.clamp(HASH_W_MIN,  120.0); }
         self.last_saved_refs_w  = self.refs_w;
         self.last_saved_graph_w = self.graph_w;
+        self.cols_dirty = false;
+    }
+
+    pub fn reset_column_widths(&mut self) {
+        self.refs_w = REFS_W_DEF;
+        self.graph_w = GRAPH_W_DEF;
+        self.commit_w = COMMIT_W_DEF;
+        self.time_w = TIME_W_DEF;
+        self.hash_w = HASH_W_DEF;
+        self.last_saved_refs_w = REFS_W_DEF;
+        self.last_saved_graph_w = GRAPH_W_DEF;
         self.cols_dirty = false;
     }
 
@@ -130,6 +142,7 @@ impl CommitGraphView {
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut new_query)
                             .desired_width(300.0)
+                            .margin(egui::Vec2::new(8.0, 5.0))
                             .hint_text("Search… (message, author:, sha:, after:YYYY-MM-DD, before:YYYY-MM-DD)")
                             .font(FontId::proportional(12.5)),
                     );
@@ -519,12 +532,17 @@ impl CommitGraphView {
 
     fn resize_handle(&mut self, ui: &mut Ui, header_rect: Rect, x: f32, divider: ColumnDivider) {
         let rect = Rect::from_min_size(
-            Pos2::new(x - 3.0, header_rect.min.y),
-            Vec2::new(6.0, HEADER_H),
+            Pos2::new(x - RESIZE_HIT_W / 2.0, header_rect.min.y),
+            Vec2::new(RESIZE_HIT_W, HEADER_H),
         );
-        let resp = ui.allocate_rect(rect, Sense::drag());
+        let resp = ui.allocate_rect(rect, Sense::drag()).on_hover_text("Drag to resize column");
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+            ui.painter().rect_filled(
+                rect.shrink2(Vec2::new(3.0, 2.0)),
+                2.0,
+                theme::ACCENT_TEAL.gamma_multiply(0.08),
+            );
             ui.painter().line_segment(
                 [Pos2::new(x, header_rect.min.y + 4.0), Pos2::new(x, header_rect.max.y - 4.0)],
                 Stroke::new(2.0, theme::ACCENT_TEAL),

@@ -126,7 +126,8 @@ impl DiffView {
                         let mut clicked = false;
                         ui.horizontal(|ui| {
                             ui.add_space(8.0);
-                            ui.label(egui::RichText::new(icon).color(col).size(11.0).font(FontId::monospace(11.0)));
+                            ui.label(egui::RichText::new(icon).color(col).size(11.0).font(FontId::monospace(11.0)))
+                                .on_hover_text(status_tooltip(f.status));
                             ui.add_space(3.0);
                             let name = f.path.rsplit('/').next().unwrap_or(&f.path);
                             let r = ui.selectable_label(is_sel,
@@ -164,7 +165,8 @@ impl DiffView {
                             let mut clicked = false;
                             ui.horizontal(|ui| {
                                 ui.add_space(8.0);
-                                ui.label(egui::RichText::new(icon).color(col).size(11.0).font(FontId::monospace(11.0)));
+                                ui.label(egui::RichText::new(icon).color(col).size(11.0).font(FontId::monospace(11.0)))
+                                    .on_hover_text(status_tooltip(status));
                                 ui.add_space(3.0);
                                 let name = f.path.rsplit('/').next().unwrap_or(&f.path);
                                 let r = ui.selectable_label(is_sel,
@@ -257,7 +259,8 @@ impl DiffView {
                     let active = !self.show_console && !self.show_blame;
                     let tc = if active { theme::text_primary() } else { theme::text_muted() };
                     let btn = ui.add(egui::Button::new(egui::RichText::new("File Diff").size(12.5).color(tc))
-                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
+                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE))
+                        .on_hover_text("Show the selected file diff");
                     if btn.clicked() { self.show_console = false; self.show_blame = false; self.state.lock().unwrap().show_blame = false; }
                     if active { let br = btn.rect; ui.painter().line_segment([br.left_bottom(), br.right_bottom()], Stroke::new(2.0, theme::ACCENT_TEAL)); }
                     ui.add_space(10.0);
@@ -267,9 +270,11 @@ impl DiffView {
                     let active = self.show_blame;
                     let tc = if active { theme::text_primary() } else { theme::text_muted() };
                     let btn = ui.add(egui::Button::new(egui::RichText::new("Blame").size(12.5).color(tc))
-                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
+                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE))
+                        .on_hover_text("Show line blame for the selected file");
                     if btn.clicked() {
                         self.show_blame = true; self.show_console = false;
+                        self.state.lock().unwrap().show_blame = true;
                         if let Some(ref fp) = *selected_file {
                             crate::git::operations::load_blame(fp, self.state.clone());
                         }
@@ -282,8 +287,9 @@ impl DiffView {
                     let active = self.show_console;
                     let tc = if active { theme::text_primary() } else { theme::text_muted() };
                     let btn = ui.add(egui::Button::new(egui::RichText::new("Console").size(12.5).color(tc))
-                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
-                    if btn.clicked() { self.show_console = true; self.show_blame = false; }
+                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE))
+                        .on_hover_text("Show Git operation output");
+                    if btn.clicked() { self.show_console = true; self.show_blame = false; self.state.lock().unwrap().show_blame = false; }
                     if active { let br = btn.rect; ui.painter().line_segment([br.left_bottom(), br.right_bottom()], Stroke::new(2.0, theme::ACCENT_TEAL)); }
                     ui.add_space(10.0);
                 }
@@ -301,7 +307,9 @@ impl DiffView {
                     ui.add_space(10.0);
                     if self.show_console && !console_log.is_empty() {
                         if ui.add(egui::Button::new(egui::RichText::new("Export Log").size(11.5).color(theme::text_secondary()))
-                            .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked()
+                            .fill(Color32::TRANSPARENT).stroke(Stroke::NONE))
+                            .on_hover_text("Export console log to a text file")
+                            .clicked()
                         {
                             if let Some(path) = rfd::FileDialog::new()
                                 .set_file_name("recorde-log.txt")
@@ -314,7 +322,9 @@ impl DiffView {
                     }
                     if let Some(ref diff) = diff_opt {
                         if ui.add(egui::Button::new(egui::RichText::new("✕").color(theme::text_muted()).size(12.0))
-                            .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
+                            .fill(Color32::TRANSPARENT).stroke(Stroke::NONE))
+                            .on_hover_text("Close selected diff")
+                            .clicked() {
                             let mut s = self.state.lock().unwrap();
                             s.selected_file = None; s.current_diff = None;
                         }
@@ -329,7 +339,8 @@ impl DiffView {
                                 let active = *is_split == self.split_view;
                                 let tc = if active { theme::ACCENT_TEAL } else { theme::text_muted() };
                                 let btn = ui.add(egui::Button::new(egui::RichText::new(*label).size(11.5).color(tc))
-                                    .fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
+                                    .fill(Color32::TRANSPARENT).stroke(Stroke::NONE))
+                                    .on_hover_text(if *is_split { "Show split diff" } else { "Show unified diff" });
                                 if btn.clicked() { self.split_view = *is_split; }
                                 ui.add_space(2.0);
                             }
@@ -379,7 +390,12 @@ impl DiffView {
                     ui.add_space(4.0);
                     if blame_lines.is_empty() {
                         ui.centered_and_justified(|ui| {
-                            ui.label(egui::RichText::new("Loading blame…").color(theme::text_muted()).size(12.0));
+                            let message = if selected_file.is_some() {
+                                "Loading blame..."
+                            } else {
+                                "Select a file to view blame."
+                            };
+                            ui.label(egui::RichText::new(message).color(theme::text_muted()).size(12.0));
                         });
                     } else {
                         let mut last_oid = "";
@@ -754,5 +770,15 @@ fn status_icon(status: char) -> (&'static str, egui::Color32) {
         'D'       => ("D", theme::ACCENT_RED),
         'R'       => ("R", theme::ACCENT_YELLOW),
         _         => ("M", theme::ACCENT_YELLOW),
+    }
+}
+
+fn status_tooltip(status: char) -> &'static str {
+    match status {
+        'A' => "Added",
+        '?' => "Untracked",
+        'D' => "Deleted",
+        'R' => "Renamed",
+        _ => "Modified",
     }
 }

@@ -362,8 +362,9 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
     };
 
     // Right-side indicator: "merged" badge or ahead/behind counts
+    let compact_merged = is_merged && !is_head && avail < 245.0;
     let (ab_text, ab_color) = if is_merged && !is_head {
-        ("merged".to_string(), theme::text_muted())
+        (if compact_merged { "M" } else { "merged" }.to_string(), theme::text_muted())
     } else {
         let txt = match ahead_behind {
             Some((a, b)) if a > 0 && b > 0 => format!("↑{} ↓{}", a, b),
@@ -375,7 +376,7 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
     };
 
     let right_margin = if ab_text.is_empty() { 8.0 } else { 4.0 };
-    let ab_width = if ab_text.is_empty() { 0.0 } else { if is_merged { 46.0 } else { 52.0 } };
+    let ab_width = if ab_text.is_empty() { 0.0 } else if compact_merged { 18.0 } else if is_merged { 46.0 } else { 52.0 };
 
     let text_rect = Rect::from_min_max(
         Pos2::new(dot_x + 12.0, row_rect.min.y),
@@ -392,6 +393,11 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
             Pos2::new(row_rect.max.x - ab_width - 4.0, row_rect.min.y),
             Pos2::new(row_rect.max.x - 4.0, row_rect.max.y),
         );
+        let ab_id = ui.make_persistent_id(("branch-status", name));
+        let ab_resp = ui.interact(ab_rect, ab_id, egui::Sense::hover());
+        if compact_merged {
+            ab_resp.on_hover_text("Merged into current branch");
+        }
         ui.allocate_ui_at_rect(ab_rect, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.label(RichText::new(&ab_text).color(ab_color).size(10.5));

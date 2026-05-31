@@ -1,4 +1,4 @@
-use egui::{Color32, FontId, RichText, Ui};
+use egui::{FontId, RichText, Ui};
 
 use crate::git::operations::{load_blame, load_diff, load_file_history};
 use crate::state::SharedState;
@@ -141,7 +141,8 @@ impl DetailPanel {
                                 RichText::new(icon)
                                     .font(FontId::monospace(11.0))
                                     .color(icon_color),
-                            );
+                            )
+                            .on_hover_text(status_tooltip(file.status));
                             ui.add_space(6.0);
 
                             let display = file.path.rsplit('/').next().unwrap_or(&file.path);
@@ -165,7 +166,7 @@ impl DetailPanel {
                     // Row hover highlight
                     if row_resp.hovered() {
                         ui.painter()
-                            .rect_filled(row_resp.rect, 0.0, Color32::from_white_alpha(6));
+                            .rect_filled(row_resp.rect, 0.0, theme::bg_hover());
                     }
 
                     if row_resp.interact(egui::Sense::click()).clicked() {
@@ -212,6 +213,16 @@ fn status_icon(status: char) -> (&'static str, egui::Color32) {
         'R' => ("R", theme::ACCENT_YELLOW),
         'C' => ("C", theme::ACCENT_BLUE),
         _ => ("M", theme::ACCENT_YELLOW),
+    }
+}
+
+fn status_tooltip(status: char) -> &'static str {
+    match status {
+        'A' => "Added",
+        'D' => "Deleted",
+        'R' => "Renamed",
+        'C' => "Copied",
+        _ => "Modified",
     }
 }
 

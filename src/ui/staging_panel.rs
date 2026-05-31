@@ -299,6 +299,12 @@ impl StagingPanel {
                     ui.label(RichText::new("Commit message").color(theme::text_muted()).size(10.5).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
+                        if ui.add(small_btn("📋 Copy")).on_hover_text("Copy assembled commit message").clicked() {
+                            let msg = build_message(&self.subject, &self.body, &self.co_authors,
+                                self.signoff_enabled, &repo_path, &git_user);
+                            ui.output_mut(|o| o.copied_text = msg);
+                        }
+                        ui.add_space(4.0);
                         let amend_color = if self.is_amend { theme::ACCENT_YELLOW } else { theme::text_muted() };
                         if ui.add(
                             egui::Button::new(RichText::new("Amend").color(amend_color).size(11.0))
@@ -321,9 +327,10 @@ impl StagingPanel {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.add(
+                    ui.add_sized(
+                        [form_width(ui, 12.0, 240.0), 28.0],
                         egui::TextEdit::singleline(&mut self.subject)
-                            .desired_width(ui.available_width() - 12.0)
+                            .margin(egui::Vec2::new(8.0, 5.0))
                             .hint_text("Summary (required)")
                             .font(egui::FontId::proportional(12.5)),
                     );
@@ -333,7 +340,7 @@ impl StagingPanel {
                     ui.add_space(12.0);
                     ui.add(
                         egui::TextEdit::multiline(&mut self.body)
-                            .desired_width(ui.available_width() - 24.0)
+                            .desired_width(form_width(ui, 24.0, 240.0))
                             .desired_rows(3)
                             .hint_text("Description (optional)")
                             .margin(egui::Vec2::new(8.0, 6.0))
@@ -346,9 +353,10 @@ impl StagingPanel {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.add(
+                    ui.add_sized(
+                        [form_width(ui, 68.0, 190.0), 28.0],
                         egui::TextEdit::singleline(&mut self.co_author_input)
-                            .desired_width(ui.available_width() - 68.0)
+                            .margin(egui::Vec2::new(8.0, 5.0))
                             .hint_text("Co-author: Name <email>")
                             .font(egui::FontId::proportional(11.5)),
                     );
@@ -377,14 +385,6 @@ impl StagingPanel {
                     ui.add_space(12.0);
                     ui.checkbox(&mut self.signoff_enabled,
                         RichText::new("Sign off").color(theme::text_muted()).size(11.0));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(12.0);
-                        if ui.add(small_btn("📋 Copy")).on_hover_text("Copy assembled commit message").clicked() {
-                            let msg = build_message(&self.subject, &self.body, &self.co_authors,
-                                self.signoff_enabled, &repo_path, &git_user);
-                            ui.output_mut(|o| o.copied_text = msg);
-                        }
-                    });
                 });
 
                 ui.add_space(8.0);
@@ -404,7 +404,12 @@ impl StagingPanel {
                 }
 
                 let can_commit = !self.subject.trim().is_empty() && !staged.is_empty();
-                let btn_label = if self.is_amend {
+                let compact_commit_label = ui.available_width() < 280.0;
+                let btn_label = if compact_commit_label && self.is_amend {
+                    "Amend commit".to_string()
+                } else if compact_commit_label {
+                    "Commit".to_string()
+                } else if self.is_amend {
                     format!("Amend commit on {}", head_branch)
                 } else {
                     format!("Commit to {}", head_branch)
@@ -415,7 +420,7 @@ impl StagingPanel {
                         can_commit,
                         egui::Button::new(RichText::new(&btn_label).color(Color32::WHITE).size(12.5))
                             .fill(if can_commit { theme::ACCENT_BLUE } else { theme::bg_elevated() })
-                            .min_size(Vec2::new(ui.available_width() - 12.0, 28.0)),
+                            .min_size(Vec2::new(form_width(ui, 12.0, 240.0), 28.0)),
                     );
                     if btn.clicked() {
                         if self.is_amend { do_amend = true; } else { do_commit = true; }
@@ -626,7 +631,8 @@ fn file_row(
     let row_resp = ui.horizontal(|ui| {
         ui.add_space(12.0);
         let (icon, color) = status_icon(status);
-        ui.label(RichText::new(icon).font(egui::FontId::monospace(11.0)).color(color));
+        ui.label(RichText::new(icon).font(egui::FontId::monospace(11.0)).color(color))
+            .on_hover_text(status_tooltip(status));
         ui.add_space(4.0);
         let name = path.rsplit('/').next().unwrap_or(path);
         let label = ui.selectable_label(
@@ -635,15 +641,17 @@ fn file_row(
                 .color(if is_selected { theme::bg_app() } else { theme::text_secondary() })
                 .size(12.0),
         );
-        if path != name { label.on_hover_text(path); }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            add_btns(ui);
-        });
+        label.on_hover_text(path);
+        if ui.available_width() > 150.0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+                add_btns(ui);
+            });
+        }
     }).response;
 
     if row_resp.hovered() {
-        ui.painter().rect_filled(row_resp.rect, 0.0, Color32::from_white_alpha(5));
+        ui.painter().rect_filled(row_resp.rect, 0.0, theme::bg_hover());
     }
     row_resp
 }
@@ -678,6 +686,16 @@ fn status_icon(status: char) -> (&'static str, Color32) {
     }
 }
 
+fn status_tooltip(status: char) -> &'static str {
+    match status {
+        'A' => "Added",
+        '?' => "Untracked",
+        'D' => "Deleted",
+        'R' => "Renamed",
+        _ => "Modified",
+    }
+}
+
 fn conflict_file_row(
     ui: &mut Ui,
     path: &str,
@@ -686,7 +704,8 @@ fn conflict_file_row(
 ) -> egui::Response {
     let row_resp = ui.horizontal(|ui| {
         ui.add_space(12.0);
-        ui.label(RichText::new("C").font(egui::FontId::monospace(11.0)).color(theme::ACCENT_RED).strong());
+        ui.label(RichText::new("C").font(egui::FontId::monospace(11.0)).color(theme::ACCENT_RED).strong())
+            .on_hover_text("Conflicted");
         ui.add_space(4.0);
         let name = path.rsplit('/').next().unwrap_or(path);
         let label = ui.selectable_label(
@@ -695,14 +714,16 @@ fn conflict_file_row(
                 .color(if is_selected { theme::bg_app() } else { theme::ACCENT_RED.gamma_multiply(0.85) })
                 .size(12.0),
         );
-        if path != name { label.on_hover_text(path); }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            add_btns(ui);
-        });
+        label.on_hover_text(path);
+        if ui.available_width() > 170.0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+                add_btns(ui);
+            });
+        }
     }).response;
     if row_resp.hovered() {
-        ui.painter().rect_filled(row_resp.rect, 0.0, Color32::from_rgba_unmultiplied(0x4A, 0x18, 0x10, 20));
+        ui.painter().rect_filled(row_resp.rect, 0.0, theme::bg_hover());
     }
     row_resp
 }
@@ -713,4 +734,12 @@ fn empty_label(ui: &mut Ui, text: &str) {
         ui.label(RichText::new(text).color(theme::text_muted()).size(11.0));
     });
     ui.add_space(2.0);
+}
+
+fn available_width_after(ui: &Ui, reserved: f32) -> f32 {
+    (ui.available_width() - reserved).max(80.0)
+}
+
+fn form_width(ui: &Ui, reserved: f32, max_width: f32) -> f32 {
+    available_width_after(ui, reserved).min(max_width)
 }
