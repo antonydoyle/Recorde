@@ -40,6 +40,7 @@ impl Sidebar {
         open.insert("REMOTE", false);
         open.insert("TAGS", false);
         open.insert("STASHES", false);
+        open.insert("WORKTREES", true);
         Self { state, open }
     }
 
@@ -53,11 +54,12 @@ impl Sidebar {
             Stroke::new(1.0, theme::BORDER),
         );
 
-        let (graph_opt, head, stashes, ab_map, merged_set, deleted) = {
+        let (graph_opt, head, stashes, ab_map, merged_set, deleted, worktrees) = {
             let s = self.state.lock().unwrap();
             (s.commit_graph.clone(), s.head_branch.clone().unwrap_or_default(),
              s.stashes.clone(), s.branch_ahead_behind.clone(),
-             s.merged_into_head.clone(), s.deleted_branches.clone())
+             s.merged_into_head.clone(), s.deleted_branches.clone(),
+             s.worktrees.clone())
         };
 
         let mut action: Option<SidebarAction> = None;
@@ -262,6 +264,29 @@ impl Sidebar {
                             });
                         }
                         if stashes.is_empty() { empty_hint(ui, "No stashes"); }
+                        ui.add_space(4.0);
+                    }
+                }
+
+                // ── WORKTREES ─────────────────────────────────────────
+                // Only show when there are linked worktrees beyond the main one
+                if worktrees.len() > 1 {
+                    let linked: Vec<_> = worktrees.iter().filter(|w| !w.is_main).collect();
+                    let open = self.open.entry("WORKTREES").or_insert(true);
+                    widgets::section_header(ui, "WORKTREES", linked.len(), open);
+                    if *open {
+                        ui.add_space(2.0);
+                        for wt in &linked {
+                            let label = wt.branch.as_deref()
+                                .unwrap_or_else(|| &wt.head_oid[..wt.head_oid.len().min(8)]);
+                            ui.horizontal(|ui| {
+                                ui.add_space(14.0);
+                                let (dr, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                                ui.painter().circle_filled(dr.center(), 3.5, theme::ACCENT_TEAL);
+                                ui.add_space(6.0);
+                                ui.label(RichText::new(label).color(theme::TEXT_SECONDARY).size(12.0));
+                            });
+                        }
                         ui.add_space(4.0);
                     }
                 }
