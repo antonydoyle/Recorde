@@ -142,6 +142,7 @@ impl CommitGraphView {
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut new_query)
                             .desired_width(300.0)
+                            .margin(egui::Vec2::new(8.0, 5.0))
                             .hint_text("Search… (message, author:, sha:, after:YYYY-MM-DD, before:YYYY-MM-DD)")
                             .font(FontId::proportional(12.5)),
                     );
