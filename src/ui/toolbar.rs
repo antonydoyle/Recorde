@@ -228,7 +228,8 @@ impl Toolbar {
                     vsep(ui);
                     ui.add_space(6.0);
 
-                    if widgets::toolbar_btn_icon(ui, icons::HUB, "New Branch", has_repo && !busy).clicked()
+                    if widgets::toolbar_btn_icon(ui, icons::HUB, "New Branch", has_repo && !busy)
+                        .on_hover_text("Create a new branch").clicked()
                     { action = Some(ToolbarAction::CreateBranch); }
 
                     ui.add_space(3.0);
@@ -279,6 +280,7 @@ impl Toolbar {
                             av_rect.center(), egui::Align2::CENTER_CENTER,
                             &initials, egui::FontId::proportional(10.0), egui::Color32::WHITE,
                         );
+                        let av_resp = av_resp.on_hover_text("Account settings");
                         if av_resp.clicked() {
                             action = Some(ToolbarAction::OpenUserMenu);
                         }
@@ -310,7 +312,9 @@ impl Toolbar {
                         let sc = if search_active { theme::ACCENT_TEAL } else { theme::TEXT_MUTED };
                         if ui.add(egui::Button::new(
                             icons::rich(icons::SEARCH, 18.0).color(sc),
-                        ).fill(egui::Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked()
+                        ).fill(egui::Color32::TRANSPARENT).stroke(Stroke::NONE))
+                        .on_hover_text("Search commits  (Ctrl+F)")
+                        .clicked()
                         { action = Some(ToolbarAction::ToggleSearch); }
 
                         ui.add_space(8.0);
