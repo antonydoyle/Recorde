@@ -58,6 +58,9 @@ pub struct RecordeApp {
     clone_dest: Option<std::path::PathBuf>,
     init_repo_path: Option<std::path::PathBuf>,
     origin_url_input: String,
+    // Branch/tag management
+    rename_branch_input: String,
+    tag_message_input: String,
 }
 
 impl RecordeApp {
@@ -91,6 +94,7 @@ impl RecordeApp {
         let state = new_shared_state();
         let runner = GitRunner::new();
         let to_open = initial_repo.or_else(|| config.recent_repos.first().cloned());
+        let initial_repo_config = to_open.as_ref().map(|p| config.get_repo_config(p));
         if let Some(path) = to_open {
             load_repo(path, state.clone());
         }
@@ -99,7 +103,13 @@ impl RecordeApp {
             runner,
             toolbar: Toolbar::new(state.clone()),
             sidebar: Sidebar::new(state.clone()),
-            commit_graph_view: CommitGraphView::new(state.clone()),
+            commit_graph_view: {
+                let mut cgv = CommitGraphView::new(state.clone());
+                if let Some(rc) = initial_repo_config {
+                    cgv.set_column_widths(rc.refs_w, rc.graph_w, rc.time_w, rc.hash_w);
+                }
+                cgv
+            },
             diff_view: DiffView::new(state.clone()),
             detail_panel: DetailPanel::new(state.clone()),
             staging_panel: StagingPanel::new(state.clone()),
@@ -128,6 +138,8 @@ impl RecordeApp {
             clone_dest: None,
             init_repo_path: None,
             origin_url_input: String::new(),
+            rename_branch_input: String::new(),
+            tag_message_input: String::new(),
         }
     }
 
@@ -136,6 +148,8 @@ impl RecordeApp {
     fn handle_toolbar(&mut self, ctx: &Context, action: ToolbarAction) {
         match action {
             ToolbarAction::OpenRepo(path) => {
+                let rc = self.config.get_repo_config(&path);
+                self.commit_graph_view.set_column_widths(rc.refs_w, rc.graph_w, rc.time_w, rc.hash_w);
                 self.config.add_recent(path.clone());
                 load_repo(path, self.state.clone());
             }
@@ -211,8 +225,14 @@ impl RecordeApp {
             SidebarAction::StashApply(i)  => branches::stash_apply(i, self.state.clone()),
             SidebarAction::StashPop(i)    => branches::stash_pop(i, self.state.clone()),
             SidebarAction::StashDrop(i)   => branches::stash_drop(i, self.state.clone()),
-            SidebarAction::MergeBranch(n) => merge::merge_branch(&n, self.state.clone()),
-            SidebarAction::RebaseOnto(n)  => rebase::rebase_onto(&n, self.state.clone()),
+            SidebarAction::MergeBranch(n)      => merge::merge_branch(&n, self.state.clone()),
+            SidebarAction::RebaseOnto(n)        => rebase::rebase_onto(&n, self.state.clone()),
+            SidebarAction::RenameBranch(n)      => { self.state.lock().unwrap().modal = ModalKind::RenameBranch { old_name: n }; }
+            SidebarAction::PublishBranch(n)     => branches::publish_branch(&n, self.state.clone()),
+            SidebarAction::SetUpstream(n)       => branches::set_upstream(&n, "origin", self.state.clone()),
+            SidebarAction::ForceDeleteBranch(n) => branches::force_delete_branch(&n, self.state.clone()),
+            SidebarAction::PushTag(n)           => branches::push_tag(&n, self.state.clone()),
+            SidebarAction::DeleteRemoteTag(n)   => branches::delete_remote_tag(&n, self.state.clone()),
         }
     }
 
@@ -313,17 +333,28 @@ impl RecordeApp {
                     ui.add_space(4.0);
                     ui.label(styled_muted(&format!("At commit  {}", &oid[..7.min(oid.len())])));
                 }
-                ui.add_space(16.0);
+                ui.add_space(8.0);
+                ui.label(styled_label("Message (optional — leave blank for lightweight tag)"));
+                ui.add_space(4.0);
+                ui.add(egui::TextEdit::multiline(&mut self.tag_message_input)
+                    .desired_width(f32::INFINITY).desired_rows(2).hint_text("Annotated tag message…"));
+                ui.add_space(12.0);
                 let can = !self.create_tag_name.trim().is_empty();
                 ui.horizontal(|ui| {
                     let ok     = ui.add_enabled(can, primary_btn("Create Tag")).clicked() || (can && ui.input(|i| i.key_pressed(Key::Enter)));
                     let cancel = ui.add(secondary_btn("Cancel")).clicked() || ui.input(|i| i.key_pressed(Key::Escape));
                     if ok {
-                        branches::create_tag(self.create_tag_name.trim(), from_oid.as_deref(), self.state.clone());
+                        let msg = if self.tag_message_input.trim().is_empty() { None } else { Some(self.tag_message_input.trim()) };
+                        branches::create_tag(self.create_tag_name.trim(), from_oid.as_deref(), msg, self.state.clone());
                         self.state.lock().unwrap().modal = ModalKind::None;
                         self.create_tag_name.clear();
+                        self.tag_message_input.clear();
                     }
-                    if cancel { self.state.lock().unwrap().modal = ModalKind::None; self.create_tag_name.clear(); }
+                    if cancel {
+                        self.state.lock().unwrap().modal = ModalKind::None;
+                        self.create_tag_name.clear();
+                        self.tag_message_input.clear();
+                    }
                 });
             }),
 
@@ -338,8 +369,10 @@ impl RecordeApp {
                 });
             }),
 
-            ModalKind::CloneRepo => self.render_clone_modal(ctx),
-            ModalKind::InitRepo  => self.render_init_modal(ctx),
+            ModalKind::CloneRepo  => self.render_clone_modal(ctx),
+            ModalKind::InitRepo   => self.render_init_modal(ctx),
+            ModalKind::RenameBranch { old_name } => self.render_rename_branch_modal(ctx, old_name),
+            ModalKind::ConfirmDetachedCheckout { oid } => self.render_detached_checkout_modal(ctx, oid),
 
             ModalKind::MergeBranch => self.render_branch_picker(ctx, "Merge Branch",
                 "Select a branch to merge into the current branch:",
@@ -821,6 +854,13 @@ impl eframe::App for RecordeApp {
         // ── Drain runner progress events ──────────────────────────────────
         self.apply_runner_progress();
 
+        // ── Persist graph column widths when they change ──────────────────
+        if let Some((rw, gw, tw, hw)) = self.commit_graph_view.take_dirty_widths() {
+            if let Some(ref path) = self.state.lock().unwrap().repo_path.clone() {
+                self.config.set_repo_column_widths(path, rw, gw, tw, hw);
+            }
+        }
+
         // ── In-progress operation banner (rebase/merge/cherry-pick/revert) ─
         self.show_in_progress_banner(ctx);
 
@@ -1011,6 +1051,64 @@ impl eframe::App for RecordeApp {
 }
 
 impl RecordeApp {
+    fn render_rename_branch_modal(&mut self, ctx: &Context, old_name: String) {
+        if self.rename_branch_input.is_empty() {
+            self.rename_branch_input = old_name.clone();
+        }
+        let mut close = false;
+        let mut do_rename = false;
+        modal_window(ctx, "Rename Branch", |ui| {
+            ui.label(styled_label("New name"));
+            ui.add_space(4.0);
+            let r = ui.add(egui::TextEdit::singleline(&mut self.rename_branch_input)
+                .desired_width(f32::INFINITY));
+            r.request_focus();
+            ui.add_space(12.0);
+            let can = !self.rename_branch_input.trim().is_empty()
+                && self.rename_branch_input.trim() != old_name.as_str();
+            ui.horizontal(|ui| {
+                let ok = ui.add_enabled(can, primary_btn("Rename")).clicked()
+                    || (can && ui.input(|i| i.key_pressed(Key::Enter)));
+                let cancel = ui.add(secondary_btn("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(Key::Escape));
+                if ok     { do_rename = true; }
+                if cancel { close = true; }
+            });
+        });
+        if do_rename {
+            branches::rename_branch(&old_name, self.rename_branch_input.trim(), self.state.clone());
+            self.rename_branch_input.clear();
+            self.state.lock().unwrap().modal = ModalKind::None;
+        } else if close {
+            self.rename_branch_input.clear();
+            self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
+    fn render_detached_checkout_modal(&mut self, ctx: &Context, oid: String) {
+        let mut close = false;
+        let mut do_checkout = false;
+        let short = &oid[..7.min(oid.len())];
+        modal_window(ctx, "Checkout Commit", |ui| {
+            ui.label(RichText::new(format!("Checkout commit {}?", short)).color(theme::TEXT_PRIMARY).size(13.0));
+            ui.add_space(6.0);
+            ui.label(styled_muted("This will put you in detached HEAD state."));
+            ui.label(styled_muted("Any commits made here won't be on a named branch."));
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                if ui.add(danger_btn("Checkout")).clicked() { do_checkout = true; }
+                if ui.add(secondary_btn("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(Key::Escape)) { close = true; }
+            });
+        });
+        if do_checkout {
+            branches::checkout_detached(&oid, self.state.clone());
+            self.state.lock().unwrap().modal = ModalKind::None;
+        } else if close {
+            self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
     fn render_clone_modal(&mut self, ctx: &Context) {
         let mut close = false;
         let mut do_clone = false;

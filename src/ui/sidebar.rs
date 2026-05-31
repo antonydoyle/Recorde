@@ -17,6 +17,12 @@ pub enum SidebarAction {
     StashDrop(usize),
     MergeBranch(String),
     RebaseOnto(String),
+    RenameBranch(String),
+    PublishBranch(String),
+    SetUpstream(String),
+    ForceDeleteBranch(String),
+    PushTag(String),
+    DeleteRemoteTag(String),
 }
 
 pub struct Sidebar {
@@ -44,10 +50,11 @@ impl Sidebar {
             Stroke::new(1.0, theme::BORDER),
         );
 
-        let (graph_opt, head, stashes, ab_map) = {
+        let (graph_opt, head, stashes, ab_map, merged_set) = {
             let s = self.state.lock().unwrap();
             (s.commit_graph.clone(), s.head_branch.clone().unwrap_or_default(),
-             s.stashes.clone(), s.branch_ahead_behind.clone())
+             s.stashes.clone(), s.branch_ahead_behind.clone(),
+             s.merged_into_head.clone())
         };
 
         let mut action: Option<SidebarAction> = None;
@@ -91,10 +98,11 @@ impl Sidebar {
                         ui.add_space(2.0);
                         for name in &local {
                             let is_head = *name == head.as_str();
+                            let is_merged = merged_set.contains(*name);
                             let ab = ab_map.get(*name).copied();
-                            let resp = branch_row(ui, name, is_head, false, ab);
+                            let resp = branch_row(ui, name, is_head, false, ab, is_merged);
                             resp.context_menu(|ui| {
-                                ui.set_min_width(180.0);
+                                ui.set_min_width(195.0);
                                 if !is_head {
                                     if ui.button("Checkout").clicked() {
                                         action = Some(SidebarAction::CheckoutBranch(name.to_string()));
@@ -102,11 +110,19 @@ impl Sidebar {
                                     }
                                     ui.separator();
                                 }
-                                if ui.button("Create Branch From Here").clicked() {
-                                    action = Some(SidebarAction::OpenCreateBranch { from_oid: None });
+                                if ui.button("Rename…").clicked() {
+                                    action = Some(SidebarAction::RenameBranch(name.to_string()));
                                     ui.close_menu();
                                 }
                                 if !is_head {
+                                    if ui.button("Publish Branch").clicked() {
+                                        action = Some(SidebarAction::PublishBranch(name.to_string()));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Set Upstream…").clicked() {
+                                        action = Some(SidebarAction::SetUpstream(name.to_string()));
+                                        ui.close_menu();
+                                    }
                                     ui.separator();
                                     if ui.button("Merge into current").clicked() {
                                         action = Some(SidebarAction::MergeBranch(name.to_string()));
@@ -116,11 +132,30 @@ impl Sidebar {
                                         action = Some(SidebarAction::RebaseOnto(name.to_string()));
                                         ui.close_menu();
                                     }
+                                }
+                                if !is_head {
                                     ui.separator();
+                                    if ui.button("Create Branch From Here").clicked() {
+                                        action = Some(SidebarAction::OpenCreateBranch { from_oid: None });
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.add(egui::Button::new(
+                                        RichText::new("Force Delete").color(theme::ACCENT_RED),
+                                    )).clicked() {
+                                        action = Some(SidebarAction::ForceDeleteBranch(name.to_string()));
+                                        ui.close_menu();
+                                    }
                                     if ui.add(egui::Button::new(
                                         RichText::new("Delete Branch").color(theme::ACCENT_RED),
                                     )).clicked() {
                                         action = Some(SidebarAction::DeleteBranch(name.to_string()));
+                                        ui.close_menu();
+                                    }
+                                } else {
+                                    ui.separator();
+                                    if ui.button("Create Branch From Here").clicked() {
+                                        action = Some(SidebarAction::OpenCreateBranch { from_oid: None });
                                         ui.close_menu();
                                     }
                                 }
@@ -138,7 +173,7 @@ impl Sidebar {
                     if *open {
                         ui.add_space(2.0);
                         for name in &remote {
-                            branch_row(ui, name, false, true, None);
+                            branch_row(ui, name, false, true, None, false);
                         }
                         if remote.is_empty() { empty_hint(ui, "No remote branches"); }
                         ui.add_space(4.0);
@@ -154,7 +189,16 @@ impl Sidebar {
                         for name in &tags {
                             let resp = tag_row(ui, name);
                             resp.context_menu(|ui| {
-                                ui.set_min_width(130.0);
+                                ui.set_min_width(160.0);
+                                if ui.button("Push to Remote").clicked() {
+                                    action = Some(SidebarAction::PushTag(name.to_string()));
+                                    ui.close_menu();
+                                }
+                                if ui.button("Delete from Remote").clicked() {
+                                    action = Some(SidebarAction::DeleteRemoteTag(name.to_string()));
+                                    ui.close_menu();
+                                }
+                                ui.separator();
                                 if ui.add(egui::Button::new(
                                     RichText::new("Delete Tag").color(theme::ACCENT_RED),
                                 )).clicked() {
@@ -215,7 +259,7 @@ impl Sidebar {
 
 // ── Branch row ────────────────────────────────────────────────────────────────
 
-fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_behind: Option<(usize, usize)>) -> egui::Response {
+fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_behind: Option<(usize, usize)>, is_merged: bool) -> egui::Response {
     let row_h = 26.0;
     let avail = ui.available_width();
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
@@ -242,24 +286,31 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
         else { theme::TEXT_MUTED };
     ui.painter().circle_filled(Pos2::new(dot_x, row_rect.center().y), 3.5, dot_color);
 
-    // Branch name
-    let text_color = if is_head { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+    // Branch name — greyed out if fully merged into HEAD
+    let text_color = if is_head { theme::TEXT_PRIMARY }
+        else if is_merged { theme::TEXT_MUTED }
+        else { theme::TEXT_SECONDARY };
     let text_style = if is_head {
         RichText::new(name).color(text_color).size(12.0).strong()
     } else {
         RichText::new(name).color(text_color).size(12.0)
     };
 
-    // Ahead/behind counts on the right
-    let ab_text = match ahead_behind {
-        Some((a, b)) if a > 0 && b > 0 => format!("↑{} ↓{}", a, b),
-        Some((a, 0)) if a > 0           => format!("↑{}", a),
-        Some((0, b)) if b > 0           => format!("↓{}", b),
-        _                               => String::new(),
+    // Right-side indicator: "merged" badge or ahead/behind counts
+    let (ab_text, ab_color) = if is_merged && !is_head {
+        ("merged".to_string(), theme::TEXT_MUTED)
+    } else {
+        let txt = match ahead_behind {
+            Some((a, b)) if a > 0 && b > 0 => format!("↑{} ↓{}", a, b),
+            Some((a, 0)) if a > 0           => format!("↑{}", a),
+            Some((0, b)) if b > 0           => format!("↓{}", b),
+            _                               => String::new(),
+        };
+        (txt, theme::TEXT_MUTED)
     };
 
     let right_margin = if ab_text.is_empty() { 8.0 } else { 4.0 };
-    let ab_width = if ab_text.is_empty() { 0.0 } else { 52.0 };
+    let ab_width = if ab_text.is_empty() { 0.0 } else { if is_merged { 46.0 } else { 52.0 } };
 
     let text_rect = Rect::from_min_max(
         Pos2::new(dot_x + 12.0, row_rect.min.y),
@@ -278,7 +329,7 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
         );
         ui.allocate_ui_at_rect(ab_rect, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.label(RichText::new(&ab_text).color(theme::TEXT_MUTED).size(10.5));
+                ui.label(RichText::new(&ab_text).color(ab_color).size(10.5));
             });
         });
     }
