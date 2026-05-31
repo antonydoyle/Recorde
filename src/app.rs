@@ -61,6 +61,9 @@ pub struct RecordeApp {
     // Branch/tag management
     rename_branch_input: String,
     tag_message_input: String,
+    // Stash
+    stash_message_input: String,
+    stash_branch_input: String,
 }
 
 impl RecordeApp {
@@ -140,6 +143,8 @@ impl RecordeApp {
             origin_url_input: String::new(),
             rename_branch_input: String::new(),
             tag_message_input: String::new(),
+            stash_message_input: "WIP".into(),
+            stash_branch_input: String::new(),
         }
     }
 
@@ -177,7 +182,10 @@ impl RecordeApp {
                     .as_ref().map(|p| p.display().to_string()).unwrap_or_default();
                 ctx.output_mut(|o| o.copied_text = path_str);
             }
-            ToolbarAction::Stash        => branches::stash_save(self.state.clone()),
+            ToolbarAction::Stash        => {
+                self.stash_message_input = "WIP".into();
+                self.state.lock().unwrap().modal = ModalKind::StashWithMessage;
+            }
             ToolbarAction::CreateBranch => {
                 self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None };
             }
@@ -233,6 +241,20 @@ impl RecordeApp {
             SidebarAction::ForceDeleteBranch(n) => branches::force_delete_branch(&n, self.state.clone()),
             SidebarAction::PushTag(n)           => branches::push_tag(&n, self.state.clone()),
             SidebarAction::DeleteRemoteTag(n)   => branches::delete_remote_tag(&n, self.state.clone()),
+            SidebarAction::PreviewStash(_, oid) => {
+                {
+                    let mut s = self.state.lock().unwrap();
+                    s.selected_commit = Some(oid.clone());
+                    s.selected_commit_detail = None;
+                    s.selected_file = None;
+                    s.current_diff = None;
+                }
+                crate::git::operations::load_commit_detail(&oid, self.state.clone());
+            }
+            SidebarAction::StashBranch(idx) => {
+                self.stash_branch_input.clear();
+                self.state.lock().unwrap().modal = ModalKind::CreateBranchFromStash { stash_index: idx };
+            }
         }
     }
 
@@ -373,6 +395,8 @@ impl RecordeApp {
             ModalKind::InitRepo   => self.render_init_modal(ctx),
             ModalKind::RenameBranch { old_name } => self.render_rename_branch_modal(ctx, old_name),
             ModalKind::ConfirmDetachedCheckout { oid } => self.render_detached_checkout_modal(ctx, oid),
+            ModalKind::StashWithMessage => self.render_stash_message_modal(ctx),
+            ModalKind::CreateBranchFromStash { stash_index } => self.render_stash_branch_modal(ctx, stash_index),
 
             ModalKind::MergeBranch => self.render_branch_picker(ctx, "Merge Branch",
                 "Select a branch to merge into the current branch:",
@@ -494,7 +518,7 @@ impl RecordeApp {
                         2 => remote::push_branch(&mut self.runner, &self.state),
                         3 => self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None },
                         4 => self.branch_switcher_open = true,
-                        5 => branches::stash_save(self.state.clone()),
+                        5 => { self.stash_message_input = "WIP".into(); self.state.lock().unwrap().modal = ModalKind::StashWithMessage; }
                         6 => { let mut s = self.state.lock().unwrap(); s.search_active = true; }
                         7 => { if let Some(p) = rfd::FileDialog::new().pick_folder() { self.config.add_recent(p.clone()); load_repo(p, self.state.clone()); } }
                         8 => {
@@ -1109,6 +1133,69 @@ impl RecordeApp {
         }
     }
 
+    fn render_stash_message_modal(&mut self, ctx: &Context) {
+        let mut close = false;
+        let mut do_stash = false;
+        modal_window(ctx, "Stash Changes", |ui| {
+            ui.label(styled_label("Stash message"));
+            ui.add_space(4.0);
+            let r = ui.add(egui::TextEdit::singleline(&mut self.stash_message_input)
+                .desired_width(f32::INFINITY).hint_text("WIP"));
+            r.request_focus();
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let ok = ui.add(primary_btn("Stash")).clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let cancel = ui.add(secondary_btn("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if ok     { do_stash = true; }
+                if cancel { close = true; }
+            });
+        });
+        if do_stash {
+            let msg = if self.stash_message_input.trim().is_empty() { "WIP".to_string() }
+                      else { self.stash_message_input.trim().to_string() };
+            branches::stash_save_with_message(&msg, self.state.clone());
+            self.stash_message_input = "WIP".into();
+            self.state.lock().unwrap().modal = ModalKind::None;
+        } else if close {
+            self.stash_message_input = "WIP".into();
+            self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
+    fn render_stash_branch_modal(&mut self, ctx: &Context, stash_index: usize) {
+        let mut close = false;
+        let mut do_branch = false;
+        modal_window(ctx, "Create Branch From Stash", |ui| {
+            ui.label(styled_label("Branch name"));
+            ui.add_space(4.0);
+            let r = ui.add(egui::TextEdit::singleline(&mut self.stash_branch_input)
+                .desired_width(f32::INFINITY).hint_text("e.g. feat/my-feature"));
+            r.request_focus();
+            ui.add_space(4.0);
+            ui.label(styled_muted("Creates a branch from the stash's base commit, applies the stash, and drops it."));
+            ui.add_space(12.0);
+            let can = !self.stash_branch_input.trim().is_empty();
+            ui.horizontal(|ui| {
+                let ok = ui.add_enabled(can, primary_btn("Create Branch")).clicked()
+                    || (can && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                let cancel = ui.add(secondary_btn("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if ok     { do_branch = true; }
+                if cancel { close = true; }
+            });
+        });
+        if do_branch {
+            branches::stash_branch(self.stash_branch_input.trim(), stash_index, self.state.clone());
+            self.stash_branch_input.clear();
+            self.state.lock().unwrap().modal = ModalKind::None;
+        } else if close {
+            self.stash_branch_input.clear();
+            self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
     fn render_clone_modal(&mut self, ctx: &Context) {
         let mut close = false;
         let mut do_clone = false;
@@ -1650,6 +1737,39 @@ impl RecordeApp {
                             ui.close_menu();
                         }
                         ui.separator();
+                        let has_diff = self.state.lock().unwrap().current_diff.is_some();
+                        if ui.add_enabled(has_diff, egui::Button::new("Export Patch…")).clicked() {
+                            let diff = self.state.lock().unwrap().current_diff.clone();
+                            if let Some(ref d) = diff {
+                                let name = d.file_path.replace('/', "_");
+                                if let Some(dest) = rfd::FileDialog::new()
+                                    .add_filter("Patch", &["patch", "diff"])
+                                    .set_file_name(&format!("{}.patch", name))
+                                    .save_file()
+                                {
+                                    if let Err(e) = crate::git::patch::export_patch(d, &dest) {
+                                        self.state.lock().unwrap().error = Some(e);
+                                    }
+                                }
+                            }
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Apply Patch File…")).clicked() {
+                            let repo_path = self.state.lock().unwrap().repo_path.clone();
+                            if let Some(ref rp) = repo_path {
+                                if let Some(patch_path) = rfd::FileDialog::new()
+                                    .add_filter("Patch", &["patch", "diff"])
+                                    .pick_file()
+                                {
+                                    match crate::git::patch::import_patch_file(rp, &patch_path) {
+                                        Ok(()) => load_repo(rp.clone(), self.state.clone()),
+                                        Err(e) => self.state.lock().unwrap().error = Some(e.user_message()),
+                                    }
+                                }
+                            }
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         if ui.add_enabled(has_repo, egui::Button::new("Repository Settings")).clicked() {
                             self.open_settings(SettingsTab::Repository);
                             ui.close_menu();
@@ -1676,8 +1796,9 @@ impl RecordeApp {
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.add_enabled(has_repo, egui::Button::new("Stash Changes")).clicked() {
-                            branches::stash_save(self.state.clone());
+                        if ui.add_enabled(has_repo, egui::Button::new("Stash Changes…")).clicked() {
+                            self.stash_message_input = "WIP".into();
+                            self.state.lock().unwrap().modal = ModalKind::StashWithMessage;
                             ui.close_menu();
                         }
                     });
