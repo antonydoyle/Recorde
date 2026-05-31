@@ -132,6 +132,8 @@ pub enum ModalKind {
     },
     MergeBranch,
     RebaseOnto,
+    CloneRepo,
+    InitRepo,
 }
 
 #[derive(Default)]
