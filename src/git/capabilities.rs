@@ -13,6 +13,8 @@ pub struct RepoCapabilities {
     pub is_sparse: bool,
     pub is_shallow: bool,
     pub lfs_installed: bool,
+    pub lfs_active: bool,
+    pub lfs_patterns: Vec<String>,
     pub provider: ProviderType,
 }
 
@@ -62,13 +64,12 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
     let is_shallow = git_dir.join("shallow").metadata().map(|m| m.len() > 0).unwrap_or(false);
 
     // LFS: `git lfs version` exit-zero means installed
-    let lfs_installed = std::process::Command::new("git")
-        .args(["lfs", "version"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let lfs_installed = crate::git::lfs::is_lfs_installed();
+
+    // LFS: check whether this repo actively uses LFS
+    let workdir = repo.workdir().unwrap_or(repo_path);
+    let lfs_active = crate::git::lfs::repo_uses_lfs(workdir);
+    let lfs_patterns = crate::git::lfs::tracked_patterns(workdir);
 
     // Provider: detect from first remote URL
     let provider = detect_provider(&repo);
@@ -85,6 +86,8 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
         is_sparse,
         is_shallow,
         lfs_installed,
+        lfs_active,
+        lfs_patterns,
         provider,
     }
 }
