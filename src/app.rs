@@ -1,7 +1,7 @@
 use egui::{Color32, Context, Key, Modifiers, RichText, Stroke};
 
 use crate::config::Config;
-use crate::git::{branches, operations::load_repo, rebase, remote};
+use crate::git::{branches, job::ActiveOp, job::JobProgress, operations::load_repo, rebase, remote, runner::GitRunner};
 use crate::state::{ModalKind, RebaseEntry, new_shared_state, SharedState};
 use crate::theme;
 use crate::ui::{
@@ -23,6 +23,7 @@ enum SettingsTab { App, GitCredentials, Repository, About }
 
 pub struct RecordeApp {
     state: SharedState,
+    runner: GitRunner,
     toolbar: Toolbar,
     sidebar: Sidebar,
     commit_graph_view: CommitGraphView,
@@ -83,12 +84,14 @@ impl RecordeApp {
         theme::apply(&cc.egui_ctx, dark_theme);
 
         let state = new_shared_state();
+        let runner = GitRunner::new();
         let to_open = initial_repo.or_else(|| config.recent_repos.first().cloned());
         if let Some(path) = to_open {
             load_repo(path, state.clone());
         }
 
         Self {
+            runner,
             toolbar: Toolbar::new(state.clone()),
             sidebar: Sidebar::new(state.clone()),
             commit_graph_view: CommitGraphView::new(state.clone()),
@@ -131,9 +134,9 @@ impl RecordeApp {
             ToolbarAction::CreateBranch => {
                 self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None };
             }
-            ToolbarAction::Fetch => remote::fetch_all(self.state.clone()),
-            ToolbarAction::Pull  => remote::pull_branch(self.state.clone()),
-            ToolbarAction::Push  => remote::push_branch(self.state.clone()),
+            ToolbarAction::Fetch => remote::fetch_all(&mut self.runner, &self.state),
+            ToolbarAction::Pull  => remote::pull_branch(&mut self.runner, &self.state),
+            ToolbarAction::Push  => remote::push_branch(&mut self.runner, &self.state),
             ToolbarAction::ToggleTheme => {
                 self.dark_theme = !self.dark_theme;
                 self.config.dark_theme = self.dark_theme;
@@ -397,9 +400,9 @@ impl RecordeApp {
                     self.command_palette_open = false;
                     self.command_palette_query.clear();
                     match i {
-                        0 => remote::fetch_all(self.state.clone()),
-                        1 => remote::pull_branch(self.state.clone()),
-                        2 => remote::push_branch(self.state.clone()),
+                        0 => remote::fetch_all(&mut self.runner, &self.state),
+                        1 => remote::pull_branch(&mut self.runner, &self.state),
+                        2 => remote::push_branch(&mut self.runner, &self.state),
                         3 => self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None },
                         4 => self.branch_switcher_open = true,
                         5 => branches::stash_save(self.state.clone()),
@@ -666,13 +669,13 @@ impl eframe::App for RecordeApp {
             self.branch_switcher_open = !self.branch_switcher_open;
         }
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(Key::F)) {
-            remote::fetch_all(self.state.clone());
+            remote::fetch_all(&mut self.runner, &self.state);
         }
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(Key::P)) {
-            remote::pull_branch(self.state.clone());
+            remote::pull_branch(&mut self.runner, &self.state);
         }
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(Key::U)) {
-            remote::push_branch(self.state.clone());
+            remote::push_branch(&mut self.runner, &self.state);
         }
         // Ctrl+1/2/3/4: focus sidebar / graph / changes / diff
         if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num1)) {
@@ -689,6 +692,9 @@ impl eframe::App for RecordeApp {
         if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num4)) {
             self.state.lock().unwrap().focused_pane = 4;
         }
+
+        // ── Drain runner progress events ──────────────────────────────────
+        self.apply_runner_progress();
 
         // ── Pending actions from graph context menu ───────────────────────
         let pending_rebase = self.state.lock().unwrap().pending_open_rebase.take();
@@ -877,16 +883,100 @@ impl eframe::App for RecordeApp {
 }
 
 impl RecordeApp {
+    fn apply_runner_progress(&mut self) {
+        let events = self.runner.drain_progress();
+        if events.is_empty() { return; }
+
+        let mut state = self.state.lock().unwrap();
+        for event in events {
+            match event {
+                JobProgress::Started { id, label, cancel } => {
+                    state.active_ops.push(ActiveOp {
+                        id,
+                        label,
+                        progress_pct: None,
+                        progress_msg: String::new(),
+                        cancel,
+                    });
+                    state.console_log.push(format!("$ op#{} started", id));
+                }
+                JobProgress::Update { id, message, pct } => {
+                    if let Some(op) = state.active_ops.iter_mut().find(|o| o.id == id) {
+                        op.progress_msg = message;
+                        op.progress_pct = pct;
+                    }
+                }
+                JobProgress::Done { id } => {
+                    state.active_ops.retain(|o| o.id != id);
+                    state.console_log.push(format!("op#{} done", id));
+                    // Trigger a repo reload so the graph refreshes.
+                    if state.repo_path.is_some() {
+                        drop(state);
+                        crate::git::branches::reload_repo(self.state.clone());
+                        return;
+                    }
+                }
+                JobProgress::Failed { id, error } => {
+                    state.active_ops.retain(|o| o.id != id);
+                    let msg = error.user_message();
+                    state.console_log.push(format!("op#{} failed: {}", id, msg));
+                    state.error = Some(msg);
+                }
+            }
+        }
+    }
+
     fn show_operation_overlays(&mut self, ctx: &Context) {
-        let (op, error) = {
+        let (legacy_op, active_ops, error) = {
             let s = self.state.lock().unwrap();
-            (s.remote_op.clone(), s.error.clone())
+            (
+                s.remote_op.clone(),
+                s.active_ops.iter().map(|o| {
+                    let pct = o.progress_pct;
+                    let msg = if o.progress_msg.is_empty() { o.label.clone() } else { o.progress_msg.clone() };
+                    (o.id, msg, pct, o.cancel.clone())
+                }).collect::<Vec<_>>(),
+                s.error.clone(),
+            )
         };
 
-        if let Some(op) = op {
+        // Runner-dispatched ops (one overlay per active job)
+        for (i, (id, msg, pct, cancel)) in active_ops.iter().enumerate() {
+            let y_offset = 104.0 + i as f32 * 52.0;
+            ctx.request_repaint_after(std::time::Duration::from_millis(120));
+            egui::Area::new(egui::Id::new(format!("runner_op_{}", id)))
+                .anchor(egui::Align2::CENTER_TOP, [0.0, y_offset])
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::none()
+                        .fill(theme::BG_ELEVATED)
+                        .stroke(Stroke::new(1.0, theme::ACCENT_TEAL))
+                        .rounding(8.0)
+                        .inner_margin(egui::Margin::symmetric(14.0, 10.0))
+                        .show(ui, |ui| {
+                            ui.horizontal_centered(|ui| {
+                                ui.spinner();
+                                ui.add_space(8.0);
+                                ui.label(RichText::new(msg.as_str()).color(theme::TEXT_PRIMARY).size(13.0).strong());
+                                if let Some(p) = pct {
+                                    ui.add_space(6.0);
+                                    ui.label(RichText::new(format!("{}%", p)).color(theme::TEXT_MUTED).size(12.0));
+                                }
+                                ui.add_space(10.0);
+                                if ui.add(secondary_btn("Cancel")).clicked() {
+                                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            });
+                        });
+                });
+        }
+
+        // Legacy overlay for branch/staging ops (remote_op path)
+        if let Some(op) = legacy_op {
+            let y_offset = 104.0 + active_ops.len() as f32 * 52.0;
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
             egui::Area::new(egui::Id::new("operation_overlay"))
-                .anchor(egui::Align2::CENTER_TOP, [0.0, 104.0])
+                .anchor(egui::Align2::CENTER_TOP, [0.0, y_offset])
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     egui::Frame::none()
@@ -1019,15 +1109,15 @@ impl RecordeApp {
                         }
                         ui.separator();
                         if ui.add_enabled(has_repo, egui::Button::new("Fetch")).clicked() {
-                            remote::fetch_all(self.state.clone());
+                            remote::fetch_all(&mut self.runner, &self.state);
                             ui.close_menu();
                         }
                         if ui.add_enabled(has_repo, egui::Button::new("Pull")).clicked() {
-                            remote::pull_branch(self.state.clone());
+                            remote::pull_branch(&mut self.runner, &self.state);
                             ui.close_menu();
                         }
                         if ui.add_enabled(has_repo, egui::Button::new("Push")).clicked() {
-                            remote::push_branch(self.state.clone());
+                            remote::push_branch(&mut self.runner, &self.state);
                             ui.close_menu();
                         }
                         if ui.add_enabled(has_repo, egui::Button::new("Refresh")).clicked() {

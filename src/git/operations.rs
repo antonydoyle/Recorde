@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::cell::RefCell;
 
-use crate::git::{branches, graph::CommitGraph, remote};
+use crate::git::{branches, capabilities, graph::CommitGraph, remote};
 use crate::state::{ChangedFile, CommitDetail, DiffHunk, DiffLine, FileDiff, WorkingDirFile, StashEntry, SharedState};
 
 /// Load a repository: build the commit graph, working-dir status, and stashes.
@@ -11,7 +11,7 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
         let result = load_repo_inner(&path);
         let mut s = state.lock().unwrap();
         match result {
-            Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, files, stashes)) => {
+            Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, files, stashes, caps)) => {
                 let n = graph.nodes.len();
                 s.console_log.push(format!("Opened {} ({} commits, branch: {})", path.display(), n, head_branch));
                 s.repo_path = Some(path);
@@ -22,6 +22,7 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
                 s.dirty_count = dirty_count;
                 s.working_dir_files = files;
                 s.stashes = stashes;
+                s.capabilities = Some(caps);
                 s.error = None;
                 s.remote_op = None;
             }
@@ -33,7 +34,7 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
     });
 }
 
-type RepoInnerResult = (CommitGraph, String, Option<(usize, usize)>, std::collections::HashMap<String,(usize,usize)>, usize, Vec<WorkingDirFile>, Vec<StashEntry>);
+type RepoInnerResult = (CommitGraph, String, Option<(usize, usize)>, std::collections::HashMap<String,(usize,usize)>, usize, Vec<WorkingDirFile>, Vec<StashEntry>, crate::git::capabilities::RepoCapabilities);
 
 fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
     // Immutable pass: graph + head + status + ahead/behind
@@ -62,7 +63,9 @@ fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
         branches::collect_stashes(&mut repo)
     };
 
-    Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, status, stashes))
+    let caps = capabilities::detect(path);
+
+    Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, status, stashes, caps))
 }
 
 fn collect_status(repo: &git2::Repository) -> Result<(usize, Vec<WorkingDirFile>), git2::Error> {
