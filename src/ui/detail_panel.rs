@@ -141,7 +141,8 @@ impl DetailPanel {
                                 RichText::new(icon)
                                     .font(FontId::monospace(11.0))
                                     .color(icon_color),
-                            );
+                            )
+                            .on_hover_text(status_tooltip(file.status));
                             ui.add_space(6.0);
 
                             let display = file.path.rsplit('/').next().unwrap_or(&file.path);
@@ -212,6 +213,16 @@ fn status_icon(status: char) -> (&'static str, egui::Color32) {
         'R' => ("R", theme::ACCENT_YELLOW),
         'C' => ("C", theme::ACCENT_BLUE),
         _ => ("M", theme::ACCENT_YELLOW),
+    }
+}
+
+fn status_tooltip(status: char) -> &'static str {
+    match status {
+        'A' => "Added",
+        'D' => "Deleted",
+        'R' => "Renamed",
+        'C' => "Copied",
+        _ => "Modified",
     }
 }
 
