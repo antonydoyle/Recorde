@@ -1326,6 +1326,28 @@ impl RecordeApp {
             branches::checkout_branch(&branch_name, self.state.clone());
         }
     }
+
+    fn focus_pane(&mut self, pane: u8) {
+        match pane {
+            1 => self.config.show_sidebar = true,
+            3 => self.config.show_right_panel = true,
+            4 => self.config.show_diff_panel = true,
+            _ => {}
+        }
+        self.config.save();
+        self.state.lock().unwrap().focused_pane = pane;
+    }
+
+    fn reset_layout(&mut self) {
+        self.config.show_sidebar = true;
+        self.config.show_right_panel = true;
+        self.config.show_diff_panel = true;
+        if let Some(ref path) = self.state.lock().unwrap().repo_path.clone() {
+            self.config.reset_repo_column_widths(path);
+        }
+        self.config.save();
+        self.commit_graph_view.reset_column_widths();
+    }
 }
 
 // ── eframe::App ───────────────────────────────────────────────────────────────
@@ -1353,18 +1375,17 @@ impl eframe::App for RecordeApp {
         }
         // Ctrl+1/2/3/4: focus sidebar / graph / changes / diff
         if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num1)) {
-            // Focus sidebar — nothing to scroll to, just a visual hint via state
-            self.state.lock().unwrap().focused_pane = 1;
+            self.focus_pane(1);
         }
         if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num2)) {
-            self.state.lock().unwrap().focused_pane = 2;
+            self.focus_pane(2);
         }
         if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num3)) {
             self.right_tab = RightTab::Changes;
-            self.state.lock().unwrap().focused_pane = 3;
+            self.focus_pane(3);
         }
         if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::Num4)) {
-            self.state.lock().unwrap().focused_pane = 4;
+            self.focus_pane(4);
         }
 
         // ── Drain runner progress events ──────────────────────────────────
@@ -1451,45 +1472,47 @@ impl eframe::App for RecordeApp {
         );
         if let Some(a) = toolbar_action { self.handle_toolbar(ctx, a); }
 
-        // Bottom diff panel (always visible)
-        egui::TopBottomPanel::bottom("diff_panel")
-            .resizable(true)
-            .default_height(300.0)
-            .height_range(160.0..=480.0)
-            .frame(egui::Frame::none().fill(theme::bg_app()))
-            .show(ctx, |ui| {
-                let r = ui.max_rect();
-                ui.painter().line_segment(
-                    [r.left_top(), r.right_top()],
-                    Stroke::new(1.0, theme::border()),
-                );
-                self.diff_view.show(ui);
-                if self.state.lock().unwrap().focused_pane == 4 {
-                    focus_ring(ui);
-                }
-            });
+        if self.config.show_diff_panel {
+            egui::TopBottomPanel::bottom("diff_panel")
+                .resizable(true)
+                .default_height(300.0)
+                .height_range(160.0..=480.0)
+                .frame(egui::Frame::none().fill(theme::bg_app()))
+                .show(ctx, |ui| {
+                    let r = ui.max_rect();
+                    ui.painter().line_segment(
+                        [r.left_top(), r.right_top()],
+                        Stroke::new(1.0, theme::border()),
+                    );
+                    self.diff_view.show(ui);
+                    if self.state.lock().unwrap().focused_pane == 4 {
+                        focus_ring(ui);
+                    }
+                });
+        }
 
-        // Left sidebar
-        egui::SidePanel::left("sidebar")
-            .resizable(true)
-            .default_width(250.0)
-            .width_range(200.0..=340.0)
-            .frame(egui::Frame::none())
-            .show(ctx, |ui| {
-                let a = self.sidebar.show(ui);
-                if let Some(sa) = a { self.handle_sidebar(sa); }
-                if self.state.lock().unwrap().focused_pane == 1 {
-                    focus_ring(ui);
-                }
-            });
+        if self.config.show_sidebar {
+            egui::SidePanel::left("sidebar")
+                .resizable(true)
+                .default_width(250.0)
+                .width_range(200.0..=340.0)
+                .frame(egui::Frame::none())
+                .show(ctx, |ui| {
+                    let a = self.sidebar.show(ui);
+                    if let Some(sa) = a { self.handle_sidebar(sa); }
+                    if self.state.lock().unwrap().focused_pane == 1 {
+                        focus_ring(ui);
+                    }
+                });
+        }
 
-        // Right panel (Changes + Details)
-        let right_panel_resp = egui::SidePanel::right("right_panel")
-            .resizable(true)
-            .default_width(360.0)
-            .width_range(240.0..=600.0)
-            .frame(egui::Frame::none())
-            .show(ctx, |ui| {
+        if self.config.show_right_panel {
+            egui::SidePanel::right("right_panel")
+                .resizable(true)
+                .default_width(300.0)
+                .width_range(220.0..=600.0)
+                .frame(egui::Frame::none())
+                .show(ctx, |ui| {
                 let has_commit = self.state.lock().unwrap().selected_commit.is_some();
                 let has_dirty  = self.state.lock().unwrap().dirty_count > 0;
 
@@ -1518,7 +1541,11 @@ impl eframe::App for RecordeApp {
                                 egui::Button::new(RichText::new(*lbl).size(13.0).color(text_col))
                                     .fill(Color32::TRANSPARENT)
                                     .stroke(Stroke::NONE),
-                            );
+                            )
+                            .on_hover_text(match *tab {
+                                RightTab::Changes => "Show working tree changes and commit form",
+                                RightTab::Details => "Show selected commit details",
+                            });
                             // Teal underline for active tab (matches mockup)
                             if sel {
                                 let br = btn.rect;
@@ -1551,8 +1578,7 @@ impl eframe::App for RecordeApp {
                     focus_ring(ui);
                 }
             });
-
-        let _ = right_panel_resp; // suppress unused warning
+        }
 
         // Central panel — commit graph (always)
         egui::CentralPanel::default()
@@ -2471,9 +2497,23 @@ impl RecordeApp {
                             ui.close_menu();
                         }
                         ui.separator();
+                        if ui.checkbox(&mut self.config.show_sidebar, "Show Sidebar").changed() {
+                            self.config.save();
+                        }
+                        if ui.checkbox(&mut self.config.show_right_panel, "Show Changes / Details Panel").changed() {
+                            self.config.save();
+                        }
+                        if ui.checkbox(&mut self.config.show_diff_panel, "Show Diff Panel").changed() {
+                            self.config.save();
+                        }
+                        if ui.button("Reset Layout").clicked() {
+                            self.reset_layout();
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         for (label, pane) in [("Focus Sidebar", 1), ("Focus Commit Graph", 2), ("Focus Changes", 3), ("Focus Diff", 4)] {
                             if ui.button(label).clicked() {
-                                self.state.lock().unwrap().focused_pane = pane;
+                                self.focus_pane(pane);
                                 ui.close_menu();
                             }
                         }

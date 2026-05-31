@@ -149,7 +149,8 @@ impl Toolbar {
                                     name
                                 };
 
-                                let btn = widgets::toolbar_btn_icon(ui, icons::FOLDER_OPEN, &display, true);
+                                let btn = widgets::toolbar_btn_icon(ui, icons::FOLDER_OPEN, &display, true)
+                                    .on_hover_text("Open repository");
                                 if btn.clicked() {
                                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                                         action = Some(ToolbarAction::OpenRepo(path));
@@ -189,7 +190,8 @@ impl Toolbar {
                                             .stroke(Stroke::new(1.0, theme::border()))
                                             .min_size(egui::Vec2::new(20.0, 0.0))
                                             .rounding(6.0),
-                                    );
+                                    )
+                                    .on_hover_text("Recent repositories");
                                     arrow.context_menu(|ui| {
                                         ui.set_min_width(280.0);
                                         ui.label(RichText::new("Recent").color(theme::text_muted()).size(10.5));
@@ -300,14 +302,14 @@ impl Toolbar {
                             if avail >= FILTER_W + OVERFLOW_BTN_W {
                                 let filter_color = if show_all_branches { theme::ACCENT_BLUE } else { theme::text_secondary() };
                                 let (fi, fl) = if show_all_branches { (icons::SOURCE, "All Branches") } else { (icons::COMMIT, "This Branch") };
-                                let mut fj = egui::text::LayoutJob::default();
-                                fj.append(&fi.to_string(), 0.0, egui::TextFormat { font_id: icons::font(15.0), color: filter_color, line_height: Some(16.0), valign: egui::Align::Center, ..Default::default() });
-                                fj.append(&format!("  {fl}"), 0.0, egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: filter_color, line_height: Some(16.0), valign: egui::Align::TOP, ..Default::default() });
-                                if ui.add(
-                                    egui::Button::new(fj)
-                                        .fill(theme::bg_panel())
-                                        .stroke(egui::Stroke::new(1.0, if show_all_branches { theme::ACCENT_BLUE.gamma_multiply(0.4) } else { theme::border() }))
-                                        .rounding(6.0),
+                                if widgets::toolbar_btn_icon_colored(
+                                    ui,
+                                    fi,
+                                    fl,
+                                    filter_color,
+                                    true,
+                                    theme::bg_panel(),
+                                    if show_all_branches { theme::ACCENT_BLUE.gamma_multiply(0.4) } else { theme::border() },
                                 ).on_hover_text("Toggle: show all branches or current branch only").clicked() {
                                     action = Some(ToolbarAction::ToggleAllBranches);
                                 }
@@ -412,14 +414,14 @@ impl Toolbar {
                             } else {
                                 branch_raw
                             };
-                            let mut bj = egui::text::LayoutJob::default();
-                            bj.append(&icons::COMMIT.to_string(), 0.0, egui::TextFormat { font_id: icons::font(15.0), color: theme::ACCENT_TEAL, line_height: Some(16.0), valign: egui::Align::Center, ..Default::default() });
-                            bj.append(&format!("  {branch}"), 0.0, egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: theme::ACCENT_TEAL, line_height: Some(16.0), valign: egui::Align::TOP, ..Default::default() });
-                            if ui.add(
-                                egui::Button::new(bj)
-                                    .fill(theme::bg_panel())
-                                    .stroke(Stroke::new(1.0, theme::ACCENT_TEAL.gamma_multiply(0.4)))
-                                    .rounding(6.0),
+                            if widgets::toolbar_btn_icon_colored(
+                                ui,
+                                icons::COMMIT,
+                                &branch,
+                                theme::ACCENT_TEAL,
+                                true,
+                                theme::bg_panel(),
+                                theme::ACCENT_TEAL.gamma_multiply(0.4),
                             ).on_hover_text("Switch branch  (Ctrl+B)").clicked() {
                                 action = Some(ToolbarAction::OpenBranchSwitcher);
                             }
