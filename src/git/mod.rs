@@ -4,6 +4,7 @@ pub mod conflicts;
 pub mod error;
 pub mod graph;
 pub mod job;
+pub mod lifecycle;
 pub mod merge;
 pub mod operations;
 pub mod patch;

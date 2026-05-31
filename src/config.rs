@@ -41,6 +41,12 @@ impl Config {
         self.recent_repos.truncate(MAX_RECENT);
         self.save();
     }
+
+    /// Remove a specific path from the recent list.
+    pub fn remove_recent(&mut self, path: &std::path::Path) {
+        self.recent_repos.retain(|p| p.as_path() != path);
+        self.save();
+    }
 }
 
 fn config_path() -> PathBuf {
