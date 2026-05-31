@@ -255,6 +255,8 @@ impl RecordeApp {
                 self.stash_branch_input.clear();
                 self.state.lock().unwrap().modal = ModalKind::CreateBranchFromStash { stash_index: idx };
             }
+            SidebarAction::RestoreBranch(name, oid) =>
+                branches::restore_deleted_branch(&name, &oid, self.state.clone()),
         }
     }
 
@@ -1433,6 +1435,7 @@ impl RecordeApp {
         for event in events {
             match event {
                 JobProgress::Started { id, label, cancel } => {
+                    state.console_log.push(format!("$ {} (job #{})", label.trim_end_matches('…'), id));
                     state.active_ops.push(ActiveOp {
                         id,
                         label,
@@ -1440,7 +1443,6 @@ impl RecordeApp {
                         progress_msg: String::new(),
                         cancel,
                     });
-                    state.console_log.push(format!("$ op#{} started", id));
                 }
                 JobProgress::Update { id, message, pct } => {
                     if let Some(op) = state.active_ops.iter_mut().find(|o| o.id == id) {
@@ -1449,8 +1451,11 @@ impl RecordeApp {
                     }
                 }
                 JobProgress::Done { id } => {
+                    let label = state.active_ops.iter().find(|o| o.id == id)
+                        .map(|o| o.label.trim_end_matches('…').to_string())
+                        .unwrap_or_else(|| format!("job #{}", id));
                     state.active_ops.retain(|o| o.id != id);
-                    state.console_log.push(format!("op#{} done", id));
+                    state.console_log.push(format!("{} done", label));
                     // Trigger a repo reload so the graph refreshes.
                     if state.repo_path.is_some() {
                         drop(state);
@@ -1459,9 +1464,12 @@ impl RecordeApp {
                     }
                 }
                 JobProgress::Failed { id, error } => {
+                    let label = state.active_ops.iter().find(|o| o.id == id)
+                        .map(|o| o.label.trim_end_matches('…').to_string())
+                        .unwrap_or_else(|| format!("job #{}", id));
                     state.active_ops.retain(|o| o.id != id);
                     let msg = error.user_message();
-                    state.console_log.push(format!("op#{} failed: {}", id, msg));
+                    state.console_log.push(format!("error: {} — {}", label, msg));
                     state.error = Some(msg);
                 }
             }

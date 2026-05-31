@@ -116,11 +116,47 @@ pub fn force_delete_branch(name: &str, state: SharedState) {
     let path = state.lock().unwrap().repo_path.clone();
     let Some(path) = path else { return };
     std::thread::spawn(move || {
+        let oid = (|| -> Option<String> {
+            let repo = git2::Repository::open(&path).ok()?;
+            let branch = repo.find_branch(&n, git2::BranchType::Local).ok()?;
+            let commit = branch.get().peel_to_commit().ok()?;
+            Some(commit.id().to_string())
+        })();
+
         match run_git_seq(&path, &["branch", "-D", &n]) {
-            Ok(()) => reload_repo(state),
+            Ok(()) => {
+                if let Some(o) = oid {
+                    push_deleted(&state, n, o);
+                }
+                reload_repo(state);
+            }
             Err(e) => state.lock().unwrap().error = Some(e.user_message()),
         }
     });
+}
+
+pub fn restore_deleted_branch(name: &str, oid: &str, state: SharedState) {
+    let n = name.to_string();
+    let o = oid.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    std::thread::spawn(move || {
+        match run_git_seq(&path, &["branch", &n, &o]) {
+            Ok(()) => {
+                state.lock().unwrap().deleted_branches.retain(|d| d.name != n);
+                reload_repo(state);
+            }
+            Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+        }
+    });
+}
+
+fn push_deleted(state: &SharedState, name: String, oid: String) {
+    let mut s = state.lock().unwrap();
+    s.deleted_branches.push(crate::state::DeletedBranch { name, oid });
+    if s.deleted_branches.len() > 5 {
+        s.deleted_branches.remove(0);
+    }
 }
 
 // ── Publish branch ────────────────────────────────────────────────────────────
@@ -203,16 +239,20 @@ pub fn delete_branch(branch_name: &str, state: SharedState) {
     let Some(path) = path else { return };
 
     std::thread::spawn(move || match do_delete(&path, &name) {
-        Ok(()) => reload_repo(state),
+        Ok(oid) => {
+            push_deleted(&state, name, oid);
+            reload_repo(state);
+        }
         Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
     });
 }
 
-fn do_delete(path: &Path, name: &str) -> Result<(), git2::Error> {
+fn do_delete(path: &Path, name: &str) -> Result<String, git2::Error> {
     let repo = git2::Repository::open(path)?;
     let mut branch = repo.find_branch(name, git2::BranchType::Local)?;
+    let oid = branch.get().peel_to_commit()?.id().to_string();
     branch.delete()?;
-    Ok(())
+    Ok(oid)
 }
 
 // ── Stash ─────────────────────────────────────────────────────────────────────

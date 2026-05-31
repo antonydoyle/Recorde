@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod crash;
 mod git;
 mod icons;
 mod state;
@@ -9,6 +10,7 @@ mod ui;
 use app::RecordeApp;
 
 fn main() -> eframe::Result<()> {
+    crash::install();
     env_logger::init();
 
     let initial_repo = std::env::args().nth(1).map(std::path::PathBuf::from);
