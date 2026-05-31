@@ -1,6 +1,64 @@
 use std::path::Path;
 
+use crate::git::merge::run_git_seq;
 use crate::state::{RebaseAction, RebaseEntry, SharedState};
+
+// ── Plain rebase (non-interactive) ───────────────────────────────────────────
+
+/// Rebase the current branch onto `branch_name`.
+/// Aborts with an error if the working tree is dirty.
+pub fn rebase_onto(branch_name: &str, state: SharedState) {
+    let name = branch_name.to_string();
+    let (path, dirty) = {
+        let s = state.lock().unwrap();
+        (s.repo_path.clone(), s.dirty_count)
+    };
+    let Some(path) = path else { return };
+
+    if dirty > 0 {
+        state.lock().unwrap().error =
+            Some("Stash or commit changes before rebasing.".into());
+        return;
+    }
+
+    {
+        let mut s = state.lock().unwrap();
+        s.remote_op = Some(format!("Rebasing onto {}…", name));
+        s.console_log.push(format!("$ git rebase {}", name));
+    }
+
+    std::thread::spawn(move || {
+        let result = run_git_seq(&path, &["rebase", &name]);
+        {
+            let mut s = state.lock().unwrap();
+            s.remote_op = None;
+            if let Err(ref e) = result {
+                s.console_log.push(format!("error: {}", e.user_message()));
+            }
+        }
+        crate::git::branches::reload_repo(state);
+    });
+}
+
+pub fn continue_rebase(state: SharedState) {
+    crate::git::merge::seq_op_pub("rebase --continue", state, |path| {
+        run_git_seq(path, &["rebase", "--continue"])
+    });
+}
+
+pub fn abort_rebase(state: SharedState) {
+    crate::git::merge::seq_op_pub("rebase --abort", state, |path| {
+        run_git_seq(path, &["rebase", "--abort"])
+    });
+}
+
+pub fn skip_rebase(state: SharedState) {
+    crate::git::merge::seq_op_pub("rebase --skip", state, |path| {
+        run_git_seq(path, &["rebase", "--skip"])
+    });
+}
+
+// ── Interactive rebase ────────────────────────────────────────────────────────
 
 /// Build the list of commits that would be rebased when right-clicking `upstream_oid`.
 /// Returns entries ordered oldest → newest (the natural todo order).

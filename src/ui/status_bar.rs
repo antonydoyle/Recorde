@@ -67,14 +67,27 @@ impl StatusBar {
                             ui.add_space(8.0);
                         }
 
-                        if let Some((a, b)) = ab {
-                            if b > 0 {
-                                ui.label(RichText::new(format!("↓{}", b)).color(theme::ACCENT_YELLOW).size(11.0));
+                        match ab {
+                            Some((a, b)) if a > 0 && b > 0 => {
+                                // Diverged — both ahead and behind: amber warning
+                                let badge = egui::RichText::new(format!("↑{} ↓{}", a, b))
+                                    .color(theme::ACCENT_ORANGE).size(11.0);
+                                ui.label(badge)
+                                    .on_hover_text("Branch has diverged from upstream — pull with rebase or merge");
+                                ui.add_space(4.0);
                             }
-                            if a > 0 {
-                                ui.label(RichText::new(format!("↑{}", a)).color(theme::ACCENT_BLUE).size(11.0));
+                            Some((a, b)) => {
+                                if b > 0 { ui.label(RichText::new(format!("↓{}", b)).color(theme::ACCENT_YELLOW).size(11.0)); }
+                                if a > 0 { ui.label(RichText::new(format!("↑{}", a)).color(theme::ACCENT_BLUE).size(11.0)); }
+                                if a > 0 || b > 0 { ui.add_space(4.0); }
                             }
-                            ui.add_space(4.0);
+                            None if !branch.is_empty() && branch != "—" => {
+                                // Head branch with no upstream tracking
+                                ui.label(RichText::new("no upstream").color(theme::TEXT_MUTED).size(10.5))
+                                    .on_hover_text("No upstream tracking branch — use Push and Set Upstream");
+                                ui.add_space(4.0);
+                            }
+                            None => {}
                         }
 
                         ui.label(icons::rich(icons::COMMIT, 13.0).color(theme::ACCENT_TEAL));

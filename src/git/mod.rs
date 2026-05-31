@@ -3,6 +3,7 @@ pub mod capabilities;
 pub mod error;
 pub mod graph;
 pub mod job;
+pub mod merge;
 pub mod operations;
 pub mod patch;
 pub mod rebase;
