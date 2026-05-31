@@ -266,6 +266,19 @@ impl DiffView {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(10.0);
+                    if self.show_console && !console_log.is_empty() {
+                        if ui.add(egui::Button::new(egui::RichText::new("Export Log").size(11.5).color(theme::TEXT_SECONDARY))
+                            .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked()
+                        {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name("recorde-log.txt")
+                                .add_filter("Text", &["txt"])
+                                .save_file()
+                            {
+                                let _ = std::fs::write(path, console_log.join("\n"));
+                            }
+                        }
+                    }
                     if let Some(ref diff) = diff_opt {
                         if ui.add(egui::Button::new(egui::RichText::new("✕").color(theme::TEXT_MUTED).size(12.0))
                             .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
