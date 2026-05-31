@@ -16,8 +16,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Recorde")
-            .with_inner_size([1500.0, 950.0])
-            .with_min_inner_size([1200.0, 760.0]),
+            .with_inner_size([1280.0, 860.0])
+            .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
     };
 
