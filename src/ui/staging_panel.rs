@@ -39,7 +39,7 @@ impl StagingPanel {
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_SURFACE);
+        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::bg_surface());
 
         let (files, conflicted, head_branch, selected_file, repo_path, any_seq_in_progress, git_user) = {
             let s = self.state.lock().unwrap();
@@ -296,14 +296,14 @@ impl StagingPanel {
 
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.label(RichText::new("Commit message").color(theme::TEXT_MUTED).size(10.5).strong());
+                    ui.label(RichText::new("Commit message").color(theme::text_muted()).size(10.5).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
-                        let amend_color = if self.is_amend { theme::ACCENT_YELLOW } else { theme::TEXT_MUTED };
+                        let amend_color = if self.is_amend { theme::ACCENT_YELLOW } else { theme::text_muted() };
                         if ui.add(
                             egui::Button::new(RichText::new("Amend").color(amend_color).size(11.0))
                                 .fill(if self.is_amend { Color32::from_rgb(0x2A, 0x24, 0x10) } else { Color32::TRANSPARENT })
-                                .stroke(egui::Stroke::new(1.0, if self.is_amend { theme::ACCENT_YELLOW } else { theme::BORDER })),
+                                .stroke(egui::Stroke::new(1.0, if self.is_amend { theme::ACCENT_YELLOW } else { theme::border() })),
                         ).clicked() {
                             self.is_amend = !self.is_amend;
                             if self.is_amend && self.subject.is_empty() {
@@ -363,8 +363,8 @@ impl StagingPanel {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
                         ui.label(RichText::new(format!("Co-Authored-By: {}", author))
-                            .color(theme::TEXT_MUTED).size(10.5).monospace());
-                        if ui.small_button(RichText::new("×").color(theme::TEXT_MUTED)).clicked() {
+                            .color(theme::text_muted()).size(10.5).monospace());
+                        if ui.small_button(RichText::new("×").color(theme::text_muted())).clicked() {
                             remove_co_author = Some(i);
                         }
                     });
@@ -376,7 +376,7 @@ impl StagingPanel {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
                     ui.checkbox(&mut self.signoff_enabled,
-                        RichText::new("Sign off").color(theme::TEXT_MUTED).size(11.0));
+                        RichText::new("Sign off").color(theme::text_muted()).size(11.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
                         if ui.add(small_btn("📋 Copy")).on_hover_text("Copy assembled commit message").clicked() {
@@ -414,7 +414,7 @@ impl StagingPanel {
                     let btn = ui.add_enabled(
                         can_commit,
                         egui::Button::new(RichText::new(&btn_label).color(Color32::WHITE).size(12.5))
-                            .fill(if can_commit { theme::ACCENT_BLUE } else { theme::BG_ELEVATED })
+                            .fill(if can_commit { theme::ACCENT_BLUE } else { theme::bg_elevated() })
                             .min_size(Vec2::new(ui.available_width() - 12.0, 28.0)),
                     );
                     if btn.clicked() {
@@ -426,7 +426,7 @@ impl StagingPanel {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.label(RichText::new("Reset last commit:").color(theme::TEXT_MUTED).size(10.5));
+                    ui.label(RichText::new("Reset last commit:").color(theme::text_muted()).size(10.5));
                     ui.add_space(4.0);
                     if ui.add(small_btn("Soft")).on_hover_text("Keep changes staged").clicked() {
                         staging::reset_soft(self.state.clone());
@@ -602,7 +602,7 @@ fn collapsible_section(
         let toggle = ui.add(
             egui::Button::new(
                 RichText::new(format!("{} {}  ({})", arrow, title, count))
-                    .color(theme::TEXT_MUTED).size(10.5).strong()
+                    .color(theme::text_muted()).size(10.5).strong()
             )
             .fill(Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE),
@@ -632,7 +632,7 @@ fn file_row(
         let label = ui.selectable_label(
             is_selected,
             RichText::new(name)
-                .color(if is_selected { theme::BG_APP } else { theme::TEXT_SECONDARY })
+                .color(if is_selected { theme::bg_app() } else { theme::text_secondary() })
                 .size(12.0),
         );
         if path != name { label.on_hover_text(path); }
@@ -649,14 +649,14 @@ fn file_row(
 }
 
 fn small_btn(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(theme::TEXT_MUTED).size(10.5))
+    egui::Button::new(RichText::new(label).color(theme::text_muted()).size(10.5))
         .fill(Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .stroke(egui::Stroke::new(1.0, theme::border()))
         .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
 fn small_btn_accent(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(theme::BG_APP).size(10.5).strong())
+    egui::Button::new(RichText::new(label).color(theme::bg_app()).size(10.5).strong())
         .fill(theme::ACCENT_TEAL)
         .stroke(egui::Stroke::new(1.0, theme::ACCENT_TEAL))
         .min_size(egui::Vec2::new(0.0, 22.0))
@@ -692,7 +692,7 @@ fn conflict_file_row(
         let label = ui.selectable_label(
             is_selected,
             RichText::new(name)
-                .color(if is_selected { theme::BG_APP } else { theme::ACCENT_RED.gamma_multiply(0.85) })
+                .color(if is_selected { theme::bg_app() } else { theme::ACCENT_RED.gamma_multiply(0.85) })
                 .size(12.0),
         );
         if path != name { label.on_hover_text(path); }
@@ -710,7 +710,7 @@ fn conflict_file_row(
 fn empty_label(ui: &mut Ui, text: &str) {
     ui.horizontal(|ui| {
         ui.add_space(20.0);
-        ui.label(RichText::new(text).color(theme::TEXT_MUTED).size(11.0));
+        ui.label(RichText::new(text).color(theme::text_muted()).size(11.0));
     });
     ui.add_space(2.0);
 }
