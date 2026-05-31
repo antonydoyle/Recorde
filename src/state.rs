@@ -90,6 +90,12 @@ pub struct RebaseEntry {
     pub action: RebaseAction,
 }
 
+/// A file with unresolved merge conflicts.
+#[derive(Debug, Clone)]
+pub struct ConflictedFile {
+    pub path: String,
+}
+
 /// Which section of the working tree the current diff was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum DiffContext {
@@ -147,6 +153,7 @@ pub struct AppState {
     pub working_dir_files: Vec<WorkingDirFile>,
     pub stashes: Vec<StashEntry>,
 
+    pub conflicted_files: Vec<ConflictedFile>,
     pub modal: ModalKind,
     /// Context for the currently-loaded diff (commit vs staged vs unstaged).
     pub diff_context: DiffContext,
