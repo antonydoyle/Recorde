@@ -10,14 +10,19 @@ use app::RecordeApp;
 fn main() -> eframe::Result<()> {
     env_logger::init();
 
-    // Optional: pass a repo path as the first CLI argument for quick testing.
     let initial_repo = std::env::args().nth(1).map(std::path::PathBuf::from);
+
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+        .expect("failed to load app icon");
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Recorde")
-            .with_inner_size([1280.0, 860.0])
-            .with_min_inner_size([900.0, 600.0]),
+            .with_app_id("recorde")
+            .with_icon(icon)
+            .with_inner_size([1240.0, 760.0])
+            .with_min_inner_size([900.0, 600.0])
+            .with_decorations(true),
         ..Default::default()
     };
 

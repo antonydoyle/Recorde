@@ -48,6 +48,19 @@ impl RecordeApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_repo: Option<std::path::PathBuf>) -> Self {
         let config = Config::load();
         let dark_theme = config.dark_theme;
+
+        // Load Noto Symbols as egui fallback font for full Unicode symbol coverage.
+        // This fixes missing-glyph squares for ⎇ ⚑ ⊞ ⇅ ☀ ⌘ and similar.
+        const NOTO_SYMBOLS2: &str =
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf";
+        if let Ok(bytes) = std::fs::read(NOTO_SYMBOLS2) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert("noto_symbols2".into(), egui::FontData::from_owned(bytes));
+            fonts.families.entry(egui::FontFamily::Proportional).or_default().push("noto_symbols2".into());
+            fonts.families.entry(egui::FontFamily::Monospace).or_default().push("noto_symbols2".into());
+            cc.egui_ctx.set_fonts(fonts);
+        }
+
         theme::apply(&cc.egui_ctx, dark_theme);
 
         let state = new_shared_state();
@@ -108,6 +121,10 @@ impl RecordeApp {
             }
             ToolbarAction::OpenCommandPalette => self.command_palette_open = true,
             ToolbarAction::OpenBranchSwitcher => self.branch_switcher_open = true,
+            ToolbarAction::ToggleAllBranches => {
+                let mut s = self.state.lock().unwrap();
+                s.show_all_branches = !s.show_all_branches;
+            }
         }
     }
 
@@ -258,7 +275,7 @@ impl RecordeApp {
             ("⎇  New Branch", ""),
             ("⎇  Switch Branch…", "Ctrl+B"),
             ("⚑  Stash Changes", ""),
-            ("🔍  Search Commits", "Ctrl+F"),
+            ("⌕  Search Commits", "Ctrl+F"),
             ("⊞  Open Repository", ""),
             ("☀  Toggle Theme", ""),
         ];
@@ -441,7 +458,6 @@ impl RecordeApp {
 
 impl eframe::App for RecordeApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // Kill egui debug overlays every frame
         ctx.style_mut(theme::kill_debug);
         ctx.options_mut(|o| o.warn_on_id_clash = false);
 
@@ -510,12 +526,6 @@ impl eframe::App for RecordeApp {
                     Stroke::new(1.0, theme::BORDER),
                 );
                 ui.horizontal_centered(|ui| {
-                    // Traffic-light dots (decorative)
-                    for col in [Color32::from_rgb(255,95,86), Color32::from_rgb(255,189,46), Color32::from_rgb(39,201,63)] {
-                        let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
-                        ui.painter().circle_filled(r.center(), 6.0, col);
-                    }
-                    ui.add_space(12.0);
                     // Repo name
                     let repo_name = self.state.lock().unwrap().repo_path.as_ref()
                         .and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
@@ -530,11 +540,16 @@ impl eframe::App for RecordeApp {
             });
 
         // Toolbar
+        let (search_active, show_all_branches) = {
+            let s = self.state.lock().unwrap();
+            (s.search_active, s.show_all_branches)
+        };
         let toolbar_action = self.toolbar.show(
             ctx,
             &self.config.recent_repos,
             self.dark_theme,
-            self.state.lock().unwrap().search_active,
+            search_active,
+            show_all_branches,
         );
         if let Some(a) = toolbar_action { self.handle_toolbar(ctx, a); }
 

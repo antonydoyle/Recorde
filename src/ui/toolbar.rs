@@ -17,6 +17,7 @@ pub enum ToolbarAction {
     ToggleSearch,
     OpenCommandPalette,
     OpenBranchSwitcher,
+    ToggleAllBranches,
 }
 
 pub struct Toolbar {
@@ -34,6 +35,7 @@ impl Toolbar {
         recent_repos: &[PathBuf],
         dark_theme: bool,
         search_active: bool,
+        show_all_branches: bool,
     ) -> Option<ToolbarAction> {
         let mut action = None;
 
@@ -141,6 +143,22 @@ impl Toolbar {
                         .on_hover_text("Stash uncommitted changes").clicked()
                     { action = Some(ToolbarAction::Stash); }
 
+                    ui.add_space(6.0);
+                    vsep(ui);
+                    ui.add_space(6.0);
+
+                    // Branch filter toggle
+                    let filter_label = if show_all_branches { "⎇  All Branches" } else { "⎇  This Branch" };
+                    let filter_color = if show_all_branches { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY };
+                    if ui.add(
+                        egui::Button::new(egui::RichText::new(filter_label).color(filter_color).size(12.5))
+                            .fill(theme::BG_PANEL)
+                            .stroke(egui::Stroke::new(1.0, if show_all_branches { theme::ACCENT_BLUE.gamma_multiply(0.4) } else { theme::BORDER }))
+                            .rounding(6.0),
+                    ).on_hover_text("Toggle: show all branches or current branch only").clicked() {
+                        action = Some(ToolbarAction::ToggleAllBranches);
+                    }
+
                     // ── Right side ───────────────────────────────────────
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
@@ -160,7 +178,7 @@ impl Toolbar {
                         ui.add_space(8.0);
 
                         // Theme toggle
-                        let ti = if dark_theme { "☀" } else { "🌙" };
+                        let ti = if dark_theme { "☀" } else { "☾" };
                         if icon_btn(ui, ti, "Toggle theme").clicked()
                         { action = Some(ToolbarAction::ToggleTheme); }
 
@@ -175,7 +193,7 @@ impl Toolbar {
                         // Search
                         let sc = if search_active { theme::ACCENT_TEAL } else { theme::TEXT_MUTED };
                         if ui.add(egui::Button::new(
-                            RichText::new("🔍").color(sc).size(14.0),
+                            RichText::new("⌕").color(sc).size(14.0),
                         ).fill(egui::Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked()
                         { action = Some(ToolbarAction::ToggleSearch); }
 

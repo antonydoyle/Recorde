@@ -42,9 +42,10 @@ impl Sidebar {
             Stroke::new(1.0, theme::BORDER),
         );
 
-        let (graph_opt, head, stashes) = {
+        let (graph_opt, head, stashes, ab_map) = {
             let s = self.state.lock().unwrap();
-            (s.commit_graph.clone(), s.head_branch.clone().unwrap_or_default(), s.stashes.clone())
+            (s.commit_graph.clone(), s.head_branch.clone().unwrap_or_default(),
+             s.stashes.clone(), s.branch_ahead_behind.clone())
         };
 
         let mut action: Option<SidebarAction> = None;
@@ -88,7 +89,8 @@ impl Sidebar {
                         ui.add_space(2.0);
                         for name in &local {
                             let is_head = *name == head.as_str();
-                            let resp = branch_row(ui, name, is_head, false);
+                            let ab = ab_map.get(*name).copied();
+                            let resp = branch_row(ui, name, is_head, false, ab);
                             resp.context_menu(|ui| {
                                 ui.set_min_width(160.0);
                                 if !is_head {
@@ -125,7 +127,7 @@ impl Sidebar {
                     if *open {
                         ui.add_space(2.0);
                         for name in &remote {
-                            branch_row(ui, name, false, true);
+                            branch_row(ui, name, false, true, None);
                         }
                         if remote.is_empty() { empty_hint(ui, "No remote branches"); }
                         ui.add_space(4.0);
@@ -202,7 +204,7 @@ impl Sidebar {
 
 // ── Branch row (34 px) ────────────────────────────────────────────────────────
 
-fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool) -> egui::Response {
+fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_behind: Option<(usize, usize)>) -> egui::Response {
     let row_h = 34.0;
     let avail = ui.available_width();
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
@@ -237,15 +239,38 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool) -> egui::
         RichText::new(name).color(text_color).size(12.5)
     };
 
+    // Ahead/behind counts on the right
+    let ab_text = match ahead_behind {
+        Some((a, b)) if a > 0 && b > 0 => format!("↑{} ↓{}", a, b),
+        Some((a, 0)) if a > 0           => format!("↑{}", a),
+        Some((0, b)) if b > 0           => format!("↓{}", b),
+        _                               => String::new(),
+    };
+
+    let right_margin = if ab_text.is_empty() { 8.0 } else { 4.0 };
+    let ab_width = if ab_text.is_empty() { 0.0 } else { 52.0 };
+
     let text_rect = Rect::from_min_max(
         Pos2::new(dot_x + 12.0, row_rect.min.y),
-        Pos2::new(row_rect.max.x - 8.0, row_rect.max.y),
+        Pos2::new(row_rect.max.x - ab_width - right_margin, row_rect.max.y),
     );
     ui.allocate_ui_at_rect(text_rect, |ui| {
         ui.horizontal_centered(|ui| {
             ui.label(text_style);
         });
     });
+
+    if !ab_text.is_empty() {
+        let ab_rect = Rect::from_min_max(
+            Pos2::new(row_rect.max.x - ab_width - 4.0, row_rect.min.y),
+            Pos2::new(row_rect.max.x - 4.0, row_rect.max.y),
+        );
+        ui.allocate_ui_at_rect(ab_rect, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.label(RichText::new(&ab_text).color(theme::TEXT_MUTED).size(10.5));
+            });
+        });
+    }
 
     resp
 }

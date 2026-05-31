@@ -32,18 +32,19 @@ pub struct DiffView {
     items: Vec<Item>,
     /// OID+path key we last built items for.
     last_key: Option<(String, String)>,
+    show_console: bool,
 }
 
 impl DiffView {
     pub fn new(state: SharedState) -> Self {
-        Self { state, items: Vec::new(), last_key: None }
+        Self { state, items: Vec::new(), last_key: None, show_console: false }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
         // Snapshot state — release lock before any rendering.
-        let (diff_opt, selected_file) = {
+        let (diff_opt, selected_file, console_log) = {
             let s = self.state.lock().unwrap();
-            (s.current_diff.clone(), s.selected_file.clone())
+            (s.current_diff.clone(), s.selected_file.clone(), s.console_log.clone())
         };
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_APP);
@@ -78,14 +79,16 @@ impl DiffView {
                 ui.add_space(12.0);
 
                 // "File Diff" and "Console" tab labels
-                for (label, active) in &[("File Diff", true), ("Console", false)] {
-                    let tc = if *active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
+                for (label, is_console) in &[("File Diff", false), ("Console", true)] {
+                    let active = *is_console == self.show_console;
+                    let tc = if active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
                     let btn = ui.add(
                         egui::Button::new(egui::RichText::new(*label).size(12.5).color(tc))
                             .fill(Color32::TRANSPARENT)
                             .stroke(Stroke::NONE),
                     );
-                    if *active {
+                    if btn.clicked() { self.show_console = *is_console; }
+                    if active {
                         let br = btn.rect;
                         ui.painter().line_segment(
                             [br.left_bottom(), br.right_bottom()],
@@ -131,6 +134,44 @@ impl DiffView {
             Pos2::new(ui.min_rect().min.x, ui.min_rect().min.y + header_height),
             ui.max_rect().max,
         );
+
+        // --- Console tab ---
+        if self.show_console {
+            ui.allocate_ui_at_rect(content_rect, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.add_space(6.0);
+                        if console_log.is_empty() {
+                            ui.horizontal(|ui| {
+                                ui.add_space(12.0);
+                                ui.label(egui::RichText::new("No git operations yet.")
+                                    .color(theme::TEXT_MUTED).size(12.0));
+                            });
+                        } else {
+                            for line in &console_log {
+                                let color = if line.starts_with("error:") {
+                                    theme::ACCENT_RED
+                                } else if line.starts_with('$') {
+                                    theme::ACCENT_TEAL
+                                } else {
+                                    theme::TEXT_SECONDARY
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.add_space(12.0);
+                                    ui.label(egui::RichText::new(line)
+                                        .color(color)
+                                        .size(12.0)
+                                        .font(egui::FontId::monospace(12.0)));
+                                });
+                            }
+                        }
+                        ui.add_space(6.0);
+                    });
+            });
+            return;
+        }
 
         // --- No diff yet ---
         if diff_opt.is_none() {
