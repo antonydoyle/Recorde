@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use egui::{Context, RichText, Stroke};
 
+use crate::icons;
 use crate::state::SharedState;
 use crate::theme;
 use crate::ui::widgets;
@@ -18,6 +19,7 @@ pub enum ToolbarAction {
     OpenCommandPalette,
     OpenBranchSwitcher,
     ToggleAllBranches,
+    OpenUserMenu,
 }
 
 pub struct Toolbar {
@@ -70,16 +72,7 @@ impl Toolbar {
                             .unwrap_or_else(|| "No repo".into());
                         drop(s);
 
-                        let btn = ui.add(
-                            egui::Button::new(
-                                RichText::new(format!("⊞  {}", name))
-                                    .color(theme::TEXT_PRIMARY)
-                                    .size(13.0),
-                            )
-                            .fill(theme::BG_PANEL)
-                            .stroke(Stroke::new(1.0, theme::BORDER))
-                            .rounding(6.0),
-                        );
+                        let btn = widgets::toolbar_btn_icon(ui, icons::FOLDER_OPEN, &name, true);
                         if btn.clicked() {
                             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                                 action = Some(ToolbarAction::OpenRepo(path));
@@ -114,19 +107,19 @@ impl Toolbar {
                     ui.add_space(6.0);
 
                     // ── Git actions ──────────────────────────────────────
-                    if widgets::toolbar_btn(ui, "↓  Fetch", has_repo && !busy)
+                    if widgets::toolbar_btn_icon(ui, icons::DOWNLOAD, "Fetch", has_repo && !busy)
                         .on_hover_text("Fetch all remotes  (Ctrl+Shift+F)").clicked()
                     { action = Some(ToolbarAction::Fetch); }
 
                     ui.add_space(3.0);
 
-                    if widgets::toolbar_btn(ui, "⇅  Pull", has_repo && !busy)
+                    if widgets::toolbar_btn_icon(ui, icons::SWAP_VERT, "Pull", has_repo && !busy)
                         .on_hover_text("Fetch + fast-forward  (Ctrl+Shift+P)").clicked()
                     { action = Some(ToolbarAction::Pull); }
 
                     ui.add_space(3.0);
 
-                    if widgets::toolbar_btn(ui, "↑  Push", has_repo && !busy)
+                    if widgets::toolbar_btn_icon(ui, icons::UPLOAD, "Push", has_repo && !busy)
                         .on_hover_text("Push current branch  (Ctrl+Shift+U)").clicked()
                     { action = Some(ToolbarAction::Push); }
 
@@ -134,12 +127,12 @@ impl Toolbar {
                     vsep(ui);
                     ui.add_space(6.0);
 
-                    if widgets::toolbar_btn(ui, "⎇  New Branch", has_repo && !busy).clicked()
+                    if widgets::toolbar_btn_icon(ui, icons::HUB, "New Branch", has_repo && !busy).clicked()
                     { action = Some(ToolbarAction::CreateBranch); }
 
                     ui.add_space(3.0);
 
-                    if widgets::toolbar_btn(ui, "⚑  Stash", has_repo && dirty && !busy)
+                    if widgets::toolbar_btn_icon(ui, icons::HISTORY, "Stash", has_repo && dirty && !busy)
                         .on_hover_text("Stash uncommitted changes").clicked()
                     { action = Some(ToolbarAction::Stash); }
 
@@ -148,10 +141,19 @@ impl Toolbar {
                     ui.add_space(6.0);
 
                     // Branch filter toggle
-                    let filter_label = if show_all_branches { "⎇  All Branches" } else { "⎇  This Branch" };
+                    let (filter_icon, filter_label) = if show_all_branches {
+                        (icons::SOURCE, "All Branches")
+                    } else {
+                        (icons::COMMIT, "This Branch")
+                    };
                     let filter_color = if show_all_branches { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY };
+                    let mut fj = egui::text::LayoutJob::default();
+                    fj.append(&filter_icon.to_string(), 0.0,
+                        egui::TextFormat { font_id: icons::font(15.0), color: filter_color, ..Default::default() });
+                    fj.append(&format!("  {filter_label}"), 0.0,
+                        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: filter_color, ..Default::default() });
                     if ui.add(
-                        egui::Button::new(egui::RichText::new(filter_label).color(filter_color).size(12.5))
+                        egui::Button::new(fj)
                             .fill(theme::BG_PANEL)
                             .stroke(egui::Stroke::new(1.0, if show_all_branches { theme::ACCENT_BLUE.gamma_multiply(0.4) } else { theme::BORDER }))
                             .rounding(6.0),
@@ -168,28 +170,31 @@ impl Toolbar {
                             let s = self.state.lock().unwrap();
                             s.git_user_initials.clone()
                         };
-                        let (av_rect, _) = ui.allocate_exact_size(
-                            egui::Vec2::splat(28.0), egui::Sense::hover(),
+                        let (av_rect, av_resp) = ui.allocate_exact_size(
+                            egui::Vec2::splat(28.0), egui::Sense::click(),
                         );
                         ui.painter().circle_filled(av_rect.center(), 14.0, theme::ACCENT_PURPLE);
                         ui.painter().text(
                             av_rect.center(), egui::Align2::CENTER_CENTER,
                             &initials, egui::FontId::proportional(10.0), egui::Color32::WHITE,
                         );
+                        if av_resp.clicked() {
+                            action = Some(ToolbarAction::OpenUserMenu);
+                        }
 
                         ui.add_space(8.0);
                         vsep(ui);
                         ui.add_space(8.0);
 
                         // Theme toggle
-                        let ti = if dark_theme { "☀" } else { "☾" };
-                        if icon_btn(ui, ti, "Toggle theme").clicked()
+                        let theme_icon = if dark_theme { icons::LIGHT_MODE } else { icons::DARK_MODE };
+                        if widgets::icon_btn_mat(ui, theme_icon, 18.0, "Toggle theme").clicked()
                         { action = Some(ToolbarAction::ToggleTheme); }
 
                         ui.add_space(4.0);
 
                         // Command palette
-                        if icon_btn(ui, "⌘", "Command palette  (Ctrl+K)").clicked()
+                        if widgets::icon_btn_mat(ui, icons::TERMINAL, 18.0, "Command palette  (Ctrl+K)").clicked()
                         { action = Some(ToolbarAction::OpenCommandPalette); }
 
                         ui.add_space(4.0);
@@ -197,7 +202,7 @@ impl Toolbar {
                         // Search
                         let sc = if search_active { theme::ACCENT_TEAL } else { theme::TEXT_MUTED };
                         if ui.add(egui::Button::new(
-                            RichText::new("⌕").color(sc).size(14.0),
+                            icons::rich(icons::SEARCH, 18.0).color(sc),
                         ).fill(egui::Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked()
                         { action = Some(ToolbarAction::ToggleSearch); }
 
@@ -210,15 +215,16 @@ impl Toolbar {
                             let s = self.state.lock().unwrap();
                             let branch = s.head_branch.clone().unwrap_or_else(|| "HEAD".into());
                             drop(s);
+                            let mut bj = egui::text::LayoutJob::default();
+                            bj.append(&icons::COMMIT.to_string(), 0.0,
+                                egui::TextFormat { font_id: icons::font(15.0), color: theme::ACCENT_TEAL, ..Default::default() });
+                            bj.append(&format!("  {branch}"), 0.0,
+                                egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: theme::ACCENT_TEAL, ..Default::default() });
                             if ui.add(
-                                egui::Button::new(
-                                    RichText::new(format!("⎇  {}", branch))
-                                        .color(theme::ACCENT_TEAL)
-                                        .size(12.5),
-                                )
-                                .fill(theme::BG_PANEL)
-                                .stroke(Stroke::new(1.0, theme::ACCENT_TEAL.gamma_multiply(0.4)))
-                                .rounding(6.0),
+                                egui::Button::new(bj)
+                                    .fill(theme::BG_PANEL)
+                                    .stroke(Stroke::new(1.0, theme::ACCENT_TEAL.gamma_multiply(0.4)))
+                                    .rounding(6.0),
                             )
                             .on_hover_text("Switch branch  (Ctrl+B)")
                             .clicked() {
@@ -244,9 +250,3 @@ fn vsep(ui: &mut egui::Ui) {
     ui.add(egui::Separator::default().vertical().spacing(4.0));
 }
 
-fn icon_btn<'a>(ui: &mut egui::Ui, icon: &str, tip: &'a str) -> egui::Response {
-    ui.add(egui::Button::new(RichText::new(icon).color(theme::TEXT_MUTED).size(14.0))
-        .fill(egui::Color32::TRANSPARENT)
-        .stroke(Stroke::NONE))
-        .on_hover_text(tip)
-}
