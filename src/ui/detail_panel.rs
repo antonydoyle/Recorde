@@ -1,7 +1,7 @@
 use egui::{Color32, FontId, RichText, Ui};
 
 use crate::git::operations::load_diff;
-use crate::state::{CommitDetail, SharedState};
+use crate::state::SharedState;
 use crate::theme;
 
 pub struct DetailPanel {
@@ -90,8 +90,9 @@ impl DetailPanel {
                     .trim_start_matches('\n')
                     .trim_end();
 
-                ui.horizontal_wrapped(|ui| {
-                    ui.add_space(12.0);
+                egui::Frame::none()
+                    .inner_margin(egui::Margin::symmetric(12.0, 0.0))
+                    .show(ui, |ui| {
                     ui.label(
                         RichText::new(first_line)
                             .color(theme::TEXT_PRIMARY)
@@ -102,8 +103,9 @@ impl DetailPanel {
 
                 if !rest.is_empty() {
                     ui.add_space(6.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.add_space(12.0);
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin::symmetric(12.0, 0.0))
+                        .show(ui, |ui| {
                         ui.label(
                             RichText::new(rest)
                                 .color(theme::TEXT_SECONDARY)
@@ -147,7 +149,7 @@ impl DetailPanel {
                                 is_sel,
                                 RichText::new(display)
                                     .color(if is_sel {
-                                        theme::ACCENT_BLUE
+                                        theme::BG_APP
                                     } else {
                                         theme::TEXT_SECONDARY
                                     })

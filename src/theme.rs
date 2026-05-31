@@ -105,6 +105,7 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         ctx.style_mut(|s| {
             s.spacing.item_spacing = egui::Vec2::new(8.0, 5.0);
             s.spacing.button_padding = egui::Vec2::new(12.0, 7.0);
+            s.spacing.interact_size.y = 26.0;
             kill_debug(s);
         });
         ctx.options_mut(|o| o.warn_on_id_clash = false);
@@ -154,6 +155,7 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         s.spacing.item_spacing     = egui::Vec2::new(8.0, 5.0);
         s.spacing.window_margin    = egui::Margin::same(0.0);
         s.spacing.button_padding   = egui::Vec2::new(12.0, 7.0);
+        s.spacing.interact_size.y  = 26.0;
         s.visuals.widgets.inactive.rounding = egui::Rounding::same(5.0);
         s.visuals.widgets.hovered.rounding  = egui::Rounding::same(5.0);
         s.visuals.widgets.active.rounding   = egui::Rounding::same(5.0);

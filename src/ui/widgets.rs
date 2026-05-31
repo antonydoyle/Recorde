@@ -60,32 +60,43 @@ pub fn status_badge(ui: &mut Ui, ch: char) -> Response {
 
 /// Renders a collapsible section header. Returns true if the section is open.
 pub fn section_header(ui: &mut Ui, title: &str, count: usize, open: &mut bool) -> Response {
-    let resp = ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        // Chevron
-        let chevron = if *open { "▾" } else { "▸" };
-        ui.label(RichText::new(chevron).color(theme::TEXT_MUTED).size(9.0));
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(title)
-                .size(theme::font_size::SECTION)
-                .color(theme::TEXT_MUTED)
-                .strong(),
+    let row_h = 24.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, theme::BG_HOVER);
+    }
+    let chevron = if *open { icons::EXPAND_MORE } else { icons::CHEVRON_RIGHT };
+    ui.painter().text(
+        Pos2::new(rect.left() + 10.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        chevron.to_string(),
+        icons::font(16.0),
+        theme::TEXT_MUTED,
+    );
+    ui.painter().text(
+        Pos2::new(rect.left() + 30.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(theme::font_size::SECTION),
+        theme::TEXT_MUTED,
+    );
+    if count > 0 {
+        let text = count.to_string();
+        let font = FontId::proportional(10.5);
+        let galley = ui.painter().layout_no_wrap(text, font, theme::TEXT_MUTED);
+        let pill = Rect::from_min_size(
+            Pos2::new(rect.right() - galley.size().x - 22.0, rect.center().y - 8.0),
+            Vec2::new(galley.size().x + 14.0, 16.0),
         );
-        if count > 0 {
-            ui.add_space(6.0);
-            // Small count pill
-            let count_str = count.to_string();
-            pill(
-                ui,
-                &count_str,
-                theme::BG_ELEVATED,
-                theme::TEXT_MUTED,
-            );
-        }
-    }).response;
+        ui.painter().rect_filled(pill, 8.0, theme::BG_ELEVATED);
+        ui.painter().galley(
+            Pos2::new(pill.center().x - galley.size().x / 2.0, pill.center().y - galley.size().y / 2.0),
+            galley,
+            theme::TEXT_MUTED,
+        );
+    }
 
-    if resp.interact(egui::Sense::click()).clicked() {
+    if resp.clicked() {
         *open = !*open;
     }
     resp
@@ -114,19 +125,20 @@ pub fn toolbar_btn_icon(ui: &mut Ui, icon: char, label: &str, enabled: bool) -> 
     job.append(
         &icon.to_string(),
         0.0,
-        egui::TextFormat { font_id: icons::font(15.0), color: col, ..Default::default() },
+        egui::TextFormat { font_id: icons::font(15.0), color: col, line_height: Some(16.0), valign: egui::Align::Center, ..Default::default() },
     );
     job.append(
         &format!("  {label}"),
         0.0,
-        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: col, ..Default::default() },
+        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: col, line_height: Some(16.0), valign: egui::Align::TOP, ..Default::default() },
     );
     ui.add_enabled(
         enabled,
         egui::Button::new(job)
             .fill(theme::BG_PANEL_ALT)
             .stroke(Stroke::new(1.0, theme::BORDER))
-            .rounding(6.0),
+            .rounding(6.0)
+            .min_size(Vec2::new(0.0, 28.0)),
     )
 }
 
@@ -135,7 +147,8 @@ pub fn icon_btn_mat(ui: &mut Ui, icon: char, size: f32, tip: &str) -> Response {
     ui.add(
         egui::Button::new(icons::rich(icon, size).color(theme::TEXT_MUTED))
             .fill(egui::Color32::TRANSPARENT)
-            .stroke(Stroke::NONE),
+            .stroke(Stroke::NONE)
+            .min_size(Vec2::splat(28.0)),
     )
     .on_hover_text(tip)
 }

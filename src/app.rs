@@ -18,6 +18,9 @@ use crate::ui::{
 #[derive(PartialEq, Clone, Copy)]
 pub enum RightTab { Changes, Details }
 
+#[derive(PartialEq, Clone, Copy)]
+enum SettingsTab { App, GitCredentials, Repository, About }
+
 pub struct RecordeApp {
     state: SharedState,
     toolbar: Toolbar,
@@ -40,6 +43,13 @@ pub struct RecordeApp {
     branch_switcher_open: bool,
     branch_switcher_query: String,
     settings_open: bool,
+    settings_tab: SettingsTab,
+    git_name_input: String,
+    git_email_input: String,
+    repo_git_name_input: String,
+    repo_git_email_input: String,
+    default_editor_input: String,
+    pull_requests_open: bool,
     // Interactive rebase
     rebase_modal: Option<RebaseModal>,
 }
@@ -48,6 +58,7 @@ impl RecordeApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_repo: Option<std::path::PathBuf>) -> Self {
         let config = Config::load();
         let dark_theme = config.dark_theme;
+        let default_editor = config.default_editor.clone();
 
         // Load Noto Symbols as egui fallback font for full Unicode symbol coverage.
         // This fixes missing-glyph squares for ⎇ ⚑ ⊞ ⇅ ☀ ⌘ and similar.
@@ -97,6 +108,13 @@ impl RecordeApp {
             branch_switcher_open: false,
             branch_switcher_query: String::new(),
             settings_open: false,
+            settings_tab: SettingsTab::App,
+            git_name_input: String::new(),
+            git_email_input: String::new(),
+            repo_git_name_input: String::new(),
+            repo_git_email_input: String::new(),
+            default_editor_input: default_editor,
+            pull_requests_open: false,
             rebase_modal: None,
         }
     }
@@ -127,9 +145,9 @@ impl RecordeApp {
                 s.search_active = !s.search_active;
                 if !s.search_active { s.search_query.clear(); }
             }
-            ToolbarAction::OpenCommandPalette => self.command_palette_open = true,
+            ToolbarAction::OpenCommandPalette => self.command_palette_open = !self.command_palette_open,
             ToolbarAction::OpenBranchSwitcher => self.branch_switcher_open = true,
-            ToolbarAction::OpenUserMenu => self.settings_open = true, // routed to settings for now
+            ToolbarAction::OpenUserMenu => self.open_settings(SettingsTab::GitCredentials),
             ToolbarAction::ToggleAllBranches => {
                 let mut s = self.state.lock().unwrap();
                 s.show_all_branches = !s.show_all_branches;
@@ -152,6 +170,23 @@ impl RecordeApp {
             SidebarAction::StashPop(i)   => branches::stash_pop(i, self.state.clone()),
             SidebarAction::StashDrop(i)  => branches::stash_drop(i, self.state.clone()),
         }
+    }
+
+    fn open_settings(&mut self, tab: SettingsTab) {
+        self.settings_tab = tab;
+        self.settings_open = true;
+        self.load_git_identity_inputs();
+    }
+
+    fn load_git_identity_inputs(&mut self) {
+        let global = git_identity(None);
+        self.git_name_input = global.0;
+        self.git_email_input = global.1;
+
+        let repo_path = self.state.lock().unwrap().repo_path.clone();
+        let repo = git_identity(repo_path.as_deref());
+        self.repo_git_name_input = repo.0;
+        self.repo_git_email_input = repo.1;
     }
 
     // ── Open rebase modal ─────────────────────────────────────────────────────
@@ -274,6 +309,10 @@ impl RecordeApp {
         if self.settings_open {
             self.render_settings(ctx);
         }
+
+        if self.pull_requests_open {
+            self.render_pull_requests(ctx);
+        }
     }
 
     fn render_command_palette(&mut self, ctx: &Context) {
@@ -366,7 +405,12 @@ impl RecordeApp {
                         5 => branches::stash_save(self.state.clone()),
                         6 => { let mut s = self.state.lock().unwrap(); s.search_active = true; }
                         7 => { if let Some(p) = rfd::FileDialog::new().pick_folder() { self.config.add_recent(p.clone()); load_repo(p, self.state.clone()); } }
-                        8 => { self.dark_theme = !self.dark_theme; self.config.dark_theme = self.dark_theme; self.config.save(); }
+                        8 => {
+                            self.dark_theme = !self.dark_theme;
+                            self.config.dark_theme = self.dark_theme;
+                            self.config.save();
+                            theme::apply(ctx, self.dark_theme);
+                        }
                         _ => {}
                     }
                 }
@@ -441,23 +485,167 @@ impl RecordeApp {
     fn render_settings(&mut self, ctx: &Context) {
         egui::Window::new("Settings")
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
             .show(ctx, |ui| {
-                ui.set_min_width(300.0);
+                ui.set_min_size(egui::vec2(520.0, 360.0));
                 ui.label(RichText::new("Settings").color(theme::TEXT_PRIMARY).size(15.0).strong());
                 ui.add_space(12.0);
-                if ui.checkbox(&mut self.dark_theme, RichText::new("Dark theme").color(theme::TEXT_SECONDARY)).changed() {
-                    self.config.dark_theme = self.dark_theme;
-                    self.config.save();
-                    theme::apply(ctx, self.dark_theme);
-                }
+
+                ui.horizontal(|ui| {
+                    settings_tab_button(ui, &mut self.settings_tab, SettingsTab::App, "App");
+                    settings_tab_button(ui, &mut self.settings_tab, SettingsTab::GitCredentials, "Git Credentials");
+                    settings_tab_button(ui, &mut self.settings_tab, SettingsTab::Repository, "Repository");
+                    settings_tab_button(ui, &mut self.settings_tab, SettingsTab::About, "About");
+                });
+                ui.add(egui::Separator::default().spacing(0.0));
                 ui.add_space(8.0);
-                ui.label(styled_muted("Split diff view — coming in a future update"));
+
+                match self.settings_tab {
+                    SettingsTab::App => self.render_app_settings(ctx, ui),
+                    SettingsTab::GitCredentials => self.render_git_settings(ui),
+                    SettingsTab::Repository => self.render_repo_settings(ui),
+                    SettingsTab::About => self.render_about(ui),
+                }
+
                 ui.add_space(16.0);
                 if ui.add(secondary_btn("Close")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
                     self.settings_open = false;
+                }
+            });
+    }
+
+    fn render_app_settings(&mut self, ctx: &Context, ui: &mut egui::Ui) {
+        if ui.checkbox(&mut self.dark_theme, RichText::new("Dark theme").color(theme::TEXT_SECONDARY)).changed() {
+            self.config.dark_theme = self.dark_theme;
+            self.config.save();
+            theme::apply(ctx, self.dark_theme);
+        }
+        ui.add_space(8.0);
+        ui.label(RichText::new("Default editor").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.default_editor_input)
+                .desired_width(340.0)
+                .hint_text("code, codium, zed, vim, ..."));
+            if ui.add(secondary_btn("Save")).clicked() {
+                self.config.default_editor = self.default_editor_input.trim().to_string();
+                self.config.save();
+            }
+            if ui.add(secondary_btn("Open Repo")).clicked() {
+                if let Err(e) = open_repo_in_editor(self.state.lock().unwrap().repo_path.clone(), &self.config.default_editor) {
+                    self.state.lock().unwrap().error = Some(e);
+                }
+            }
+        });
+        ui.label(styled_muted("Used by Repository > Open in Editor. Arguments are supported, e.g. code --reuse-window."));
+        ui.add_space(8.0);
+        ui.label(styled_muted("Split diff view is controlled from the diff header."));
+    }
+
+    fn render_git_settings(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Global Git identity").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.add_space(6.0);
+        settings_text_field(ui, "Name", &mut self.git_name_input);
+        settings_text_field(ui, "Email", &mut self.git_email_input);
+        ui.add_space(6.0);
+        if ui.add(primary_btn("Save Global Identity")).clicked() {
+            match save_git_identity(None, &self.git_name_input, &self.git_email_input) {
+                Ok(()) => self.state.lock().unwrap().error = None,
+                Err(e) => self.state.lock().unwrap().error = Some(e),
+            }
+        }
+        ui.add_space(14.0);
+        ui.label(RichText::new("Credential helper").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(styled_muted(&git_config_value(None, "credential.helper").unwrap_or_else(|| "Not configured".into())));
+        ui.add_space(6.0);
+        ui.label(styled_muted("Recorde uses Git's credential helper and SSH agent/key files. It does not store passwords."));
+        ui.add_space(10.0);
+        ui.label(RichText::new("SSH keys").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        for line in ssh_key_status() {
+            ui.label(styled_muted(&line));
+        }
+    }
+
+    fn render_repo_settings(&mut self, ui: &mut egui::Ui) {
+        let repo_path = self.state.lock().unwrap().repo_path.clone();
+        let Some(path) = repo_path else {
+            ui.label(styled_muted("Open a repository to edit repository settings."));
+            return;
+        };
+
+        ui.label(RichText::new("Repository").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        ui.label(styled_muted(&path.display().to_string()));
+        ui.add_space(10.0);
+        ui.label(RichText::new("Repository Git identity").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        settings_text_field(ui, "Name", &mut self.repo_git_name_input);
+        settings_text_field(ui, "Email", &mut self.repo_git_email_input);
+        ui.add_space(6.0);
+        if ui.add(primary_btn("Save Repository Identity")).clicked() {
+            match save_git_identity(Some(&path), &self.repo_git_name_input, &self.repo_git_email_input) {
+                Ok(()) => self.state.lock().unwrap().error = None,
+                Err(e) => self.state.lock().unwrap().error = Some(e),
+            }
+        }
+        ui.add_space(14.0);
+        ui.label(RichText::new("Remotes").color(theme::TEXT_SECONDARY).size(12.5).strong());
+        for remote in repo_remotes(&path) {
+            ui.label(styled_muted(&remote));
+        }
+    }
+
+    fn render_about(&self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Recorde").color(theme::TEXT_PRIMARY).size(14.0).strong());
+        ui.label(styled_muted("A desktop Git client built with Rust, egui, and eframe."));
+        ui.add_space(8.0);
+        ui.label(styled_muted("Keyboard: Ctrl+K command palette, Ctrl+B branch switcher, Ctrl+F search."));
+    }
+
+    fn render_pull_requests(&mut self, ctx: &Context) {
+        let (repo_path, branch) = {
+            let s = self.state.lock().unwrap();
+            (s.repo_path.clone(), s.head_branch.clone().unwrap_or_else(|| "HEAD".into()))
+        };
+        let pr_target = repo_path.as_deref().and_then(|path| pull_request_target(path, &branch));
+
+        egui::Window::new("Pull Requests")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+            .show(ctx, |ui| {
+                ui.set_min_size(egui::vec2(460.0, 220.0));
+                ui.label(RichText::new("Pull Requests").color(theme::TEXT_PRIMARY).size(15.0).strong());
+                ui.add_space(8.0);
+
+                match pr_target {
+                    Some((ref remote_url, ref pr_url)) => {
+                        ui.label(styled_muted(&format!("Remote: {remote_url}")));
+                        ui.label(styled_muted(&format!("Current branch: {branch}")));
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("Preview").color(theme::TEXT_SECONDARY).size(12.5).strong());
+                        ui.label(styled_muted("Recorde can open the hosting provider's compare / pull request page for this branch."));
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.add(primary_btn("Open Pull Request Page")).clicked() {
+                                if let Err(e) = open_url(pr_url) {
+                                    self.state.lock().unwrap().error = Some(e);
+                                }
+                            }
+                            if ui.add(secondary_btn("Close")).clicked() {
+                                self.pull_requests_open = false;
+                            }
+                        });
+                    }
+                    None => {
+                        ui.label(styled_muted("No GitHub-style remote URL was found for this repository."));
+                        ui.label(styled_muted("Add an origin remote or open the pull request page in your browser."));
+                        ui.add_space(12.0);
+                        if ui.add(secondary_btn("Close")).clicked() {
+                            self.pull_requests_open = false;
+                        }
+                    }
                 }
             });
     }
@@ -550,11 +738,7 @@ impl eframe::App for RecordeApp {
                     Stroke::new(1.0, theme::BORDER),
                 );
                 ui.horizontal_centered(|ui| {
-                    // Repo name
-                    let repo_name = self.state.lock().unwrap().repo_path.as_ref()
-                        .and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "No repository".into());
-                    ui.label(RichText::new(repo_name).color(theme::TEXT_SECONDARY).size(13.0));
+                    self.show_menu_contents(ctx, ui);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(16.0);
@@ -687,6 +871,201 @@ impl eframe::App for RecordeApp {
                     focus_ring(ui);
                 }
             });
+
+        self.show_operation_overlays(ctx);
+    }
+}
+
+impl RecordeApp {
+    fn show_operation_overlays(&mut self, ctx: &Context) {
+        let (op, error) = {
+            let s = self.state.lock().unwrap();
+            (s.remote_op.clone(), s.error.clone())
+        };
+
+        if let Some(op) = op {
+            ctx.request_repaint_after(std::time::Duration::from_millis(120));
+            egui::Area::new(egui::Id::new("operation_overlay"))
+                .anchor(egui::Align2::CENTER_TOP, [0.0, 104.0])
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::none()
+                        .fill(theme::BG_ELEVATED)
+                        .stroke(Stroke::new(1.0, theme::ACCENT_TEAL))
+                        .rounding(8.0)
+                        .inner_margin(egui::Margin::symmetric(14.0, 10.0))
+                        .show(ui, |ui| {
+                            ui.horizontal_centered(|ui| {
+                                ui.spinner();
+                                ui.add_space(8.0);
+                                ui.label(RichText::new(op).color(theme::TEXT_PRIMARY).size(13.0).strong());
+                            });
+                        });
+                });
+        }
+
+        if let Some(error) = error {
+            egui::Area::new(egui::Id::new("error_overlay"))
+                .anchor(egui::Align2::CENTER_TOP, [0.0, 146.0])
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(74, 24, 28))
+                        .stroke(Stroke::new(1.5, theme::ACCENT_RED))
+                        .rounding(8.0)
+                        .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+                        .show(ui, |ui| {
+                            ui.set_max_width(720.0);
+                            ui.horizontal_centered(|ui| {
+                                ui.label(RichText::new("Operation blocked").color(Color32::WHITE).size(13.5).strong());
+                                ui.add_space(10.0);
+                                ui.label(RichText::new(error).color(Color32::WHITE).size(12.5));
+                                ui.add_space(10.0);
+                                if ui.add(secondary_btn("Dismiss")).clicked() {
+                                    self.state.lock().unwrap().error = None;
+                                }
+                            });
+                        });
+                });
+        }
+    }
+
+    fn show_menu_contents(&mut self, ctx: &Context, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        egui::menu::bar(ui, |ui| {
+                    ui.menu_button("File", |ui| {
+                        if ui.button("Open Repository...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                self.config.add_recent(path.clone());
+                                load_repo(path, self.state.clone());
+                            }
+                            ui.close_menu();
+                        }
+                        if !self.config.recent_repos.is_empty() {
+                            ui.menu_button("Recent Repositories", |ui| {
+                                for path in &self.config.recent_repos {
+                                    let label = path.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| path.display().to_string());
+                                    if ui.button(label).clicked() {
+                                        load_repo(path.clone(), self.state.clone());
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        }
+                        ui.separator();
+                        if ui.button("Settings").clicked() {
+                            self.open_settings(SettingsTab::App);
+                            ui.close_menu();
+                        }
+                        if ui.button("Quit").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            ui.close_menu();
+                        }
+                    });
+
+                    ui.menu_button("Edit", |ui| {
+                        if ui.button("Copy Selected Commit SHA").clicked() {
+                            if let Some(oid) = self.state.lock().unwrap().selected_commit.clone() {
+                                ui.output_mut(|o| o.copied_text = oid);
+                            }
+                            ui.close_menu();
+                        }
+                        if ui.button("Find Commits").clicked() {
+                            self.state.lock().unwrap().search_active = true;
+                            ui.close_menu();
+                        }
+                        if ui.button("Clear Selection").clicked() {
+                            let mut s = self.state.lock().unwrap();
+                            s.selected_commit = None;
+                            s.selected_commit_detail = None;
+                            s.selected_file = None;
+                            s.current_diff = None;
+                            ui.close_menu();
+                        }
+                    });
+
+                    ui.menu_button("View", |ui| {
+                        let show_all = self.state.lock().unwrap().show_all_branches;
+                        if ui.button(if show_all { "Show Current Branch Only" } else { "Show All Branches" }).clicked() {
+                            self.state.lock().unwrap().show_all_branches = !show_all;
+                            ui.close_menu();
+                        }
+                        if ui.button("Toggle Theme").clicked() {
+                            self.handle_toolbar(ctx, ToolbarAction::ToggleTheme);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        for (label, pane) in [("Focus Sidebar", 1), ("Focus Commit Graph", 2), ("Focus Changes", 3), ("Focus Diff", 4)] {
+                            if ui.button(label).clicked() {
+                                self.state.lock().unwrap().focused_pane = pane;
+                                ui.close_menu();
+                            }
+                        }
+                    });
+
+                    ui.menu_button("Repository", |ui| {
+                        let has_repo = self.state.lock().unwrap().repo_path.is_some();
+                        if ui.add_enabled(has_repo, egui::Button::new("Open in Editor")).clicked() {
+                            if let Err(e) = open_repo_in_editor(self.state.lock().unwrap().repo_path.clone(), &self.config.default_editor) {
+                                self.state.lock().unwrap().error = Some(e);
+                            }
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Pull Requests...")).clicked() {
+                            self.pull_requests_open = true;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add_enabled(has_repo, egui::Button::new("Fetch")).clicked() {
+                            remote::fetch_all(self.state.clone());
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Pull")).clicked() {
+                            remote::pull_branch(self.state.clone());
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Push")).clicked() {
+                            remote::push_branch(self.state.clone());
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Refresh")).clicked() {
+                            if let Some(path) = self.state.lock().unwrap().repo_path.clone() {
+                                load_repo(path, self.state.clone());
+                            }
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add_enabled(has_repo, egui::Button::new("Repository Settings")).clicked() {
+                            self.open_settings(SettingsTab::Repository);
+                            ui.close_menu();
+                        }
+                    });
+
+                    ui.menu_button("Branch", |ui| {
+                        let has_repo = self.state.lock().unwrap().repo_path.is_some();
+                        if ui.add_enabled(has_repo, egui::Button::new("Switch Branch...")).clicked() {
+                            self.branch_switcher_open = true;
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("New Branch...")).clicked() {
+                            self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None };
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_repo, egui::Button::new("Stash Changes")).clicked() {
+                            branches::stash_save(self.state.clone());
+                            ui.close_menu();
+                        }
+                    });
+
+                    ui.menu_button("Help", |ui| {
+                        if ui.button("About Recorde").clicked() {
+                            self.open_settings(SettingsTab::About);
+                            ui.close_menu();
+                        }
+                    });
+                });
     }
 }
 
@@ -724,6 +1103,7 @@ fn primary_btn(label: &str) -> egui::Button<'_> {
 fn danger_btn(label: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(label).color(Color32::WHITE))
         .fill(theme::ACCENT_RED).rounding(6.0)
+        .min_size(egui::Vec2::new(0.0, 28.0))
 }
 
 fn secondary_btn(label: &str) -> egui::Button<'_> {
@@ -731,6 +1111,7 @@ fn secondary_btn(label: &str) -> egui::Button<'_> {
         .fill(Color32::TRANSPARENT)
         .stroke(Stroke::new(1.0, theme::BORDER))
         .rounding(6.0)
+        .min_size(egui::Vec2::new(0.0, 28.0))
 }
 
 fn styled_label(text: &str) -> RichText {
@@ -739,4 +1120,163 @@ fn styled_label(text: &str) -> RichText {
 
 fn styled_muted(text: &str) -> RichText {
     RichText::new(text).color(theme::TEXT_MUTED).size(11.5)
+}
+
+fn settings_tab_button(ui: &mut egui::Ui, tab: &mut SettingsTab, value: SettingsTab, label: &str) {
+    let selected = *tab == value;
+    let color = if selected { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
+    if ui.add(egui::Button::new(RichText::new(label).color(color).size(12.0))
+        .fill(if selected { theme::BG_SELECTED } else { Color32::TRANSPARENT })
+        .stroke(Stroke::new(1.0, if selected { theme::BORDER_STRONG } else { theme::BORDER }))
+        .rounding(6.0)
+        .min_size(egui::Vec2::new(0.0, 28.0))).clicked()
+    {
+        *tab = value;
+    }
+}
+
+fn settings_text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    ui.horizontal(|ui| {
+        ui.set_width(460.0);
+        ui.label(RichText::new(label).color(theme::TEXT_MUTED).font(egui::FontId::monospace(11.0)));
+        ui.add_space(8.0);
+        ui.add(egui::TextEdit::singleline(value).desired_width(340.0));
+    });
+}
+
+fn git_identity(repo_path: Option<&std::path::Path>) -> (String, String) {
+    let config = match repo_path {
+        Some(path) => git2::Repository::open(path).ok().and_then(|r| r.config().ok()),
+        None => git2::Config::open_default().ok(),
+    };
+    let Some(config) = config else { return (String::new(), String::new()); };
+    (
+        config.get_string("user.name").unwrap_or_default(),
+        config.get_string("user.email").unwrap_or_default(),
+    )
+}
+
+fn save_git_identity(repo_path: Option<&std::path::Path>, name: &str, email: &str) -> Result<(), String> {
+    let mut config = match repo_path {
+        Some(path) => git2::Repository::open(path)
+            .map_err(|e| e.message().to_string())?
+            .config()
+            .map_err(|e| e.message().to_string())?,
+        None => git2::Config::open_default().map_err(|e| e.message().to_string())?,
+    };
+    if !name.trim().is_empty() {
+        config.set_str("user.name", name.trim()).map_err(|e| e.message().to_string())?;
+    }
+    if !email.trim().is_empty() {
+        config.set_str("user.email", email.trim()).map_err(|e| e.message().to_string())?;
+    }
+    Ok(())
+}
+
+fn git_config_value(repo_path: Option<&std::path::Path>, key: &str) -> Option<String> {
+    match repo_path {
+        Some(path) => git2::Repository::open(path).ok()?.config().ok()?.get_string(key).ok(),
+        None => git2::Config::open_default().ok()?.get_string(key).ok(),
+    }
+}
+
+fn repo_remotes(path: &std::path::Path) -> Vec<String> {
+    let Ok(repo) = git2::Repository::open(path) else { return vec!["Could not open repository.".into()]; };
+    let Ok(names) = repo.remotes() else { return vec!["No remotes configured.".into()]; };
+    let mut remotes = Vec::new();
+    for name in names.iter().flatten() {
+        let url = repo.find_remote(name).ok().and_then(|r| r.url().map(str::to_owned)).unwrap_or_default();
+        remotes.push(format!("{name}: {url}"));
+    }
+    if remotes.is_empty() {
+        remotes.push("No remotes configured.".into());
+    }
+    remotes
+}
+
+fn ssh_key_status() -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let ssh_dir = std::path::Path::new(&home).join(".ssh");
+    ["id_ed25519", "id_ecdsa", "id_rsa"]
+        .iter()
+        .map(|name| {
+            let path = ssh_dir.join(name);
+            format!("{} {}", if path.exists() { "Found" } else { "Missing" }, path.display())
+        })
+        .collect()
+}
+
+fn open_repo_in_editor(repo_path: Option<std::path::PathBuf>, configured_editor: &str) -> Result<(), String> {
+    let path = repo_path.ok_or_else(|| "Open a repository before launching an editor.".to_string())?;
+    let editor = if !configured_editor.trim().is_empty() {
+        configured_editor.trim().to_string()
+    } else {
+        std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .map_err(|_| "Set a default editor in App Settings first.".to_string())?
+    };
+
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().ok_or_else(|| "Set a default editor in App Settings first.".to_string())?;
+    let mut command = std::process::Command::new(program);
+    for arg in parts {
+        command.arg(arg);
+    }
+    command.arg(path);
+    command.spawn().map(|_| ()).map_err(|e| format!("Could not open editor: {e}"))
+}
+
+fn pull_request_target(repo_path: &std::path::Path, branch: &str) -> Option<(String, String)> {
+    let repo = git2::Repository::open(repo_path).ok()?;
+    let remote = repo.find_remote("origin").ok()
+        .or_else(|| repo.remotes().ok()?.iter().flatten().next().and_then(|name| repo.find_remote(name).ok()))?;
+    let remote_url = remote.url()?.to_string();
+    let base = github_web_url(&remote_url)?;
+    let url = if branch == "HEAD" {
+        format!("{base}/pulls")
+    } else {
+        format!("{base}/compare/{branch}?expand=1")
+    };
+    Some((remote_url, url))
+}
+
+fn github_web_url(remote_url: &str) -> Option<String> {
+    let trimmed = remote_url.trim_end_matches(".git");
+    if let Some(rest) = trimmed.strip_prefix("git@github.com:") {
+        return Some(format!("https://github.com/{rest}"));
+    }
+    if let Some(rest) = trimmed.strip_prefix("ssh://git@github.com/") {
+        return Some(format!("https://github.com/{rest}"));
+    }
+    if trimmed.starts_with("https://github.com/") || trimmed.starts_with("http://github.com/") {
+        return Some(trimmed.replacen("http://", "https://", 1));
+    }
+    None
+}
+
+fn open_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open browser: {e}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open browser: {e}"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open browser: {e}"))
+    }
 }

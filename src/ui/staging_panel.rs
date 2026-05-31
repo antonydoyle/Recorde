@@ -20,7 +20,7 @@ impl StagingPanel {
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_SURFACE);
 
         // Snapshot what we need without holding the lock during rendering.
-        let (files, head_branch, selected_file, dirty_count) = {
+        let (files, head_branch, selected_file, _dirty_count) = {
             let s = self.state.lock().unwrap();
             (
                 s.working_dir_files.clone(),
@@ -68,7 +68,8 @@ impl StagingPanel {
                     for f in &unstaged {
                         let is_sel = selected_file.as_deref() == Some(f.path.as_str());
                         let resp = file_row(ui, &f.path, f.unstaged_status.unwrap_or('?'), is_sel, |ui| {
-                            if ui.add(small_btn("Stage")).clicked() {
+                            let button = if is_sel { small_btn_selected("Stage") } else { small_btn("Stage") };
+                            if ui.add(button).clicked() {
                                 stage_file = Some(f.path.clone());
                             }
                         });
@@ -99,7 +100,8 @@ impl StagingPanel {
                     for f in &staged {
                         let is_sel = selected_file.as_deref() == Some(f.path.as_str());
                         let resp = file_row(ui, &f.path, f.staged_status.unwrap_or('M'), is_sel, |ui| {
-                            if ui.add(small_btn("Unstage")).clicked() {
+                            let button = if is_sel { small_btn_selected("Unstage") } else { small_btn("Unstage") };
+                            if ui.add(button).clicked() {
                                 unstage_file = Some(f.path.clone());
                             }
                         });
@@ -165,11 +167,13 @@ impl StagingPanel {
                     ui.add_space(12.0);
                     ui.add(
                         egui::TextEdit::multiline(&mut self.body)
-                            .desired_width(ui.available_width() - 12.0)
+                            .desired_width(ui.available_width() - 24.0)
                             .desired_rows(3)
                             .hint_text("Description (optional)")
+                            .margin(egui::Vec2::new(8.0, 6.0))
                             .font(egui::FontId::proportional(12.0)),
                     );
+                    ui.add_space(12.0);
                 });
 
                 ui.add_space(10.0);
@@ -287,7 +291,7 @@ fn file_row(
             let label = ui.selectable_label(
                 is_selected,
                 RichText::new(name)
-                    .color(if is_selected { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY })
+                    .color(if is_selected { theme::BG_APP } else { theme::TEXT_SECONDARY })
                     .size(12.0),
             );
             if path != name {
@@ -312,6 +316,14 @@ fn small_btn(label: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(label).color(theme::TEXT_MUTED).size(10.5))
         .fill(Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .min_size(egui::Vec2::new(0.0, 22.0))
+}
+
+fn small_btn_selected(label: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(label).color(theme::BG_APP).size(10.5).strong())
+        .fill(theme::ACCENT_TEAL)
+        .stroke(egui::Stroke::new(1.0, theme::ACCENT_TEAL))
+        .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
 fn status_icon(status: char) -> (&'static str, Color32) {
