@@ -149,9 +149,9 @@ impl Toolbar {
                     let filter_color = if show_all_branches { theme::ACCENT_BLUE } else { theme::TEXT_SECONDARY };
                     let mut fj = egui::text::LayoutJob::default();
                     fj.append(&filter_icon.to_string(), 0.0,
-                        egui::TextFormat { font_id: icons::font(15.0), color: filter_color, ..Default::default() });
+                        egui::TextFormat { font_id: icons::font(15.0), color: filter_color, line_height: Some(16.0), valign: egui::Align::Center, ..Default::default() });
                     fj.append(&format!("  {filter_label}"), 0.0,
-                        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: filter_color, ..Default::default() });
+                        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: filter_color, line_height: Some(16.0), valign: egui::Align::TOP, ..Default::default() });
                     if ui.add(
                         egui::Button::new(fj)
                             .fill(theme::BG_PANEL)
@@ -217,9 +217,9 @@ impl Toolbar {
                             drop(s);
                             let mut bj = egui::text::LayoutJob::default();
                             bj.append(&icons::COMMIT.to_string(), 0.0,
-                                egui::TextFormat { font_id: icons::font(15.0), color: theme::ACCENT_TEAL, ..Default::default() });
+                                egui::TextFormat { font_id: icons::font(15.0), color: theme::ACCENT_TEAL, line_height: Some(16.0), valign: egui::Align::Center, ..Default::default() });
                             bj.append(&format!("  {branch}"), 0.0,
-                                egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: theme::ACCENT_TEAL, ..Default::default() });
+                                egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: theme::ACCENT_TEAL, line_height: Some(16.0), valign: egui::Align::TOP, ..Default::default() });
                             if ui.add(
                                 egui::Button::new(bj)
                                     .fill(theme::BG_PANEL)
@@ -249,4 +249,3 @@ impl Toolbar {
 fn vsep(ui: &mut egui::Ui) {
     ui.add(egui::Separator::default().vertical().spacing(4.0));
 }
-

@@ -10,6 +10,8 @@ pub struct Config {
     pub recent_repos: Vec<PathBuf>,
     #[serde(default = "default_true")]
     pub dark_theme: bool,
+    #[serde(default)]
+    pub default_editor: String,
 }
 
 fn default_true() -> bool { true }
