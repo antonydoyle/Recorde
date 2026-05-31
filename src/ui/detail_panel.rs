@@ -1,6 +1,6 @@
 use egui::{Color32, FontId, RichText, Ui};
 
-use crate::git::operations::load_diff;
+use crate::git::operations::{load_blame, load_diff, load_file_history};
 use crate::state::SharedState;
 use crate::theme;
 
@@ -171,6 +171,23 @@ impl DetailPanel {
                     if row_resp.interact(egui::Sense::click()).clicked() {
                         clicked_file = Some(file.path.clone());
                     }
+
+                    row_resp.context_menu(|ui| {
+                        ui.set_min_width(175.0);
+                        if ui.button("Show File History").clicked() {
+                            load_file_history(&file.path, self.state.clone());
+                            ui.close_menu();
+                        }
+                        if ui.button("Blame").clicked() {
+                            {
+                                let mut s = self.state.lock().unwrap();
+                                s.selected_file = Some(file.path.clone());
+                                s.show_blame = true;
+                            }
+                            load_blame(&file.path, self.state.clone());
+                            ui.close_menu();
+                        }
+                    });
                 }
 
                 ui.add_space(16.0);

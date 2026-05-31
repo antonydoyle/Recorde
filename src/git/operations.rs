@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use crate::git::{branches, capabilities, graph::CommitGraph, remote};
-use crate::state::{ChangedFile, CommitDetail, ConflictedFile, DiffHunk, DiffLine, FileDiff, WorkingDirFile, StashEntry, SharedState};
+use crate::state::{BlameLine, ChangedFile, CommitDetail, ConflictedFile, DiffHunk, DiffLine, FileDiff, WorkingDirFile, StashEntry, SharedState};
 
 /// Load a repository: build the commit graph, working-dir status, and stashes.
 pub fn load_repo(path: PathBuf, state: SharedState) {
@@ -16,6 +16,8 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
             Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, files, stashes, conflicts, merged, caps)) => {
                 let n = graph.nodes.len();
                 s.console_log.push(format!("Opened {} ({} commits, branch: {})", path.display(), n, head_branch));
+                let bisect_active = crate::git::reflog::bisect_is_active(&path);
+                let bisect_oid = if bisect_active { crate::git::reflog::bisect_current(&path) } else { None };
                 s.repo_path = Some(path);
                 s.commit_graph = Some(graph);
                 s.head_branch = Some(head_branch);
@@ -27,6 +29,8 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
                 s.conflicted_files = conflicts;
                 s.merged_into_head = merged;
                 s.capabilities = Some(caps);
+                s.bisect_in_progress = bisect_active;
+                s.bisect_current_oid = bisect_oid;
                 s.error = None;
                 s.remote_op = None;
             }
@@ -359,4 +363,99 @@ fn compute_diff(repo_path: &Path, commit_oid: &str, file_path: &str) -> Result<F
     )?;
 
     parse_diff(diff, commit_oid, file_path)
+}
+
+// ── Phase 7 operations ────────────────────────────────────────────────────────
+
+/// Load the OIDs of commits that touched `file_path` and store them in state.
+pub fn load_file_history(file_path: &str, state: SharedState) {
+    let fp = file_path.to_string();
+    let repo_path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = repo_path else { return };
+    std::thread::spawn(move || {
+        let oids = crate::git::history::file_history_oids(&path, &fp);
+        let mut s = state.lock().unwrap();
+        s.file_history_path = Some(fp);
+        s.file_history_oids = oids;
+    });
+}
+
+/// Load blame annotations for `file_path` into state.
+pub fn load_blame(file_path: &str, state: SharedState) {
+    let fp = file_path.to_string();
+    let repo_path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = repo_path else { return };
+    std::thread::spawn(move || {
+        let lines: Vec<BlameLine> = crate::git::blame::blame_file(&path, &fp);
+        let mut s = state.lock().unwrap();
+        s.blame_lines = lines;
+        s.show_blame = true;
+    });
+}
+
+/// Load the list of files changed between two commits into state for the compare modal.
+pub fn load_compare_files(base_oid: &str, compare_oid: &str, state: SharedState) {
+    let base = base_oid.to_string();
+    let cmp  = compare_oid.to_string();
+    let repo_path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = repo_path else { return };
+    std::thread::spawn(move || {
+        let files = compute_compare_files(&path, &base, &cmp).unwrap_or_default();
+        let mut s = state.lock().unwrap();
+        s.compare_files = files;
+        s.compare_diff = None;
+        s.compare_selected_file = None;
+    });
+}
+
+fn compute_compare_files(repo_path: &Path, base_oid: &str, cmp_oid: &str) -> Result<Vec<ChangedFile>, git2::Error> {
+    let repo = git2::Repository::open(repo_path)?;
+    let base_tree = repo.find_commit(git2::Oid::from_str(base_oid)?)?.tree()?;
+    let cmp_tree  = repo.find_commit(git2::Oid::from_str(cmp_oid)?)?.tree()?;
+    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), None)?;
+    let mut files = Vec::new();
+    diff.foreach(
+        &mut |delta, _| {
+            let fp = delta.new_file().path().or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let status = match delta.status() {
+                git2::Delta::Added => 'A', git2::Delta::Deleted => 'D',
+                git2::Delta::Modified => 'M', git2::Delta::Renamed => 'R',
+                git2::Delta::Copied => 'C', _ => '?',
+            };
+            files.push(ChangedFile { path: fp, status });
+            true
+        },
+        None, None, None,
+    )?;
+    Ok(files)
+}
+
+/// Load diff for a single file between two commits into state.compare_diff.
+pub fn load_compare_diff(base_oid: &str, compare_oid: &str, file_path: &str, state: SharedState) {
+    let base = base_oid.to_string();
+    let cmp  = compare_oid.to_string();
+    let fp   = file_path.to_string();
+    let repo_path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = repo_path else { return };
+    std::thread::spawn(move || {
+        match compute_compare_diff(&path, &base, &cmp, &fp) {
+            Ok(diff) => {
+                let mut s = state.lock().unwrap();
+                s.compare_diff = Some(diff);
+                s.compare_selected_file = Some(fp);
+            }
+            Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+        }
+    });
+}
+
+fn compute_compare_diff(repo_path: &Path, base_oid: &str, cmp_oid: &str, file_path: &str) -> Result<FileDiff, git2::Error> {
+    let repo = git2::Repository::open(repo_path)?;
+    let base_tree = repo.find_commit(git2::Oid::from_str(base_oid)?)?.tree()?;
+    let cmp_tree  = repo.find_commit(git2::Oid::from_str(cmp_oid)?)?.tree()?;
+    let mut opts = git2::DiffOptions::new();
+    opts.pathspec(file_path);
+    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), Some(&mut opts))?;
+    parse_diff(diff, cmp_oid, file_path)
 }
