@@ -64,6 +64,10 @@ pub struct RecordeApp {
     // Stash
     stash_message_input: String,
     stash_branch_input: String,
+    // Phase 7: History/Review
+    reflog_recover_input: String,
+    reflog_recover_oid: Option<String>,
+    compare_file_selected: Option<String>,
 }
 
 impl RecordeApp {
@@ -145,6 +149,9 @@ impl RecordeApp {
             tag_message_input: String::new(),
             stash_message_input: "WIP".into(),
             stash_branch_input: String::new(),
+            reflog_recover_input: String::new(),
+            reflog_recover_oid: None,
+            compare_file_selected: None,
         }
     }
 
@@ -216,6 +223,8 @@ impl RecordeApp {
                 let mut s = self.state.lock().unwrap();
                 s.show_all_branches = !s.show_all_branches;
             }
+            ToolbarAction::OpenReflog => self.state.lock().unwrap().modal = ModalKind::Reflog,
+            ToolbarAction::OpenBisect => self.state.lock().unwrap().modal = ModalKind::Bisect,
         }
     }
 
@@ -411,6 +420,11 @@ impl RecordeApp {
                 |app, branch| {
                     rebase::rebase_onto(&branch, app.state.clone());
                 }),
+
+            ModalKind::Reflog  => self.render_reflog_modal(ctx),
+            ModalKind::Bisect  => self.render_bisect_modal(ctx),
+            ModalKind::Compare { base_oid, compare_oid } =>
+                self.render_compare_modal(ctx, base_oid, compare_oid),
         }
 
         // ── Command palette ───────────────────────────────────────────────
@@ -1300,6 +1314,298 @@ impl RecordeApp {
         } else if close {
             self.init_repo_path = None;
             self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
+    fn render_reflog_modal(&mut self, ctx: &Context) {
+        use crate::git::reflog;
+
+        let (repo_path, entries) = {
+            let s = self.state.lock().unwrap();
+            (s.repo_path.clone(), s.reflog_entries.clone())
+        };
+
+        // Load on first open
+        if entries.is_empty() {
+            if let Some(ref p) = repo_path {
+                let loaded = reflog::load_reflog(p);
+                self.state.lock().unwrap().reflog_entries = loaded;
+            }
+        }
+
+        let mut close = false;
+        let mut recover_request: Option<(String, String)> = None; // (oid, branch_name)
+
+        egui::Window::new("Reflog")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_size([620.0, 480.0])
+            .show(ctx, |ui| {
+                let entries = self.state.lock().unwrap().reflog_entries.clone();
+
+                ui.horizontal(|ui| {
+                    ui.heading(RichText::new("Reflog").size(14.0).color(theme::TEXT_PRIMARY));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new("✕").fill(Color32::TRANSPARENT)).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                ui.separator();
+
+                egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+                    for entry in &entries {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&entry.short_oid).monospace().color(theme::ACCENT_TEAL).size(11.5));
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(&entry.refname).color(theme::TEXT_MUTED).size(11.0));
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(&entry.message).color(theme::TEXT_SECONDARY).size(11.5));
+                        }).response.context_menu(|ui| {
+                            ui.set_min_width(180.0);
+                            if ui.button("Recover as Branch…").clicked() {
+                                self.reflog_recover_oid = Some(entry.oid.clone());
+                                self.reflog_recover_input = format!("recover-{}", &entry.short_oid);
+                                ui.close_menu();
+                            }
+                            if ui.button("Copy SHA").clicked() {
+                                ui.output_mut(|o| o.copied_text = entry.oid.clone());
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                    if entries.is_empty() {
+                        ui.label(RichText::new("No reflog entries.").color(theme::TEXT_MUTED).size(12.0));
+                    }
+                });
+
+                if self.reflog_recover_oid.is_some() {
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Branch name for recovery:").color(theme::TEXT_SECONDARY).size(12.0));
+                    ui.add_space(4.0);
+                    ui.add(egui::TextEdit::singleline(&mut self.reflog_recover_input)
+                        .desired_width(f32::INFINITY));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let can = !self.reflog_recover_input.trim().is_empty();
+                        if ui.add_enabled(can, primary_btn("Recover")).clicked() {
+                            if let Some(ref oid) = self.reflog_recover_oid {
+                                recover_request = Some((oid.clone(), self.reflog_recover_input.trim().to_string()));
+                            }
+                        }
+                        if ui.add(secondary_btn("Cancel")).clicked() {
+                            self.reflog_recover_oid = None;
+                        }
+                    });
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(secondary_btn("Close")).clicked() { close = true; }
+                    });
+                });
+            });
+
+        if let Some((oid, branch)) = recover_request {
+            if let Some(ref p) = repo_path {
+                match reflog::recover(p, &oid, &branch) {
+                    Ok(()) => crate::git::branches::reload_repo(self.state.clone()),
+                    Err(e) => self.state.lock().unwrap().error = Some(e),
+                }
+            }
+            self.reflog_recover_oid = None;
+            self.state.lock().unwrap().modal = ModalKind::None;
+        } else if close {
+            self.state.lock().unwrap().reflog_entries.clear();
+            self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
+    fn render_bisect_modal(&mut self, ctx: &Context) {
+        use crate::git::bisect;
+
+        let (repo_path, bisect_active, bisect_oid, selected_oid) = {
+            let s = self.state.lock().unwrap();
+            (s.repo_path.clone(), s.bisect_in_progress, s.bisect_current_oid.clone(), s.selected_commit.clone())
+        };
+
+        let mut close = false;
+        let mut action: Option<String> = None; // "good" | "bad" | "reset"
+
+        modal_window(ctx, "Bisect", |ui| {
+            ui.set_min_width(380.0);
+
+            if !bisect_active {
+                ui.label(RichText::new("Start a bisect session to find which commit introduced a bug.").color(theme::TEXT_SECONDARY).size(12.0));
+                ui.add_space(8.0);
+                ui.label(RichText::new("Select the known-bad commit in the graph, then mark it bad. Select a known-good commit and mark it good.").color(theme::TEXT_MUTED).size(11.5));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.add(primary_btn("Start Bisect")).clicked() {
+                        if let Some(ref p) = repo_path {
+                            match bisect::start(p) {
+                                Ok(()) => { crate::git::branches::reload_repo(self.state.clone()); }
+                                Err(e) => { self.state.lock().unwrap().error = Some(e); }
+                            }
+                        }
+                    }
+                    if ui.add(secondary_btn("Cancel")).clicked() { close = true; }
+                });
+            } else {
+                ui.label(RichText::new("Bisect in progress").color(theme::ACCENT_TEAL).size(12.5).strong());
+                ui.add_space(6.0);
+
+                if let Some(ref oid) = bisect_oid {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Testing:").color(theme::TEXT_MUTED).size(12.0));
+                        ui.label(RichText::new(&oid[..7.min(oid.len())]).monospace().color(theme::ACCENT_TEAL).size(12.0));
+                    });
+                    ui.add_space(4.0);
+                }
+
+                let cur = selected_oid.as_deref().unwrap_or("");
+                let short = if cur.len() >= 7 { &cur[..7] } else { cur };
+                if cur.is_empty() {
+                    ui.label(RichText::new("Select a commit in the graph, then mark it good or bad.").color(theme::TEXT_MUTED).size(11.5));
+                } else {
+                    ui.label(RichText::new(format!("Selected: {}", short)).color(theme::TEXT_SECONDARY).size(12.0));
+                }
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    let has_sel = !cur.is_empty();
+                    if ui.add_enabled(has_sel, egui::Button::new(RichText::new("Mark Good").color(Color32::WHITE)).fill(theme::ACCENT_GREEN).min_size([110.0, 26.0].into())).clicked() {
+                        action = Some("good".into());
+                    }
+                    ui.add_space(6.0);
+                    if ui.add_enabled(has_sel, egui::Button::new(RichText::new("Mark Bad").color(Color32::WHITE)).fill(theme::ACCENT_RED).min_size([110.0, 26.0].into())).clicked() {
+                        action = Some("bad".into());
+                    }
+                    ui.add_space(12.0);
+                    if ui.add(secondary_btn("Reset")).clicked() { action = Some("reset".into()); }
+                });
+            }
+        });
+
+        if let Some(act) = action {
+            if let Some(ref p) = repo_path {
+                let sel = selected_oid.unwrap_or_default();
+                let result = match act.as_str() {
+                    "good"  => bisect::mark_good(p, &sel).map(|next| { if let Some(n) = next { self.state.lock().unwrap().selected_commit = Some(n); } }),
+                    "bad"   => bisect::mark_bad(p, &sel).map(|next| { if let Some(n) = next { self.state.lock().unwrap().selected_commit = Some(n); } }),
+                    "reset" => bisect::reset(p).map(|_| {}),
+                    _ => Ok(()),
+                };
+                if let Err(e) = result { self.state.lock().unwrap().error = Some(e); }
+                crate::git::branches::reload_repo(self.state.clone());
+            }
+            if act == "reset" { self.state.lock().unwrap().modal = ModalKind::None; }
+        }
+        if close { self.state.lock().unwrap().modal = ModalKind::None; }
+    }
+
+    fn render_compare_modal(&mut self, ctx: &Context, base_oid: String, compare_oid: String) {
+        use crate::git::operations::{load_compare_files, load_compare_diff};
+
+        let (repo_path, compare_files, compare_diff, compare_sel) = {
+            let s = self.state.lock().unwrap();
+            (s.repo_path.clone(), s.compare_files.clone(), s.compare_diff.clone(), s.compare_selected_file.clone())
+        };
+
+        // Load file list on first open
+        if compare_files.is_empty() {
+            load_compare_files(&base_oid, &compare_oid, self.state.clone());
+        }
+
+        let mut close = false;
+        let mut select_file: Option<String> = None;
+
+        egui::Window::new("Compare Commits")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_size([800.0, 560.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Base:").color(theme::TEXT_MUTED).size(11.5));
+                    ui.label(RichText::new(&base_oid[..7.min(base_oid.len())]).monospace().color(theme::ACCENT_TEAL).size(11.5));
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("Compare:").color(theme::TEXT_MUTED).size(11.5));
+                    ui.label(RichText::new(&compare_oid[..7.min(compare_oid.len())]).monospace().color(theme::ACCENT_TEAL).size(11.5));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new("✕").fill(Color32::TRANSPARENT)).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.separator();
+
+                ui.columns(2, |cols| {
+                    // Left: file list
+                    cols[0].label(RichText::new(format!("Changed files ({})", compare_files.len())).color(theme::TEXT_MUTED).size(11.0).strong());
+                    cols[0].add_space(4.0);
+                    egui::ScrollArea::vertical().id_source("cmp_files").max_height(460.0).show(&mut cols[0], |ui| {
+                        for file in &compare_files {
+                            let is_sel = compare_sel.as_deref() == Some(&file.path);
+                            let color = if is_sel { theme::BG_APP } else { theme::TEXT_SECONDARY };
+                            let resp = ui.selectable_label(is_sel,
+                                RichText::new(file.path.rsplit('/').next().unwrap_or(&file.path)).color(color).size(12.0))
+                                .on_hover_text(&file.path);
+                            if resp.clicked() { select_file = Some(file.path.clone()); }
+                        }
+                        if compare_files.is_empty() {
+                            ui.label(RichText::new("Loading…").color(theme::TEXT_MUTED).size(12.0));
+                        }
+                    });
+
+                    // Right: diff view
+                    if let Some(ref diff) = compare_diff {
+                        cols[1].label(RichText::new(format!("+{}  −{}", diff.additions, diff.deletions)).color(theme::TEXT_MUTED).size(11.0));
+                        cols[1].add_space(4.0);
+                        egui::ScrollArea::vertical().id_source("cmp_diff").max_height(460.0).show(&mut cols[1], |ui| {
+                            for hunk in &diff.hunks {
+                                ui.label(RichText::new(&hunk.header).monospace().color(theme::ACCENT_PURPLE).size(11.0).background_color(theme::BG_DIFF_HUNK));
+                                for line in &hunk.lines {
+                                    let (color, bg) = match line.origin {
+                                        '+' => (theme::ACCENT_GREEN, theme::BG_DIFF_ADD),
+                                        '-' => (theme::ACCENT_RED,   theme::BG_DIFF_DEL),
+                                        _   => (theme::TEXT_SECONDARY, Color32::TRANSPARENT),
+                                    };
+                                    let text = format!("{}{}", line.origin, line.content.trim_end_matches('\n'));
+                                    let label = egui::RichText::new(&text).monospace().color(color).size(11.5);
+                                    if bg != Color32::TRANSPARENT {
+                                        ui.label(label.background_color(bg));
+                                    } else {
+                                        ui.label(label);
+                                    }
+                                }
+                            }
+                        });
+                    } else if compare_sel.is_some() {
+                        cols[1].label(RichText::new("Loading diff…").color(theme::TEXT_MUTED).size(12.0));
+                    } else {
+                        cols[1].label(RichText::new("Select a file to view its diff.").color(theme::TEXT_MUTED).size(12.0));
+                    }
+                });
+            });
+
+        if let Some(fp) = select_file {
+            self.compare_file_selected = Some(fp.clone());
+            self.state.lock().unwrap().compare_selected_file = Some(fp.clone());
+            load_compare_diff(&base_oid, &compare_oid, &fp, self.state.clone());
+        }
+
+        if close {
+            let mut s = self.state.lock().unwrap();
+            s.compare_files.clear();
+            s.compare_diff = None;
+            s.compare_selected_file = None;
+            s.compare_base_oid = None;
+            s.modal = ModalKind::None;
         }
     }
 
