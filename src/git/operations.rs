@@ -11,22 +11,28 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
         let result = load_repo_inner(&path);
         let mut s = state.lock().unwrap();
         match result {
-            Ok((graph, head_branch, ahead_behind, dirty_count, files, stashes)) => {
+            Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, files, stashes)) => {
+                let n = graph.nodes.len();
+                s.console_log.push(format!("Opened {} ({} commits, branch: {})", path.display(), n, head_branch));
                 s.repo_path = Some(path);
                 s.commit_graph = Some(graph);
                 s.head_branch = Some(head_branch);
                 s.ahead_behind = ahead_behind;
+                s.branch_ahead_behind = branch_ahead_behind;
                 s.dirty_count = dirty_count;
                 s.working_dir_files = files;
                 s.stashes = stashes;
                 s.error = None;
             }
-            Err(e) => s.error = Some(e.message().to_string()),
+            Err(e) => {
+                s.console_log.push(format!("error: {}", e.message()));
+                s.error = Some(e.message().to_string());
+            }
         }
     });
 }
 
-type RepoInnerResult = (CommitGraph, String, Option<(usize, usize)>, usize, Vec<WorkingDirFile>, Vec<StashEntry>);
+type RepoInnerResult = (CommitGraph, String, Option<(usize, usize)>, std::collections::HashMap<String,(usize,usize)>, usize, Vec<WorkingDirFile>, Vec<StashEntry>);
 
 fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
     // Immutable pass: graph + head + status + ahead/behind
@@ -35,6 +41,7 @@ fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
     let dirty_count;
     let status;
     let ahead_behind;
+    let branch_ahead_behind;
     {
         let repo = git2::Repository::open(path)?;
         graph = CommitGraph::from_repo(&repo)?;
@@ -45,6 +52,7 @@ fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
             .unwrap_or_else(|| "HEAD".to_string());
         (dirty_count, status) = collect_status(&repo)?;
         ahead_behind = remote::compute_ahead_behind(&repo);
+        branch_ahead_behind = remote::compute_all_ahead_behind(&repo);
     }
 
     // Mutable pass: stashes
@@ -53,7 +61,7 @@ fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
         branches::collect_stashes(&mut repo)
     };
 
-    Ok((graph, head_branch, ahead_behind, dirty_count, status, stashes))
+    Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, status, stashes))
 }
 
 fn collect_status(repo: &git2::Repository) -> Result<(usize, Vec<WorkingDirFile>), git2::Error> {

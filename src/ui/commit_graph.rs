@@ -29,9 +29,10 @@ impl CommitGraphView {
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        let (graph_opt, selected, search_active, search_query) = {
+        let (graph_opt, selected, head_branch, show_all_branches, search_active, search_query) = {
             let s = self.state.lock().unwrap();
-            (s.commit_graph.clone(), s.selected_commit.clone(), s.search_active, s.search_query.clone())
+            (s.commit_graph.clone(), s.selected_commit.clone(), s.head_branch.clone().unwrap_or_default(),
+             s.show_all_branches, s.search_active, s.search_query.clone())
         };
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_APP);
@@ -64,7 +65,7 @@ impl CommitGraphView {
             ui.allocate_ui_at_rect(bar_rect, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(10.0);
-                    ui.label(egui::RichText::new("🔍").size(13.0).color(theme::TEXT_MUTED));
+                    ui.label(egui::RichText::new("⌕").size(13.0).color(theme::TEXT_MUTED));
                     ui.add_space(6.0);
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut new_query)
@@ -118,7 +119,31 @@ impl CommitGraphView {
         let scroll_start = header_top + HEADER_H;
         let scroll_rect = Rect::from_min_max(Pos2::new(ui.min_rect().min.x, scroll_start), ui.max_rect().max);
 
-        let nodes  = graph.nodes.clone();
+        // Filter to current branch only when show_all_branches is false
+        let nodes: Vec<_> = if show_all_branches {
+            graph.nodes.clone()
+        } else {
+            // Keep commits reachable from HEAD (refs containing head_branch)
+            let mut keep = std::collections::HashSet::new();
+            for node in &graph.nodes {
+                if node.refs.iter().any(|r| r == &head_branch) {
+                    keep.insert(node.oid.clone());
+                    break;
+                }
+            }
+            // Walk ancestry: keep nodes whose OID is reachable
+            // Simple approach: keep nodes up to and including where head_branch ref appears
+            let mut reached_head = false;
+            graph.nodes.iter().cloned().filter(|n| {
+                if !reached_head {
+                    if n.refs.iter().any(|r| r == &head_branch) { reached_head = true; }
+                    true
+                } else {
+                    // Keep commits that are ancestors (no branch ref from another tip)
+                    !n.refs.iter().any(|r| r != &head_branch && !r.starts_with("origin/") && !r.contains('/'))
+                }
+            }).collect()
+        };
         let edges  = graph.edges.clone();
         let total_h = nodes.len() as f32 * ROW_H;
 
