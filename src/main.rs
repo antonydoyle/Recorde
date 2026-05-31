@@ -4,6 +4,7 @@ mod config;
 mod crash;
 mod git;
 mod icons;
+mod providers;
 mod state;
 mod theme;
 mod ui;

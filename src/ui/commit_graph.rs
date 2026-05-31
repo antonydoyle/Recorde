@@ -36,6 +36,7 @@ pub struct CommitGraphView {
     cols_dirty: bool,
     last_saved_refs_w: f32,
     last_saved_graph_w: f32,
+    colorblind: bool,
 }
 
 impl CommitGraphView {
@@ -51,7 +52,12 @@ impl CommitGraphView {
             cols_dirty: false,
             last_saved_refs_w: REFS_W_DEF,
             last_saved_graph_w: GRAPH_W_DEF,
+            colorblind: false,
         }
+    }
+
+    pub fn set_colorblind(&mut self, enabled: bool) {
+        self.colorblind = enabled;
     }
 
     /// Restore saved column widths (called after opening a repo).
@@ -305,7 +311,7 @@ impl CommitGraphView {
                         let to_y   = origin.y + edge.to_row   as f32 * ROW_H + ROW_H / 2.0;
                         if to_y < clip.top() - ROW_H || from_y > clip.bottom() + ROW_H { continue; }
 
-                        let color  = theme::lane_color(edge.from_lane);
+                        let color  = theme::lane_color_for_palette(edge.from_lane, self.colorblind);
                         let from_x = origin.x + refs_w + GRAPH_LEFT + edge.from_lane as f32 * LANE_W;
                         let to_x   = origin.x + refs_w + GRAPH_LEFT + edge.to_lane   as f32 * LANE_W;
 
@@ -350,7 +356,7 @@ impl CommitGraphView {
                         if row_resp.clicked() { new_selection = Some(Some(node.oid.clone())); }
 
                         let fade = if dim { 0.25 } else { 1.0 };
-                        let lane_col = theme::lane_color(node.lane).gamma_multiply(fade);
+                        let lane_col = theme::lane_color_for_palette(node.lane, self.colorblind).gamma_multiply(fade);
                         let dot_x = origin.x + refs_w + GRAPH_LEFT + node.lane as f32 * LANE_W;
 
                         // Node circle
