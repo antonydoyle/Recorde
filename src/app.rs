@@ -731,7 +731,23 @@ impl RecordeApp {
                 else if caps.revert_in_progress { "Reverting" }
                 else { "Normal" };
             health_row(ui, "State", state_str);
-            health_row(ui, "LFS", if caps.lfs_installed { "installed" } else { "not installed" });
+            // LFS row — three states
+            if !caps.lfs_installed {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{:<14}", "LFS")).color(theme::TEXT_MUTED).size(11.5).monospace());
+                    ui.label(RichText::new("not installed").color(theme::TEXT_MUTED).size(11.5));
+                });
+            } else if !caps.lfs_active {
+                health_row(ui, "LFS", "installed, not used");
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{:<14}", "LFS")).color(theme::TEXT_MUTED).size(11.5).monospace());
+                    ui.label(RichText::new("active").color(theme::ACCENT_TEAL).size(11.5));
+                    if !caps.lfs_patterns.is_empty() {
+                        ui.label(RichText::new(format!("({})", caps.lfs_patterns.join(", "))).color(theme::TEXT_SECONDARY).size(11.5));
+                    }
+                });
+            }
             health_row(ui, "Submodules", if caps.has_submodules { "present" } else { "none" });
             health_row(ui, "Provider", &format!("{:?}", caps.provider));
         }
