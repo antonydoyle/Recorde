@@ -1,5 +1,6 @@
 use egui::{Color32, FontId, Pos2, Rect, Response, RichText, Stroke, Ui, Vec2};
 
+use crate::icons;
 use crate::theme;
 
 // ── Pill / badge ──────────────────────────────────────────────────────────────
@@ -104,6 +105,39 @@ pub fn toolbar_btn(ui: &mut Ui, label: &str, enabled: bool) -> Response {
         .stroke(Stroke::new(1.0, theme::BORDER))
         .rounding(6.0),
     )
+}
+
+/// Toolbar button with a Material Icon glyph followed by a text label.
+pub fn toolbar_btn_icon(ui: &mut Ui, icon: char, label: &str, enabled: bool) -> Response {
+    let col = if enabled { theme::TEXT_SECONDARY } else { theme::TEXT_MUTED };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &icon.to_string(),
+        0.0,
+        egui::TextFormat { font_id: icons::font(15.0), color: col, ..Default::default() },
+    );
+    job.append(
+        &format!("  {label}"),
+        0.0,
+        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: col, ..Default::default() },
+    );
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(job)
+            .fill(theme::BG_PANEL_ALT)
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .rounding(6.0),
+    )
+}
+
+/// Icon-only button using Material Icons font.
+pub fn icon_btn_mat(ui: &mut Ui, icon: char, size: f32, tip: &str) -> Response {
+    ui.add(
+        egui::Button::new(icons::rich(icon, size).color(theme::TEXT_MUTED))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(Stroke::NONE),
+    )
+    .on_hover_text(tip)
 }
 
 // ── Branch pill (graph labels) ────────────────────────────────────────────────

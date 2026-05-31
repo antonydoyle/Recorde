@@ -1,5 +1,6 @@
 use egui::{Context, RichText, Stroke};
 
+use crate::icons;
 use crate::state::SharedState;
 use crate::theme;
 
@@ -76,11 +77,9 @@ impl StatusBar {
                             ui.add_space(4.0);
                         }
 
-                        ui.label(
-                            RichText::new(format!("⎇  {}", branch))
-                                .color(theme::ACCENT_TEAL)
-                                .size(11.5),
-                        );
+                        ui.label(icons::rich(icons::COMMIT, 13.0).color(theme::ACCENT_TEAL));
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(&branch).color(theme::ACCENT_TEAL).size(11.5));
                     });
                 });
             });
