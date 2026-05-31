@@ -68,3 +68,8 @@ pub const OPEN_IN_NEW:     char = '\u{E89E}';
 pub const BRIGHTNESS:      char = '\u{E3A6}'; // brightness_6 — theme toggle
 pub const DARK_MODE:       char = '\u{E51C}'; // dark_mode
 pub const LIGHT_MODE:      char = '\u{E518}'; // light_mode
+
+pub const BUG_REPORT:      char = '\u{E868}'; // provider integrations / issues
+pub const ROCKET_LAUNCH:   char = '\u{EA9C}'; // releases
+pub const CHECK_CIRCLE:    char = '\u{E86C}'; // CI success
+pub const CANCEL:          char = '\u{E5C9}'; // CI failure
