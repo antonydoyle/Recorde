@@ -139,6 +139,35 @@ fn run_git_apply(repo_path: &Path, patch: &str, extra_args: &[&str]) -> Result<(
     }
 }
 
+// ── File I/O ──────────────────────────────────────────────────────────────────
+
+/// Write the complete unified diff for all hunks in `diff` to a `.patch` file.
+pub fn export_patch(diff: &crate::state::FileDiff, dest: &Path) -> Result<(), String> {
+    let mut content = String::new();
+    for hunk in &diff.hunks {
+        content.push_str(&hunk_patch(&diff.file_path, hunk));
+        content.push('\n');
+    }
+    std::fs::write(dest, &content).map_err(|e| e.to_string())
+}
+
+/// Apply a patch file to the git index: `git apply --cached <path>`.
+pub fn import_patch_file(repo_path: &Path, patch_path: &Path) -> Result<(), GitError> {
+    let out = std::process::Command::new("git")
+        .arg("-C").arg(repo_path)
+        .args(["apply", "--cached"])
+        .arg(patch_path)
+        .output()
+        .map_err(|e| GitError::Command { cmd: "git apply --cached".into(), stderr: e.to_string() })?;
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(GitError::Command { cmd: "git apply --cached".into(), stderr })
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

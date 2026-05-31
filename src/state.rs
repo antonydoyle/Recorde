@@ -137,6 +137,8 @@ pub enum ModalKind {
     InitRepo,
     RenameBranch { old_name: String },
     ConfirmDetachedCheckout { oid: String },
+    StashWithMessage,
+    CreateBranchFromStash { stash_index: usize },
 }
 
 #[derive(Default)]
