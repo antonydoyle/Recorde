@@ -24,7 +24,7 @@ pub enum RightTab { Changes, Details }
 enum ProviderTab { #[default] Issues, Ci, Releases }
 
 #[derive(PartialEq, Clone, Copy)]
-enum SettingsTab { App, Accounts, Repository, About }
+enum SettingsTab { App, Ui, Accounts, Repository, About }
 
 pub struct RecordeApp {
     state: SharedState,
@@ -371,7 +371,9 @@ impl RecordeApp {
                 ui.label(styled_label("Branch name"));
                 ui.add_space(4.0);
                 let r = ui.add(egui::TextEdit::singleline(&mut self.create_branch_name)
-                    .desired_width(f32::INFINITY).hint_text("e.g. feat/my-feature"));
+                    .desired_width(f32::INFINITY)
+                    .margin(egui::Vec2::new(8.0, 5.0))
+                    .hint_text("e.g. feat/my-feature"));
                 r.request_focus();
                 if let Some(ref oid) = from_oid {
                     ui.add_space(4.0);
@@ -413,7 +415,9 @@ impl RecordeApp {
                 ui.label(styled_label("Tag name"));
                 ui.add_space(4.0);
                 let r = ui.add(egui::TextEdit::singleline(&mut self.create_tag_name)
-                    .desired_width(f32::INFINITY).hint_text("e.g. v1.0.0"));
+                    .desired_width(f32::INFINITY)
+                    .margin(egui::Vec2::new(8.0, 5.0))
+                    .hint_text("e.g. v1.0.0"));
                 r.request_focus();
                 if let Some(ref oid) = from_oid {
                     ui.add_space(4.0);
@@ -541,6 +545,7 @@ impl RecordeApp {
                         let r = ui.add(
                             egui::TextEdit::singleline(&mut self.command_palette_query)
                                 .desired_width(f32::INFINITY)
+                                .margin(egui::Vec2::new(8.0, 5.0))
                                 .hint_text("Type a command…")
                                 .font(egui::FontId::proportional(14.0)),
                         );
@@ -636,6 +641,7 @@ impl RecordeApp {
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut self.branch_switcher_query)
                         .desired_width(f32::INFINITY)
+                        .margin(egui::Vec2::new(8.0, 5.0))
                         .hint_text("Filter branches…"),
                 );
                 r.request_focus();
@@ -684,6 +690,7 @@ impl RecordeApp {
 
                 ui.horizontal(|ui| {
                     settings_tab_button(ui, &mut self.settings_tab, SettingsTab::App, "App");
+                    settings_tab_button(ui, &mut self.settings_tab, SettingsTab::Ui, "UI");
                     settings_tab_button(ui, &mut self.settings_tab, SettingsTab::Accounts, "Accounts & SSH");
                     settings_tab_button(ui, &mut self.settings_tab, SettingsTab::Repository, "Repository");
                     settings_tab_button(ui, &mut self.settings_tab, SettingsTab::About, "About");
@@ -692,7 +699,8 @@ impl RecordeApp {
                 ui.add_space(8.0);
 
                 match self.settings_tab {
-                    SettingsTab::App => self.render_app_settings(ctx, ui),
+                    SettingsTab::App => self.render_app_settings(ui),
+                    SettingsTab::Ui => self.render_ui_settings(ctx, ui),
                     SettingsTab::Accounts => self.render_accounts_tab(ui),
                     SettingsTab::Repository => self.render_repo_settings(ui),
                     SettingsTab::About => self.render_about(ui),
@@ -705,7 +713,7 @@ impl RecordeApp {
             });
     }
 
-    fn render_app_settings(&mut self, ctx: &Context, ui: &mut egui::Ui) {
+    fn render_ui_settings(&mut self, ctx: &Context, ui: &mut egui::Ui) {
         if ui.checkbox(&mut self.dark_theme, RichText::new("Dark theme").color(theme::text_secondary())).changed() {
             self.config.dark_theme = self.dark_theme;
             self.config.save();
@@ -716,6 +724,36 @@ impl RecordeApp {
             self.config.save();
             theme::apply(ctx, self.dark_theme, self.high_contrast);
         }
+
+        // ── UI scale ─────────────────────────────────────────────────────────
+        ui.add_space(12.0);
+        ui.label(RichText::new("UI scale").color(theme::text_secondary()).size(12.5).strong());
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut self.config.font_scale, 0.75..=2.0)
+                .step_by(0.25)
+                .text(""));
+            if ui.add(secondary_btn("Apply")).clicked() {
+                ctx.set_pixels_per_point(self.config.font_scale);
+                self.config.save();
+            }
+        });
+        ui.label(styled_muted("1.0 = default. Restart not required."));
+
+        // ── Accessibility ────────────────────────────────────────────────────
+        ui.add_space(12.0);
+        ui.label(RichText::new("Accessibility").color(theme::text_secondary()).size(12.5).strong());
+        ui.add_space(4.0);
+        if ui.checkbox(&mut self.config.colorblind_graph, RichText::new("Color-blind-safe graph colours").color(theme::text_secondary())).changed() {
+            self.commit_graph_view.set_colorblind(self.config.colorblind_graph);
+            self.config.save();
+        }
+
+        ui.add_space(8.0);
+        ui.label(styled_muted("Split diff view is controlled from the diff header."));
+    }
+
+    fn render_app_settings(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.label(RichText::new("Default editor").color(theme::text_secondary()).size(12.5).strong());
         ui.add_space(4.0);
@@ -723,6 +761,7 @@ impl RecordeApp {
             ui.add_sized(
                 [340.0, 28.0],
                 egui::TextEdit::singleline(&mut self.default_editor_input)
+                    .margin(egui::Vec2::new(8.0, 5.0))
                     .hint_text("code, codium, zed, vim, ..."),
             );
             if ui.add(secondary_btn("Save")).clicked() {
@@ -736,8 +775,6 @@ impl RecordeApp {
             }
         });
         ui.label(styled_muted("Used by Repository > Open in Editor. Arguments are supported, e.g. code --reuse-window."));
-        ui.add_space(8.0);
-        ui.label(styled_muted("Split diff view is controlled from the diff header."));
 
         // ── Pull strategy ────────────────────────────────────────────────────
         ui.add_space(12.0);
@@ -768,7 +805,11 @@ impl RecordeApp {
             ui.add_enabled_ui(self.config.auto_fetch, |ui| {
                 ui.label(RichText::new("Interval (seconds)").color(theme::text_secondary()));
                 let mut interval_str = self.config.auto_fetch_interval_secs.to_string();
-                if ui.add_sized([80.0, 28.0], egui::TextEdit::singleline(&mut interval_str)).changed() {
+                if ui.add_sized(
+                    [80.0, 28.0],
+                    egui::TextEdit::singleline(&mut interval_str)
+                        .margin(egui::Vec2::new(8.0, 5.0)),
+                ).changed() {
                     if let Ok(v) = interval_str.trim().parse::<u32>() {
                         self.config.auto_fetch_interval_secs = v;
                         self.config.save();
@@ -786,6 +827,7 @@ impl RecordeApp {
             ui.add_sized(
                 [340.0, 28.0],
                 egui::TextEdit::singleline(&mut self.terminal_input)
+                    .margin(egui::Vec2::new(8.0, 5.0))
                     .hint_text("xterm, gnome-terminal, konsole, ..."),
             );
             if ui.add(secondary_btn("Save")).clicked() {
@@ -799,6 +841,7 @@ impl RecordeApp {
             ui.add_sized(
                 [340.0, 28.0],
                 egui::TextEdit::singleline(&mut self.diff_tool_input)
+                    .margin(egui::Vec2::new(8.0, 5.0))
                     .hint_text("meld, kdiff3, vimdiff, ..."),
             );
             if ui.add(secondary_btn("Save")).clicked() {
@@ -812,6 +855,7 @@ impl RecordeApp {
             ui.add_sized(
                 [340.0, 28.0],
                 egui::TextEdit::singleline(&mut self.merge_tool_input)
+                    .margin(egui::Vec2::new(8.0, 5.0))
                     .hint_text("meld, kdiff3, ..."),
             );
             if ui.add(secondary_btn("Save")).clicked() {
@@ -820,29 +864,6 @@ impl RecordeApp {
             }
         });
 
-        // ── UI scale ─────────────────────────────────────────────────────────
-        ui.add_space(12.0);
-        ui.label(RichText::new("UI scale").color(theme::text_secondary()).size(12.5).strong());
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.add(egui::Slider::new(&mut self.config.font_scale, 0.75..=2.0)
-                .step_by(0.25)
-                .text(""));
-            if ui.add(secondary_btn("Apply")).clicked() {
-                ctx.set_pixels_per_point(self.config.font_scale);
-                self.config.save();
-            }
-        });
-        ui.label(styled_muted("1.0 = default. Restart not required."));
-
-        // ── Accessibility ────────────────────────────────────────────────────
-        ui.add_space(12.0);
-        ui.label(RichText::new("Accessibility").color(theme::text_secondary()).size(12.5).strong());
-        ui.add_space(4.0);
-        if ui.checkbox(&mut self.config.colorblind_graph, RichText::new("Color-blind-safe graph colours").color(theme::text_secondary())).changed() {
-            self.commit_graph_view.set_colorblind(self.config.colorblind_graph);
-            self.config.save();
-        }
     }
 
     fn render_accounts_tab(&mut self, ui: &mut egui::Ui) {
@@ -914,6 +935,7 @@ impl RecordeApp {
                 ui.add_sized(
                     [260.0, 28.0],
                     egui::TextEdit::singleline(&mut self.add_account_token)
+                        .margin(egui::Vec2::new(8.0, 5.0))
                         .password(true)
                         .hint_text("ghp_… / glpat-…"),
                 );
@@ -1121,6 +1143,7 @@ impl RecordeApp {
             ui.add_sized(
                 [340.0, 28.0],
                 egui::TextEdit::singleline(&mut self.origin_url_input)
+                    .margin(egui::Vec2::new(8.0, 5.0))
                     .hint_text("https://github.com/owner/repo.git"),
             );
             if ui.add(secondary_btn("Save")).clicked() {
@@ -1679,7 +1702,8 @@ impl RecordeApp {
             ui.label(styled_label("New name"));
             ui.add_space(4.0);
             let r = ui.add(egui::TextEdit::singleline(&mut self.rename_branch_input)
-                .desired_width(f32::INFINITY));
+                .desired_width(f32::INFINITY)
+                .margin(egui::Vec2::new(8.0, 5.0)));
             r.request_focus();
             ui.add_space(12.0);
             let can = !self.rename_branch_input.trim().is_empty()
@@ -1734,7 +1758,9 @@ impl RecordeApp {
             ui.label(styled_label("Stash message"));
             ui.add_space(4.0);
             let r = ui.add(egui::TextEdit::singleline(&mut self.stash_message_input)
-                .desired_width(f32::INFINITY).hint_text("WIP"));
+                .desired_width(f32::INFINITY)
+                .margin(egui::Vec2::new(8.0, 5.0))
+                .hint_text("WIP"));
             r.request_focus();
             ui.add_space(12.0);
             ui.horizontal(|ui| {
@@ -1765,7 +1791,9 @@ impl RecordeApp {
             ui.label(styled_label("Branch name"));
             ui.add_space(4.0);
             let r = ui.add(egui::TextEdit::singleline(&mut self.stash_branch_input)
-                .desired_width(f32::INFINITY).hint_text("e.g. feat/my-feature"));
+                .desired_width(f32::INFINITY)
+                .margin(egui::Vec2::new(8.0, 5.0))
+                .hint_text("e.g. feat/my-feature"));
             r.request_focus();
             ui.add_space(4.0);
             ui.label(styled_muted("Creates a branch from the stash's base commit, applies the stash, and drops it."));
@@ -1800,6 +1828,7 @@ impl RecordeApp {
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.clone_url)
                     .desired_width(f32::INFINITY)
+                    .margin(egui::Vec2::new(8.0, 5.0))
                     .hint_text("https://github.com/owner/repo.git"),
             );
             r.request_focus();
@@ -1965,7 +1994,8 @@ impl RecordeApp {
                     ui.label(RichText::new("Branch name for recovery:").color(theme::text_secondary()).size(12.0));
                     ui.add_space(4.0);
                     ui.add(egui::TextEdit::singleline(&mut self.reflog_recover_input)
-                        .desired_width(f32::INFINITY));
+                        .desired_width(f32::INFINITY)
+                        .margin(egui::Vec2::new(8.0, 5.0)));
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         let can = !self.reflog_recover_input.trim().is_empty();
@@ -3058,7 +3088,8 @@ impl RecordeApp {
                 ui.label(styled_label("Branch name"));
                 ui.add_space(4.0);
                 let r = ui.add(egui::TextEdit::singleline(&mut self.branch_from_issue_input)
-                    .desired_width(f32::INFINITY));
+                    .desired_width(f32::INFINITY)
+                    .margin(egui::Vec2::new(8.0, 5.0)));
                 r.request_focus();
                 ui.add_space(4.0);
                 let can = !self.branch_from_issue_input.trim().is_empty();
@@ -3157,7 +3188,11 @@ fn settings_text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
         ui.set_width(460.0);
         ui.label(RichText::new(label).color(theme::text_muted()).font(egui::FontId::monospace(11.0)));
         ui.add_space(8.0);
-        ui.add_sized([340.0, 28.0], egui::TextEdit::singleline(value));
+        ui.add_sized(
+            [340.0, 28.0],
+            egui::TextEdit::singleline(value)
+                .margin(egui::Vec2::new(8.0, 5.0)),
+        );
     });
 }
 
