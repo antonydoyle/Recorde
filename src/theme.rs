@@ -271,16 +271,16 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     ctx.options_mut(|o| o.warn_on_id_clash = false);
 }
 
-pub fn kill_debug(style: &mut egui::Style) {
-    style.debug.show_expand_width        = false;
-    style.debug.show_expand_height       = false;
-    style.debug.show_resize              = false;
-    style.debug.show_interactive_widgets = false;
-    style.debug.show_widget_hits         = false;
+pub fn kill_debug(_style: &mut egui::Style) {
     #[cfg(debug_assertions)]
     {
-        style.debug.debug_on_hover                    = false;
-        style.debug.debug_on_hover_with_all_modifiers = false;
-        style.debug.hover_shows_next                  = false;
+        _style.debug.show_expand_width        = false;
+        _style.debug.show_expand_height       = false;
+        _style.debug.show_resize              = false;
+        _style.debug.show_interactive_widgets = false;
+        _style.debug.show_widget_hits         = false;
+        _style.debug.debug_on_hover                    = false;
+        _style.debug.debug_on_hover_with_all_modifiers = false;
+        _style.debug.hover_shows_next                  = false;
     }
 }
