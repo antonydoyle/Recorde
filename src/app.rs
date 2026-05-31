@@ -51,15 +51,23 @@ impl RecordeApp {
 
         // Load Noto Symbols as egui fallback font for full Unicode symbol coverage.
         // This fixes missing-glyph squares for ⎇ ⚑ ⊞ ⇅ ☀ ⌘ and similar.
+        let mut fonts = egui::FontDefinitions::default();
         const NOTO_SYMBOLS2: &str =
             "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf";
         if let Ok(bytes) = std::fs::read(NOTO_SYMBOLS2) {
-            let mut fonts = egui::FontDefinitions::default();
             fonts.font_data.insert("noto_symbols2".into(), egui::FontData::from_owned(bytes));
             fonts.families.entry(egui::FontFamily::Proportional).or_default().push("noto_symbols2".into());
             fonts.families.entry(egui::FontFamily::Monospace).or_default().push("noto_symbols2".into());
-            cc.egui_ctx.set_fonts(fonts);
         }
+        // Material Icons — named font family for icon rendering
+        if let Ok(bytes) = std::fs::read("assets/MaterialIcons.ttf") {
+            fonts.font_data.insert("material-icons".into(), egui::FontData::from_owned(bytes));
+            fonts.families.insert(
+                egui::FontFamily::Name("material-icons".into()),
+                vec!["material-icons".into()],
+            );
+        }
+        cc.egui_ctx.set_fonts(fonts);
 
         theme::apply(&cc.egui_ctx, dark_theme);
 
@@ -121,6 +129,7 @@ impl RecordeApp {
             }
             ToolbarAction::OpenCommandPalette => self.command_palette_open = true,
             ToolbarAction::OpenBranchSwitcher => self.branch_switcher_open = true,
+            ToolbarAction::OpenUserMenu => self.settings_open = true, // routed to settings for now
             ToolbarAction::ToggleAllBranches => {
                 let mut s = self.state.lock().unwrap();
                 s.show_all_branches = !s.show_all_branches;
