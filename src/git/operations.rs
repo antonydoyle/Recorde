@@ -13,7 +13,7 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
         let result = load_repo_inner(&path);
         let mut s = state.lock().unwrap();
         match result {
-            Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, files, stashes, conflicts, merged, caps)) => {
+            Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, files, stashes, conflicts, merged, caps, submodules, worktrees)) => {
                 let n = graph.nodes.len();
                 s.console_log.push(format!("Opened {} ({} commits, branch: {})", path.display(), n, head_branch));
                 let bisect_active = crate::git::reflog::bisect_is_active(&path);
@@ -31,6 +31,8 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
                 s.capabilities = Some(caps);
                 s.bisect_in_progress = bisect_active;
                 s.bisect_current_oid = bisect_oid;
+                s.submodules = submodules;
+                s.worktrees = worktrees;
                 s.error = None;
                 s.remote_op = None;
             }
@@ -42,7 +44,7 @@ pub fn load_repo(path: PathBuf, state: SharedState) {
     });
 }
 
-type RepoInnerResult = (CommitGraph, String, Option<(usize, usize)>, std::collections::HashMap<String,(usize,usize)>, usize, Vec<WorkingDirFile>, Vec<StashEntry>, Vec<ConflictedFile>, HashSet<String>, crate::git::capabilities::RepoCapabilities);
+type RepoInnerResult = (CommitGraph, String, Option<(usize, usize)>, std::collections::HashMap<String,(usize,usize)>, usize, Vec<WorkingDirFile>, Vec<StashEntry>, Vec<ConflictedFile>, HashSet<String>, crate::git::capabilities::RepoCapabilities, Vec<crate::state::SubmoduleInfo>, Vec<crate::state::WorktreeInfo>);
 
 fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
     // Immutable pass: graph + head + status + ahead/behind
@@ -78,7 +80,29 @@ fn load_repo_inner(path: &Path) -> Result<RepoInnerResult, git2::Error> {
 
     let caps = capabilities::detect(path);
 
-    Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, status, stashes, conflicts, merged, caps))
+    // Convert git::submodules::SubmoduleInfo → state::SubmoduleInfo
+    let submodules: Vec<crate::state::SubmoduleInfo> = crate::git::submodules::list(path)
+        .into_iter()
+        .map(|s| crate::state::SubmoduleInfo {
+            name:        s.name,
+            path:        s.path,
+            url:         s.url,
+            initialized: s.initialized,
+        })
+        .collect();
+
+    // Convert git::worktrees::WorktreeInfo → state::WorktreeInfo
+    let worktrees: Vec<crate::state::WorktreeInfo> = crate::git::worktrees::list(path)
+        .into_iter()
+        .map(|w| crate::state::WorktreeInfo {
+            path:     w.path,
+            head_oid: w.head_oid,
+            branch:   w.branch,
+            is_main:  w.is_main,
+        })
+        .collect();
+
+    Ok((graph, head_branch, ahead_behind, branch_ahead_behind, dirty_count, status, stashes, conflicts, merged, caps, submodules, worktrees))
 }
 
 fn collect_merged_into_head(repo: &git2::Repository) -> HashSet<String> {

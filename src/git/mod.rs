@@ -18,3 +18,5 @@ pub mod remote;
 pub mod repo;
 pub mod runner;
 pub mod staging;
+pub mod submodules;
+pub mod worktrees;
