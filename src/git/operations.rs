@@ -483,3 +483,73 @@ fn compute_compare_diff(repo_path: &Path, base_oid: &str, cmp_oid: &str, file_pa
     let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), Some(&mut opts))?;
     parse_diff(diff, cmp_oid, file_path)
 }
+
+// ── Phase 9: PR / MR loading ──────────────────────────────────────────────────
+
+/// Load the PR/MR list for the current repo's provider in a background thread.
+pub fn load_prs(state: crate::state::SharedState) {
+    use crate::providers::{PrFilter, parse_remote};
+    use crate::git::capabilities::ProviderType;
+
+    let (repo_path, caps, filter) = {
+        let s = state.lock().unwrap();
+        (s.repo_path.clone(), s.capabilities.clone(), s.pr_filter)
+    };
+
+    let Some(path) = repo_path else { return };
+    let Some(caps) = caps else { return };
+
+    // Find the origin remote URL (explicit lets required for git2 lifetimes)
+    let url = (|| -> Option<String> {
+        let repo = git2::Repository::open(&path).ok()?;
+        let remote = repo.find_remote("origin").ok()?;
+        remote.url().map(str::to_string)
+    })();
+    let url = match url {
+        Some(u) => u,
+        None => {
+            state.lock().unwrap().pr_error = Some("No 'origin' remote found.".into());
+            return;
+        }
+    };
+
+    let (owner, repo, host) = match parse_remote(&url) {
+        Some(t) => t,
+        None => {
+            state.lock().unwrap().pr_error = Some("Could not parse remote URL.".into());
+            return;
+        }
+    };
+
+    let token = match crate::auth::store::lookup_for_url(&url).map(|(_, t)| t) {
+        Some(t) => t,
+        None => {
+            state.lock().unwrap().pr_error = Some(
+                format!("No token stored for {}. Add an account in Settings > Accounts & SSH.", host)
+            );
+            return;
+        }
+    };
+
+    let api_state = match filter {
+        PrFilter::Closed => "closed",
+        PrFilter::All    => "all",
+        _                => "open",
+    };
+
+    state.lock().unwrap().pr_loading = true;
+
+    std::thread::spawn(move || {
+        let result = match caps.provider {
+            ProviderType::GitHub => crate::providers::github::list_prs(&host, &owner, &repo, &token, api_state),
+            ProviderType::GitLab => crate::providers::gitlab::list_mrs(&host, &owner, &repo, &token, api_state),
+            _ => Err(format!("Provider at {} is not yet supported for in-app PR listing.", host)),
+        };
+        let mut s = state.lock().unwrap();
+        s.pr_loading = false;
+        match result {
+            Ok(prs) => { s.pr_list = prs; s.pr_error = None; s.pr_selected = None; }
+            Err(e)  => { s.pr_error = Some(e); }
+        }
+    });
+}
