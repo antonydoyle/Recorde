@@ -218,21 +218,41 @@ fn do_delete(path: &Path, name: &str) -> Result<(), git2::Error> {
 // ── Stash ─────────────────────────────────────────────────────────────────────
 
 pub fn stash_save(state: SharedState) {
+    stash_save_with_message("WIP", state);
+}
+
+pub fn stash_save_with_message(message: &str, state: SharedState) {
+    let msg = message.to_string();
     let path = state.lock().unwrap().repo_path.clone();
     let Some(path) = path else { return };
-
-    std::thread::spawn(move || match do_stash_save(&path) {
+    std::thread::spawn(move || match run_git_seq(&path, &["stash", "push", "-m", &msg]) {
         Ok(()) => reload_repo(state),
-        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+        Err(e) => state.lock().unwrap().error = Some(e.user_message()),
     });
 }
 
-fn do_stash_save(path: &Path) -> Result<(), git2::Error> {
-    let mut repo = git2::Repository::open(path)?;
-    let sig = repo.signature()?;
-    repo.stash_save(&sig, "WIP", Some(git2::StashFlags::DEFAULT))?;
-    Ok(())
+pub fn stash_file(file_path: &str, state: SharedState) {
+    let fp = file_path.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    std::thread::spawn(move || match run_git_seq(&path, &["stash", "push", "--", &fp]) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+    });
 }
+
+pub fn stash_branch(branch_name: &str, stash_index: usize, state: SharedState) {
+    let name = branch_name.to_string();
+    let stash_ref = format!("stash@{{{}}}", stash_index);
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    std::thread::spawn(move || match run_git_seq(&path, &["stash", "branch", &name, &stash_ref]) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.user_message()),
+    });
+}
+
+fn do_stash_save(_path: &Path) -> Result<(), git2::Error> { Ok(()) } // kept for ABI compat, unused
 
 pub fn stash_apply(index: usize, state: SharedState) {
     let path = state.lock().unwrap().repo_path.clone();
