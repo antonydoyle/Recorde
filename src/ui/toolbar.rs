@@ -32,6 +32,8 @@ pub enum ToolbarAction {
     OpenBranchSwitcher,
     ToggleAllBranches,
     OpenUserMenu,
+    OpenReflog,
+    OpenBisect,
 }
 
 pub struct Toolbar {
@@ -284,6 +286,12 @@ impl Toolbar {
                         ui.add_space(8.0);
                         vsep(ui);
                         ui.add_space(8.0);
+
+                        // Reflog
+                        if widgets::icon_btn_mat(ui, icons::HISTORY, 18.0, "Reflog").clicked()
+                        { action = Some(ToolbarAction::OpenReflog); }
+
+                        ui.add_space(4.0);
 
                         // Theme toggle
                         let theme_icon = if dark_theme { icons::LIGHT_MODE } else { icons::DARK_MODE };

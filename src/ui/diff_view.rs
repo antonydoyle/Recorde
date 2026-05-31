@@ -57,6 +57,7 @@ pub struct DiffView {
     last_key: Option<(String, String)>,
     show_console: bool,
     split_view: bool,
+    show_blame: bool,
 }
 
 impl DiffView {
@@ -68,11 +69,13 @@ impl DiffView {
             last_key: None,
             show_console: false,
             split_view: false,
+            show_blame: false,
         }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        let (diff_opt, selected_file, console_log, commit_files, workdir_files, selected_commit, diff_context) = {
+        let (diff_opt, selected_file, console_log, commit_files, workdir_files, selected_commit, diff_context,
+             blame_lines, state_show_blame) = {
             let s = self.state.lock().unwrap();
             (
                 s.current_diff.clone(),
@@ -82,8 +85,15 @@ impl DiffView {
                 s.working_dir_files.clone(),
                 s.selected_commit.clone(),
                 s.diff_context,
+                s.blame_lines.clone(),
+                s.show_blame,
             )
         };
+        // Sync show_blame from state (set externally when user clicks "Blame")
+        if state_show_blame && !self.show_blame {
+            self.show_blame = true;
+            self.show_console = false;
+        }
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_APP);
 
@@ -192,7 +202,7 @@ impl DiffView {
 
         // ── Diff area ─────────────────────────────────────────────────────
         let mut diff_child = ui.child_ui(diff_rect, egui::Layout::top_down(egui::Align::LEFT), None);
-        let actions = self.show_diff_area(&mut diff_child, &diff_opt, &selected_file, &console_log, diff_context);
+        let actions = self.show_diff_area(&mut diff_child, &diff_opt, &selected_file, &console_log, diff_context, &blame_lines);
 
         // Apply actions from the diff renderer
         for action in actions {
@@ -215,6 +225,7 @@ impl DiffView {
         selected_file: &Option<String>,
         console_log: &[String],
         diff_context: DiffContext,
+        blame_lines: &[crate::state::BlameLine],
     ) -> Vec<DiffAction> {
         // Rebuild item caches when diff changes
         if let Some(ref diff) = diff_opt {
@@ -242,16 +253,39 @@ impl DiffView {
         ui.allocate_ui_at_rect(header_rect, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(12.0);
-                for (label, is_console) in &[("File Diff", false), ("Console", true)] {
-                    let active = *is_console == self.show_console;
+                // Tab: File Diff
+                {
+                    let active = !self.show_console && !self.show_blame;
                     let tc = if active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
-                    let btn = ui.add(egui::Button::new(egui::RichText::new(*label).size(12.5).color(tc))
+                    let btn = ui.add(egui::Button::new(egui::RichText::new("File Diff").size(12.5).color(tc))
                         .fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
-                    if btn.clicked() { self.show_console = *is_console; }
-                    if active {
-                        let br = btn.rect;
-                        ui.painter().line_segment([br.left_bottom(), br.right_bottom()], Stroke::new(2.0, theme::ACCENT_TEAL));
+                    if btn.clicked() { self.show_console = false; self.show_blame = false; self.state.lock().unwrap().show_blame = false; }
+                    if active { let br = btn.rect; ui.painter().line_segment([br.left_bottom(), br.right_bottom()], Stroke::new(2.0, theme::ACCENT_TEAL)); }
+                    ui.add_space(10.0);
+                }
+                // Tab: Blame
+                {
+                    let active = self.show_blame;
+                    let tc = if active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
+                    let btn = ui.add(egui::Button::new(egui::RichText::new("Blame").size(12.5).color(tc))
+                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
+                    if btn.clicked() {
+                        self.show_blame = true; self.show_console = false;
+                        if let Some(ref fp) = *selected_file {
+                            crate::git::operations::load_blame(fp, self.state.clone());
+                        }
                     }
+                    if active { let br = btn.rect; ui.painter().line_segment([br.left_bottom(), br.right_bottom()], Stroke::new(2.0, theme::ACCENT_TEAL)); }
+                    ui.add_space(10.0);
+                }
+                // Tab: Console
+                {
+                    let active = self.show_console;
+                    let tc = if active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
+                    let btn = ui.add(egui::Button::new(egui::RichText::new("Console").size(12.5).color(tc))
+                        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
+                    if btn.clicked() { self.show_console = true; self.show_blame = false; }
+                    if active { let br = btn.rect; ui.painter().line_segment([br.left_bottom(), br.right_bottom()], Stroke::new(2.0, theme::ACCENT_TEAL)); }
                     ui.add_space(10.0);
                 }
                 ui.add(egui::Separator::default().vertical().spacing(3.0));
@@ -334,6 +368,45 @@ impl DiffView {
                         }
                     }
                     ui.add_space(6.0);
+                });
+            });
+            return Vec::new();
+        }
+
+        // ── Blame ─────────────────────────────────────────────────────────
+        if self.show_blame {
+            ui.allocate_ui_at_rect(content_rect, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+                    ui.add_space(4.0);
+                    if blame_lines.is_empty() {
+                        ui.centered_and_justified(|ui| {
+                            ui.label(egui::RichText::new("Loading blame…").color(theme::TEXT_MUTED).size(12.0));
+                        });
+                    } else {
+                        let mut last_oid = "";
+                        for line in blame_lines {
+                            let show_oid = line.short_oid.as_str() != last_oid;
+                            last_oid = &line.short_oid;
+                            ui.horizontal(|ui| {
+                                ui.add_space(4.0);
+                                // SHA column (show only on first line of a hunk)
+                                let oid_color = if show_oid { theme::ACCENT_TEAL } else { theme::BG_PANEL };
+                                ui.label(egui::RichText::new(&line.short_oid).monospace().color(oid_color).size(10.5));
+                                ui.add_space(4.0);
+                                // Author column (truncated)
+                                let author = if line.author.len() > 14 { &line.author[..14] } else { &line.author };
+                                let author_color = if show_oid { theme::TEXT_MUTED } else { theme::BG_PANEL };
+                                ui.label(egui::RichText::new(author).size(10.5).color(author_color));
+                                ui.add_space(4.0);
+                                // Line number
+                                ui.label(egui::RichText::new(format!("{:>4}", line.lineno)).monospace().color(theme::TEXT_MUTED).size(10.5));
+                                ui.add_space(6.0);
+                                // Content
+                                ui.label(egui::RichText::new(&line.content).monospace().color(theme::TEXT_SECONDARY).size(11.5));
+                            });
+                        }
+                    }
+                    ui.add_space(4.0);
                 });
             });
             return Vec::new();

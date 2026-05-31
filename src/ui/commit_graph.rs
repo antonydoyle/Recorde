@@ -81,10 +81,12 @@ impl CommitGraphView {
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        let (graph_opt, selected, head_branch, show_all_branches, search_active, search_query) = {
+        let (graph_opt, selected, head_branch, show_all_branches, search_active, search_query,
+             file_history_path, file_history_oids) = {
             let s = self.state.lock().unwrap();
             (s.commit_graph.clone(), s.selected_commit.clone(), s.head_branch.clone().unwrap_or_default(),
-             s.show_all_branches, s.search_active, s.search_query.clone())
+             s.show_all_branches, s.search_active, s.search_query.clone(),
+             s.file_history_path.clone(), s.file_history_oids.clone())
         };
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_APP);
@@ -122,7 +124,7 @@ impl CommitGraphView {
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut new_query)
                             .desired_width(300.0)
-                            .hint_text("Search commits…  (message, author, SHA, branch)")
+                            .hint_text("Search… (message, author:, sha:, after:YYYY-MM-DD, before:YYYY-MM-DD)")
                             .font(FontId::proportional(12.5)),
                     );
                     r.request_focus();
@@ -146,8 +148,35 @@ impl CommitGraphView {
             }
         }
 
+        // ── File history banner ───────────────────────────────────────────
+        let fh_h = if file_history_path.is_some() { 28.0 } else { 0.0 };
+        if let Some(ref fp) = file_history_path {
+            let banner_rect = Rect::from_min_size(
+                Pos2::new(ui.min_rect().min.x, ui.min_rect().min.y + search_h),
+                Vec2::new(avail, fh_h),
+            );
+            ui.painter().rect_filled(banner_rect, 0.0, theme::ACCENT_TEAL.gamma_multiply(0.15));
+            ui.painter().line_segment([banner_rect.left_bottom(), banner_rect.right_bottom()], Stroke::new(1.0, theme::BORDER));
+            ui.allocate_ui_at_rect(banner_rect, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(10.0);
+                    let fname = fp.rsplit('/').next().unwrap_or(fp.as_str());
+                    ui.label(egui::RichText::new(format!("File History: {}", fname)).size(11.5).color(theme::ACCENT_TEAL).strong());
+                    ui.label(egui::RichText::new(format!("({} commits)", file_history_oids.len())).size(11.0).color(theme::TEXT_MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        if ui.small_button(egui::RichText::new("✕ Clear").color(theme::TEXT_MUTED)).clicked() {
+                            let mut s = self.state.lock().unwrap();
+                            s.file_history_path = None;
+                            s.file_history_oids.clear();
+                        }
+                    });
+                });
+            });
+        }
+
         // ── Column headers ────────────────────────────────────────────────
-        let header_top = ui.min_rect().min.y + search_h;
+        let header_top = ui.min_rect().min.y + search_h + fh_h;
         let header_rect = Rect::from_min_size(Pos2::new(ui.min_rect().min.x, header_top), Vec2::new(avail, HEADER_H));
         ui.painter().rect_filled(header_rect, 0.0, theme::BG_PANEL_ALT);
         ui.painter().line_segment([header_rect.left_bottom(), header_rect.right_bottom()], Stroke::new(1.0, theme::BORDER));
@@ -263,7 +292,9 @@ impl CommitGraphView {
                         if row_bg != Color32::TRANSPARENT { painter.rect_filled(row_rect, 0.0, row_bg); }
 
                         let is_match = q_lower.as_ref().map_or(true, |q| node_matches(node, q));
-                        if q_lower.is_some() && !is_match {
+                        let in_file_history = file_history_oids.is_empty() || file_history_oids.contains(&node.oid);
+                        let dimmed = (q_lower.is_some() && !is_match) || (!file_history_oids.is_empty() && !in_file_history);
+                        if dimmed {
                             painter.rect_filled(row_rect, 0.0, Color32::from_black_alpha(80));
                         }
                     }
@@ -313,7 +344,8 @@ impl CommitGraphView {
                         let row_resp = ui.interact(row_rect, egui::Id::new(("row", i)), Sense::click());
 
                         let is_match = q_lower.as_ref().map_or(true, |q| node_matches(node, q));
-                        let dim = q_lower.is_some() && !is_match;
+                        let in_fh = file_history_oids.is_empty() || file_history_oids.contains(&node.oid);
+                        let dim = (q_lower.is_some() && !is_match) || (!file_history_oids.is_empty() && !in_fh);
 
                         if row_resp.clicked() { new_selection = Some(Some(node.oid.clone())); }
 
@@ -405,6 +437,31 @@ impl CommitGraphView {
                             ui.separator();
                             if ui.button("Checkout (detached HEAD)…").clicked() {
                                 self.state.lock().unwrap().modal = crate::state::ModalKind::ConfirmDetachedCheckout { oid: oid.clone() }; ui.close_menu();
+                            }
+                            ui.separator();
+                            // ── Phase 7: compare & bisect ─────────────────────
+                            let compare_base = self.state.lock().unwrap().compare_base_oid.clone();
+                            if let Some(ref base) = compare_base {
+                                let base_short = &base[..7.min(base.len())];
+                                if oid != base {
+                                    if ui.button(format!("Compare with {}…", base_short)).clicked() {
+                                        self.state.lock().unwrap().modal = crate::state::ModalKind::Compare {
+                                            base_oid: base.clone(), compare_oid: oid.clone(),
+                                        };
+                                        ui.close_menu();
+                                    }
+                                }
+                                if ui.button("Clear Compare Base").clicked() {
+                                    self.state.lock().unwrap().compare_base_oid = None; ui.close_menu();
+                                }
+                            } else {
+                                if ui.button("Set as Compare Base").clicked() {
+                                    self.state.lock().unwrap().compare_base_oid = Some(oid.clone()); ui.close_menu();
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Bisect…").clicked() {
+                                self.state.lock().unwrap().modal = crate::state::ModalKind::Bisect; ui.close_menu();
                             }
                             ui.separator();
                         }
@@ -507,10 +564,45 @@ enum ColumnDivider {
 }
 
 fn node_matches(node: &crate::git::graph::CommitNode, q: &str) -> bool {
+    // Prefix-filter syntax: "author:alice", "after:2024-01-01", "before:2024-12-31"
+    if let Some(val) = q.strip_prefix("author:") {
+        return node.author.to_lowercase().contains(val);
+    }
+    if let Some(val) = q.strip_prefix("after:") {
+        let ts = parse_date(val);
+        return ts.map_or(false, |t| node.time >= t);
+    }
+    if let Some(val) = q.strip_prefix("before:") {
+        let ts = parse_date(val);
+        return ts.map_or(false, |t| node.time < t);
+    }
+    if let Some(val) = q.strip_prefix("sha:") {
+        return node.oid.starts_with(val);
+    }
+    // Default: match message, author, SHA prefix, or ref names
     node.summary.to_lowercase().contains(q)
         || node.author.to_lowercase().contains(q)
         || node.oid.starts_with(q)
         || node.refs.iter().any(|r| r.to_lowercase().contains(q))
+}
+
+/// Parse "YYYY-MM-DD" into a Unix timestamp (midnight UTC).
+fn parse_date(s: &str) -> Option<i64> {
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 3 { return None; }
+    let y: i64 = parts[0].parse().ok()?;
+    let m: i64 = parts[1].parse().ok()?;
+    let d: i64 = parts[2].parse().ok()?;
+    // Simplified days-since-epoch calculation (close enough for filtering)
+    let leap = |yr: i64| yr % 4 == 0 && (yr % 100 != 0 || yr % 400 == 0);
+    let days_in_month = [0i64, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut days = (y - 1970) * 365 + (y - 1969) / 4 - (y - 1901) / 100 + (y - 1601) / 400;
+    for mi in 1..m {
+        days += days_in_month[mi as usize];
+        if mi == 2 && leap(y) { days += 1; }
+    }
+    days += d - 1;
+    Some(days * 86400)
 }
 
 fn draw_ref_column(
