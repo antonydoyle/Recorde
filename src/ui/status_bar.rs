@@ -14,12 +14,12 @@ impl StatusBar {
     pub fn show(&self, ctx: &Context) {
         egui::TopBottomPanel::bottom("status_bar")
             .exact_height(28.0)
-            .frame(egui::Frame::none().fill(theme::BG_TITLEBAR))
+            .frame(egui::Frame::none().fill(theme::bg_titlebar()))
             .show(ctx, |ui| {
                 let r = ui.max_rect();
                 ui.painter().line_segment(
                     [r.left_top(), r.right_top()],
-                    Stroke::new(1.0, theme::BORDER),
+                    Stroke::new(1.0, theme::border()),
                 );
 
                 ui.horizontal_centered(|ui| {
@@ -28,7 +28,7 @@ impl StatusBar {
                     let s = self.state.lock().unwrap();
 
                     // ── Left: version + repo ───────────────────────────
-                    ui.label(RichText::new("Recorde v0.1.0").color(theme::TEXT_MUTED).size(11.0));
+                    ui.label(RichText::new("Recorde v0.1.0").color(theme::text_muted()).size(11.0));
 
                     if let Some(ref p) = s.repo_path {
                         let name = p.file_name()
@@ -37,7 +37,7 @@ impl StatusBar {
                         ui.add_space(8.0);
                         ui.add(egui::Separator::default().vertical().spacing(2.0));
                         ui.add_space(8.0);
-                        ui.label(RichText::new(&name).color(theme::TEXT_SECONDARY).size(11.0));
+                        ui.label(RichText::new(&name).color(theme::text_secondary()).size(11.0));
                     }
 
                     // ── Right ─────────────────────────────────────────
@@ -55,7 +55,7 @@ impl StatusBar {
                             ui.label(RichText::new(format!("⚠ {}", e)).color(theme::ACCENT_RED).size(10.5));
                             ui.add_space(8.0);
                         } else if let Some(ref op) = remote_op {
-                            ui.label(RichText::new(op).color(theme::TEXT_MUTED).size(10.5));
+                            ui.label(RichText::new(op).color(theme::text_muted()).size(10.5));
                             ui.add_space(8.0);
                         }
 
@@ -83,7 +83,7 @@ impl StatusBar {
                             }
                             None if !branch.is_empty() && branch != "—" => {
                                 // Head branch with no upstream tracking
-                                ui.label(RichText::new("no upstream").color(theme::TEXT_MUTED).size(10.5))
+                                ui.label(RichText::new("no upstream").color(theme::text_muted()).size(10.5))
                                     .on_hover_text("No upstream tracking branch — use Push and Set Upstream");
                                 ui.add_space(4.0);
                             }
