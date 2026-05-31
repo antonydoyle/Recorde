@@ -8,6 +8,7 @@ pub mod graph;
 pub mod history;
 pub mod job;
 pub mod lifecycle;
+pub mod lfs;
 pub mod merge;
 pub mod operations;
 pub mod patch;
