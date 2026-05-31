@@ -121,6 +121,19 @@ pub fn toolbar_btn(ui: &mut Ui, label: &str, enabled: bool) -> Response {
 /// Toolbar button with a Material Icon glyph followed by a text label.
 pub fn toolbar_btn_icon(ui: &mut Ui, icon: char, label: &str, enabled: bool) -> Response {
     let col = if enabled { theme::text_secondary() } else { theme::text_muted() };
+    toolbar_btn_icon_colored(ui, icon, label, col, enabled, theme::bg_panel_alt(), theme::border())
+}
+
+pub fn toolbar_btn_icon_colored(
+    ui: &mut Ui,
+    icon: char,
+    label: &str,
+    color: Color32,
+    enabled: bool,
+    fill: Color32,
+    stroke: Color32,
+) -> Response {
+    let col = if enabled { color } else { theme::text_muted() };
     let mut job = egui::text::LayoutJob::default();
     job.append(
         &icon.to_string(),
@@ -130,15 +143,15 @@ pub fn toolbar_btn_icon(ui: &mut Ui, icon: char, label: &str, enabled: bool) -> 
     job.append(
         &format!("  {label}"),
         0.0,
-        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: col, line_height: Some(16.0), valign: egui::Align::TOP, ..Default::default() },
+        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: col, line_height: Some(16.0), valign: egui::Align::Center, ..Default::default() },
     );
     ui.add_enabled(
         enabled,
         egui::Button::new(job)
-            .fill(theme::bg_panel_alt())
-            .stroke(Stroke::new(1.0, theme::border()))
+            .fill(fill)
+            .stroke(Stroke::new(1.0, stroke))
             .rounding(6.0)
-            .min_size(Vec2::new(0.0, 28.0)),
+            .min_size(Vec2::new(0.0, 30.0)),
     )
 }
 
