@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex};
 
+use crate::git::capabilities::RepoCapabilities;
 use crate::git::graph::CommitGraph;
+use crate::git::job::ActiveOp;
 
 /// A file in the working directory, with separate staged and unstaged status.
 /// A file may appear in both sections simultaneously (partially staged).
@@ -128,8 +130,12 @@ pub struct AppState {
     pub stashes: Vec<StashEntry>,
 
     pub modal: ModalKind,
-    /// Label shown while a remote operation (fetch/push/pull) is running.
+    /// Label shown while a branch/staging operation is running (legacy path).
     pub remote_op: Option<String>,
+    /// In-flight jobs dispatched through GitRunner.
+    pub active_ops: Vec<ActiveOp>,
+    /// Capabilities detected when the repo was last opened.
+    pub capabilities: Option<RepoCapabilities>,
     /// Log lines shown in the Console tab.
     pub console_log: Vec<String>,
     /// Commit graph search state.
