@@ -13,6 +13,11 @@ pub struct StagingPanel {
     staged_expanded: bool,
     unstaged_expanded: bool,
     untracked_expanded: bool,
+    // Phase 3: commit workflow
+    co_author_input: String,
+    co_authors: Vec<String>,
+    signoff_enabled: bool,
+    template_loaded: bool,
 }
 
 impl StagingPanel {
@@ -26,13 +31,17 @@ impl StagingPanel {
             staged_expanded: true,
             unstaged_expanded: true,
             untracked_expanded: true,
+            co_author_input: String::new(),
+            co_authors: Vec::new(),
+            signoff_enabled: false,
+            template_loaded: false,
         }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_SURFACE);
 
-        let (files, conflicted, head_branch, selected_file, repo_path, any_seq_in_progress) = {
+        let (files, conflicted, head_branch, selected_file, repo_path, any_seq_in_progress, git_user) = {
             let s = self.state.lock().unwrap();
             let in_progress = s.capabilities.as_ref().map_or(false, |c| {
                 c.merge_in_progress || c.cherry_pick_in_progress || c.revert_in_progress
@@ -44,6 +53,7 @@ impl StagingPanel {
                 s.selected_file.clone(),
                 s.repo_path.clone(),
                 in_progress,
+                s.git_user_initials.clone(),
             )
         };
 
@@ -250,6 +260,20 @@ impl StagingPanel {
                 }
 
                 // ── COMMIT FORM ──────────────────────────────────────────
+
+                // Load commit template on first open
+                if !self.template_loaded && self.subject.is_empty() && self.body.is_empty() && !self.is_amend {
+                    self.template_loaded = true;
+                    if let Some(ref rp) = repo_path {
+                        if let Some(tmpl) = load_commit_template(rp) {
+                            let mut lines = tmpl.lines().filter(|l| !l.trim_start().starts_with('#'));
+                            self.subject = lines.next().unwrap_or("").trim().to_string();
+                            let rest: String = lines.skip_while(|l| l.is_empty()).collect::<Vec<_>>().join("\n");
+                            self.body = rest.trim().to_string();
+                        }
+                    }
+                }
+
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
                     ui.label(RichText::new("Commit message").color(theme::TEXT_MUTED).size(10.5).strong());
@@ -298,7 +322,67 @@ impl StagingPanel {
                     ui.add_space(12.0);
                 });
 
-                ui.add_space(10.0);
+                // ── Co-author trailers ────────────────────────────────────
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.co_author_input)
+                            .desired_width(ui.available_width() - 68.0)
+                            .hint_text("Co-author: Name <email>")
+                            .font(egui::FontId::proportional(11.5)),
+                    );
+                    ui.add_space(4.0);
+                    if ui.add(small_btn("+ Add")).clicked() && !self.co_author_input.trim().is_empty() {
+                        self.co_authors.push(self.co_author_input.trim().to_string());
+                        self.co_author_input.clear();
+                    }
+                });
+                let mut remove_co_author: Option<usize> = None;
+                for (i, author) in self.co_authors.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.label(RichText::new(format!("Co-Authored-By: {}", author))
+                            .color(theme::TEXT_MUTED).size(10.5).monospace());
+                        if ui.small_button(RichText::new("×").color(theme::TEXT_MUTED)).clicked() {
+                            remove_co_author = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove_co_author { self.co_authors.remove(i); }
+
+                // ── Sign-off + copy ──────────────────────────────────────
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    ui.checkbox(&mut self.signoff_enabled,
+                        RichText::new("Sign off").color(theme::TEXT_MUTED).size(11.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(12.0);
+                        if ui.add(small_btn("📋 Copy")).on_hover_text("Copy assembled commit message").clicked() {
+                            let msg = build_message(&self.subject, &self.body, &self.co_authors,
+                                self.signoff_enabled, &repo_path, &git_user);
+                            ui.output_mut(|o| o.copied_text = msg);
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+
+                // ── Branch protection warning ─────────────────────────────
+                let is_protected = ["main", "master", "production", "release"]
+                    .iter().any(|p| *p == head_branch.as_str());
+                if is_protected && !self.is_amend {
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.label(RichText::new(format!(
+                            "⚠ Committing directly to \"{}\" — make sure this is intentional.",
+                            head_branch
+                        )).color(theme::ACCENT_YELLOW).size(11.0));
+                    });
+                    ui.add_space(4.0);
+                }
+
                 let can_commit = !self.subject.trim().is_empty() && !staged.is_empty();
                 let btn_label = if self.is_amend {
                     format!("Amend commit on {}", head_branch)
@@ -315,6 +399,23 @@ impl StagingPanel {
                     );
                     if btn.clicked() {
                         if self.is_amend { do_amend = true; } else { do_commit = true; }
+                    }
+                });
+
+                // ── Reset last commit ─────────────────────────────────────
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("Reset last commit:").color(theme::TEXT_MUTED).size(10.5));
+                    ui.add_space(4.0);
+                    if ui.add(small_btn("Soft")).on_hover_text("Keep changes staged").clicked() {
+                        staging::reset_soft(self.state.clone());
+                    }
+                    if ui.add(small_btn("Mixed")).on_hover_text("Keep changes unstaged").clicked() {
+                        staging::reset_mixed(self.state.clone());
+                    }
+                    if ui.add(small_btn_danger("Hard")).on_hover_text("Discard ALL changes — cannot be undone").clicked() {
+                        self.state.lock().unwrap().pending_discard = Some(PendingDiscard::ResetHard);
                     }
                 });
                 ui.add_space(16.0);
@@ -351,18 +452,19 @@ impl StagingPanel {
         }
 
         if do_commit || do_amend {
-            let full_msg = if self.body.trim().is_empty() {
-                self.subject.trim().to_string()
-            } else {
-                format!("{}\n\n{}", self.subject.trim(), self.body.trim())
-            };
+            let full_msg = build_message(
+                &self.subject, &self.body,
+                &self.co_authors, self.signoff_enabled,
+                &repo_path, &git_user,
+            );
             if do_commit {
-                staging::create_commit(&full_msg, self.state.clone());
+                staging::create_commit(&full_msg, self.signoff_enabled, self.state.clone());
             } else {
-                staging::amend_commit(&full_msg, self.state.clone());
+                staging::amend_commit(&full_msg, self.signoff_enabled, self.state.clone());
             }
             self.subject.clear();
             self.body.clear();
+            self.co_authors.clear();
             self.is_amend = false;
         }
 
@@ -377,6 +479,62 @@ impl StagingPanel {
             load_workdir_diff(&path, staged, self.state.clone());
         }
     }
+}
+
+// ── Commit message helpers ────────────────────────────────────────────────────
+
+/// Assemble the full commit message with trailers.
+fn build_message(
+    subject: &str,
+    body: &str,
+    co_authors: &[String],
+    signoff: bool,
+    repo_path: &Option<std::path::PathBuf>,
+    git_user_initials: &str,
+) -> String {
+    let mut msg = subject.trim().to_string();
+    if !body.trim().is_empty() {
+        msg.push_str("\n\n");
+        msg.push_str(body.trim());
+    }
+    // Trailers
+    let mut trailers: Vec<String> = co_authors.iter()
+        .map(|a| format!("Co-Authored-By: {}", a))
+        .collect();
+    if signoff {
+        // Read full name + email from git config for the sign-off line
+        let identity = repo_path.as_ref()
+            .and_then(|p| git_identity_for_signoff(p))
+            .or_else(|| git_identity_for_signoff(std::path::Path::new(".")));
+        if let Some((name, email)) = identity {
+            trailers.push(format!("Signed-off-by: {} <{}>", name, email));
+        }
+    }
+    if !trailers.is_empty() {
+        msg.push_str("\n\n");
+        msg.push_str(&trailers.join("\n"));
+    }
+    msg
+}
+
+fn git_identity_for_signoff(repo_path: &std::path::Path) -> Option<(String, String)> {
+    let config = git2::Repository::open(repo_path).ok()?.config().ok()
+        .or_else(|| git2::Config::open_default().ok())?;
+    let name  = config.get_string("user.name").ok()?;
+    let email = config.get_string("user.email").ok()?;
+    Some((name, email))
+}
+
+fn load_commit_template(repo_path: &std::path::Path) -> Option<String> {
+    let config = git2::Repository::open(repo_path).ok()?.config().ok()?;
+    let tmpl_path = config.get_string("commit.template").ok()?;
+    let path = if tmpl_path.starts_with('~') {
+        let home = std::env::var("HOME").ok()?;
+        std::path::PathBuf::from(tmpl_path.replacen('~', &home, 1))
+    } else {
+        std::path::PathBuf::from(&tmpl_path)
+    };
+    std::fs::read_to_string(path).ok()
 }
 
 // ── Shell helpers ─────────────────────────────────────────────────────────────
