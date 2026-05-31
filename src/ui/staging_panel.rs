@@ -75,6 +75,7 @@ impl StagingPanel {
         let mut do_mark_resolved: Option<String> = None;
         let mut do_open_mergetool: Option<String> = None;
         let mut do_stage_file: Option<String> = None;
+        let mut do_stash_file: Option<String> = None;
         let mut do_unstage_file: Option<String> = None;
         let mut do_stage_all = false;
         let mut do_unstage_all = false;
@@ -155,6 +156,11 @@ impl StagingPanel {
                                 }
                             });
                             resp.context_menu(|ui| {
+                                if ui.button("Stash This File").clicked() {
+                                    do_stash_file = Some(f.path.clone());
+                                    ui.close_menu();
+                                }
+                                ui.separator();
                                 if ui.button("Open in Editor").clicked() {
                                     open_file_in_editor(&f.path, &repo_path);
                                     ui.close_menu();
@@ -422,6 +428,7 @@ impl StagingPanel {
             });
 
         // ── Apply actions ────────────────────────────────────────────────
+        if let Some(path) = do_stash_file    { crate::git::branches::stash_file(&path, self.state.clone()); }
         if let Some(path) = do_choose_ours   { conflicts::choose_ours(&path, self.state.clone()); }
         if let Some(path) = do_choose_theirs { conflicts::choose_theirs(&path, self.state.clone()); }
         if let Some(path) = do_mark_resolved { conflicts::mark_resolved(&path, self.state.clone()); }
