@@ -1,82 +1,177 @@
 use egui::Color32;
 
-// --- Background layers ---
-pub const BG_BASE: Color32 = Color32::from_rgb(0x1C, 0x1E, 0x23);
-pub const BG_SURFACE: Color32 = Color32::from_rgb(0x23, 0x26, 0x2D);
-pub const BG_ELEVATED: Color32 = Color32::from_rgb(0x2A, 0x2D, 0x35);
-pub const BG_SELECTED: Color32 = Color32::from_rgb(0x1E, 0x2D, 0x4A);
+// ── Background layers ─────────────────────────────────────────────────────────
+pub const BG_APP:        Color32 = Color32::from_rgb(18,  23,  32);   // #121720 window/app
+pub const BG_TITLEBAR:   Color32 = Color32::from_rgb(13,  17,  23);   // #0D1117 title strip
+pub const BG_TOOLBAR:    Color32 = Color32::from_rgb(20,  26,  36);   // #141A24 toolbar
+pub const BG_PANEL:      Color32 = Color32::from_rgb(25,  31,  42);   // #191F2A panels
+pub const BG_PANEL_ALT:  Color32 = Color32::from_rgb(30,  37,  49);   // #1E2531 alt surface
+pub const BG_HOVER:      Color32 = Color32::from_rgb(38,  47,  62);   // #262F3E hover
+pub const BG_SELECTED:   Color32 = Color32::from_rgb(47,  57,  75);   // #2F394B selected row
+pub const BG_ELEVATED:   Color32 = Color32::from_rgb(34,  42,  56);   // #222A38 elevated card
 
-// --- Text ---
-pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(0xE2, 0xE4, 0xE9);
-pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(0x8B, 0x8F, 0xA8);
-pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x55, 0x59, 0x6A);
+// Diff-specific tints
+pub const BG_DIFF_ADD:   Color32 = Color32::from_rgb(14,  38,  20);
+pub const BG_DIFF_DEL:   Color32 = Color32::from_rgb(42,  14,  14);
+pub const BG_DIFF_HUNK:  Color32 = Color32::from_rgb(20,  28,  46);
 
-// --- Accents ---
-pub const ACCENT_BLUE: Color32 = Color32::from_rgb(0x4D, 0x88, 0xFF);
-pub const ACCENT_GREEN: Color32 = Color32::from_rgb(0x5C, 0xB8, 0x5C);
-pub const ACCENT_RED: Color32 = Color32::from_rgb(0xD9, 0x41, 0x3D);
-pub const ACCENT_YELLOW: Color32 = Color32::from_rgb(0xEC, 0xB9, 0x1C);
-pub const ACCENT_PURPLE: Color32 = Color32::from_rgb(0x9B, 0x59, 0xB6);
+// ── Borders ───────────────────────────────────────────────────────────────────
+pub const BORDER:        Color32 = Color32::from_rgb(54,  64,  82);   // subtle
+pub const BORDER_STRONG: Color32 = Color32::from_rgb(86,  98, 122);   // prominent
 
-// --- Borders ---
-pub const BORDER: Color32 = Color32::from_rgb(0x33, 0x37, 0x48);
+// ── Text ──────────────────────────────────────────────────────────────────────
+pub const TEXT_PRIMARY:   Color32 = Color32::from_rgb(222, 227, 235);
+pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(170, 178, 193);
+pub const TEXT_MUTED:     Color32 = Color32::from_rgb(108, 119, 139);
 
-// --- Graph lane colors (8-color palette, cycles) ---
+// ── Accents ───────────────────────────────────────────────────────────────────
+pub const ACCENT_BLUE:   Color32 = Color32::from_rgb(82,  150, 255);
+pub const ACCENT_TEAL:   Color32 = Color32::from_rgb(83,  199, 184);  // current branch, active tabs
+pub const ACCENT_PURPLE: Color32 = Color32::from_rgb(165, 103, 232);
+pub const ACCENT_ORANGE: Color32 = Color32::from_rgb(255, 139,  55);
+pub const ACCENT_GREEN:  Color32 = Color32::from_rgb(74,  208, 128);
+pub const ACCENT_RED:    Color32 = Color32::from_rgb(239,  93,  93);
+pub const ACCENT_YELLOW: Color32 = Color32::from_rgb(245, 190,  69);
+
+// Aliases kept for existing call-sites
+pub const BG_BASE:     Color32 = BG_APP;
+pub const BG_SURFACE:  Color32 = BG_PANEL;
+pub const BG_DIFF_ADD_LINE:  Color32 = Color32::from_rgb(171, 224, 171);
+pub const BG_DIFF_DEL_LINE:  Color32 = Color32::from_rgb(240, 160, 160);
+
+// ── Font sizes ────────────────────────────────────────────────────────────────
+pub mod font_size {
+    pub const TITLE:   f32 = 18.0;
+    pub const SECTION: f32 = 11.5;
+    pub const BODY:    f32 = 13.0;
+    pub const SMALL:   f32 = 11.5;
+    pub const CODE:    f32 = 12.5;
+}
+
+// ── Graph lane colours ────────────────────────────────────────────────────────
 pub const LANE_COLORS: &[Color32] = &[
-    Color32::from_rgb(0x4D, 0x88, 0xFF), // blue
-    Color32::from_rgb(0xF0, 0x88, 0x3E), // orange
-    Color32::from_rgb(0x5C, 0xB8, 0x5C), // green
-    Color32::from_rgb(0xEC, 0xB9, 0x1C), // yellow
-    Color32::from_rgb(0x9B, 0x59, 0xB6), // purple
-    Color32::from_rgb(0x1A, 0xBC, 0x9C), // teal
-    Color32::from_rgb(0xE9, 0x1E, 0x63), // pink
-    Color32::from_rgb(0x00, 0xBC, 0xD4), // cyan
+    Color32::from_rgb(82,  150, 255), // blue
+    Color32::from_rgb(245, 190,  69), // amber
+    Color32::from_rgb(165, 103, 232), // purple
+    Color32::from_rgb(255, 139,  55), // orange
+    Color32::from_rgb(74,  208, 128), // green
+    Color32::from_rgb(83,  199, 184), // teal
+    Color32::from_rgb(239,  93,  93), // red
+    Color32::from_rgb(200, 140, 255), // lavender
 ];
 
 pub fn lane_color(lane: usize) -> Color32 {
     LANE_COLORS[lane % LANE_COLORS.len()]
 }
 
-/// Deterministic color for an author name — hashed into the lane palette.
 pub fn author_color(name: &str) -> Color32 {
-    let hash = name
-        .bytes()
-        .fold(5381u32, |acc, b| acc.wrapping_mul(33).wrapping_add(b as u32));
-    LANE_COLORS[hash as usize % LANE_COLORS.len()]
+    let h = name.bytes().fold(5381u32, |a, b| a.wrapping_mul(33).wrapping_add(b as u32));
+    LANE_COLORS[h as usize % LANE_COLORS.len()]
 }
 
-/// Up-to-2-character initials from an author name.
 pub fn author_initials(name: &str) -> String {
-    let mut words = name.split_whitespace();
-    let first = words.next().and_then(|s| s.chars().next());
-    let last = words.last().and_then(|s| s.chars().next());
-    match (first, last) {
-        (Some(f), Some(l)) => format!("{}{}", f.to_uppercase(), l.to_uppercase()),
-        (Some(f), None) => f.to_uppercase().to_string(),
-        _ => "?".to_string(),
+    let mut w = name.split_whitespace();
+    let f = w.next().and_then(|s| s.chars().next());
+    let l = w.last().and_then(|s| s.chars().next());
+    match (f, l) {
+        (Some(a), Some(b)) => format!("{}{}", a.to_uppercase(), b.to_uppercase()),
+        (Some(a), None)    => a.to_uppercase().to_string(),
+        _                  => "?".into(),
     }
 }
 
-/// Human-readable relative timestamp: "3h ago", "2d ago", etc.
-pub fn relative_time(unix_ts: i64) -> String {
+pub fn relative_time(ts: i64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    let diff = (now - unix_ts).max(0);
-    if diff < 60 {
-        "just now".into()
-    } else if diff < 3600 {
-        format!("{}m ago", diff / 60)
-    } else if diff < 86_400 {
-        format!("{}h ago", diff / 3600)
-    } else if diff < 86_400 * 7 {
-        format!("{}d ago", diff / 86_400)
-    } else if diff < 86_400 * 30 {
-        format!("{}w ago", diff / (86_400 * 7))
-    } else if diff < 86_400 * 365 {
-        format!("{}mo ago", diff / (86_400 * 30))
-    } else {
-        format!("{}y ago", diff / (86_400 * 365))
+    let d = (now - ts).max(0);
+    if d < 60            { "just now".into() }
+    else if d < 3600     { format!("{}m", d / 60) }
+    else if d < 86_400   { format!("{}h", d / 3600) }
+    else if d < 86_400*7 { format!("{}d", d / 86_400) }
+    else if d < 86_400*30{ format!("{}w", d / (86_400*7)) }
+    else if d < 86_400*365{ format!("{}mo", d / (86_400*30)) }
+    else                  { format!("{}y", d / (86_400*365)) }
+}
+
+// ── Apply to egui context ─────────────────────────────────────────────────────
+pub fn apply(ctx: &egui::Context, dark: bool) {
+    if !dark {
+        let mut v = egui::Visuals::light();
+        v.popup_shadow = egui::Shadow::NONE;
+        v.window_shadow = egui::Shadow::NONE;
+        ctx.set_visuals(v);
+        ctx.style_mut(|s| {
+            s.spacing.item_spacing = egui::Vec2::new(8.0, 5.0);
+            s.spacing.button_padding = egui::Vec2::new(12.0, 7.0);
+            kill_debug(s);
+        });
+        ctx.options_mut(|o| o.warn_on_id_clash = false);
+        return;
+    }
+
+    let mut v = egui::Visuals::dark();
+    v.panel_fill               = BG_PANEL;
+    v.window_fill              = BG_APP;
+    v.faint_bg_color           = BG_PANEL_ALT;
+    v.extreme_bg_color         = BG_APP;
+    v.override_text_color      = Some(TEXT_PRIMARY);
+
+    v.widgets.noninteractive.bg_fill     = BG_PANEL;
+    v.widgets.noninteractive.fg_stroke   = egui::Stroke::new(1.0, TEXT_SECONDARY);
+    v.widgets.noninteractive.bg_stroke   = egui::Stroke::new(1.0, BORDER);
+    v.widgets.noninteractive.rounding    = egui::Rounding::same(5.0);
+
+    v.widgets.inactive.bg_fill           = BG_PANEL_ALT;
+    v.widgets.inactive.fg_stroke         = egui::Stroke::new(1.0, TEXT_SECONDARY);
+    v.widgets.inactive.bg_stroke         = egui::Stroke::new(1.0, BORDER);
+    v.widgets.inactive.rounding          = egui::Rounding::same(5.0);
+
+    v.widgets.hovered.bg_fill            = BG_HOVER;
+    v.widgets.hovered.fg_stroke          = egui::Stroke::new(1.0, TEXT_PRIMARY);
+    v.widgets.hovered.bg_stroke          = egui::Stroke::new(1.0, BORDER_STRONG);
+    v.widgets.hovered.rounding           = egui::Rounding::same(5.0);
+
+    v.widgets.active.bg_fill             = BG_SELECTED;
+    v.widgets.active.fg_stroke           = egui::Stroke::new(1.0, TEXT_PRIMARY);
+    v.widgets.active.bg_stroke           = egui::Stroke::new(1.0, ACCENT_TEAL);
+    v.widgets.active.rounding            = egui::Rounding::same(5.0);
+
+    v.widgets.open.bg_fill               = BG_SELECTED;
+    v.widgets.open.fg_stroke             = egui::Stroke::new(1.0, TEXT_PRIMARY);
+
+    v.selection.bg_fill  = Color32::from_rgba_premultiplied(82, 150, 255, 55);
+    v.selection.stroke   = egui::Stroke::new(1.0, ACCENT_BLUE);
+
+    v.window_stroke  = egui::Stroke::new(1.0, BORDER);
+    v.popup_shadow   = egui::Shadow::NONE;
+    v.window_shadow  = egui::Shadow::NONE;
+    v.window_rounding = egui::Rounding::same(8.0);
+
+    ctx.set_visuals(v);
+    ctx.style_mut(|s| {
+        s.spacing.item_spacing     = egui::Vec2::new(8.0, 5.0);
+        s.spacing.window_margin    = egui::Margin::same(0.0);
+        s.spacing.button_padding   = egui::Vec2::new(12.0, 7.0);
+        s.visuals.widgets.inactive.rounding = egui::Rounding::same(5.0);
+        s.visuals.widgets.hovered.rounding  = egui::Rounding::same(5.0);
+        s.visuals.widgets.active.rounding   = egui::Rounding::same(5.0);
+        kill_debug(s);
+    });
+    ctx.options_mut(|o| o.warn_on_id_clash = false);
+}
+
+pub fn kill_debug(style: &mut egui::Style) {
+    style.debug.show_expand_width        = false;
+    style.debug.show_expand_height       = false;
+    style.debug.show_resize              = false;
+    style.debug.show_interactive_widgets = false;
+    style.debug.show_widget_hits         = false;
+    #[cfg(debug_assertions)]
+    {
+        style.debug.debug_on_hover                    = false;
+        style.debug.debug_on_hover_with_all_modifiers = false;
+        style.debug.hover_shows_next                  = false;
     }
 }

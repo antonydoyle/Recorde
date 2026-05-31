@@ -237,6 +237,40 @@ fn do_delete_tag(path: &Path, name: &str) -> Result<(), git2::Error> {
     Ok(())
 }
 
+// ── Revert commit ─────────────────────────────────────────────────────────────
+
+pub fn revert_commit(oid_str: &str, state: SharedState) {
+    let oid = oid_str.to_string();
+    let path = state.lock().unwrap().repo_path.clone();
+    let Some(path) = path else { return };
+    std::thread::spawn(move || match do_revert(&path, &oid) {
+        Ok(()) => reload_repo(state),
+        Err(e) => state.lock().unwrap().error = Some(e.message().to_string()),
+    });
+}
+
+fn do_revert(path: &Path, oid_str: &str) -> Result<(), git2::Error> {
+    let repo = git2::Repository::open(path)?;
+    let oid    = git2::Oid::from_str(oid_str)?;
+    let commit = repo.find_commit(oid)?;
+    let mut opts = git2::RevertOptions::new();
+    repo.revert(&commit, Some(&mut opts))?;
+    // Create the revert commit
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        repo.cleanup_state()?;
+        return Err(git2::Error::from_str("Revert has conflicts — resolve manually"));
+    }
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+    let sig  = repo.signature()?;
+    let head = repo.head()?.peel_to_commit()?;
+    let msg  = format!("Revert \"{}\"", commit.summary().unwrap_or(""));
+    repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&head])?;
+    repo.cleanup_state()?;
+    Ok(())
+}
+
 // ── Collect stashes (used by load_repo_inner) ────────────────────────────────
 
 pub fn collect_stashes(repo: &mut git2::Repository) -> Vec<crate::state::StashEntry> {
