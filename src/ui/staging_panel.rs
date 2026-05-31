@@ -637,14 +637,16 @@ fn file_row(
                 .size(12.0),
         );
         label.on_hover_text(path);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            add_btns(ui);
-        });
+        if ui.available_width() > 150.0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+                add_btns(ui);
+            });
+        }
     }).response;
 
     if row_resp.hovered() {
-        ui.painter().rect_filled(row_resp.rect, 0.0, Color32::from_white_alpha(5));
+        ui.painter().rect_filled(row_resp.rect, 0.0, theme::bg_hover());
     }
     row_resp
 }
@@ -708,13 +710,15 @@ fn conflict_file_row(
                 .size(12.0),
         );
         label.on_hover_text(path);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            add_btns(ui);
-        });
+        if ui.available_width() > 170.0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+                add_btns(ui);
+            });
+        }
     }).response;
     if row_resp.hovered() {
-        ui.painter().rect_filled(row_resp.rect, 0.0, Color32::from_rgba_unmultiplied(0x4A, 0x18, 0x10, 20));
+        ui.painter().rect_filled(row_resp.rect, 0.0, theme::bg_hover());
     }
     row_resp
 }

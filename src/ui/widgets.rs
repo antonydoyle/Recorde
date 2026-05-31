@@ -138,12 +138,12 @@ pub fn toolbar_btn_icon_colored(
     job.append(
         &icon.to_string(),
         0.0,
-        egui::TextFormat { font_id: icons::font(15.0), color: col, line_height: Some(16.0), valign: egui::Align::Center, ..Default::default() },
+        egui::TextFormat { font_id: icons::font(15.0), color: col, line_height: Some(18.0), valign: egui::Align::Max, ..Default::default() },
     );
     job.append(
         &format!("  {label}"),
         0.0,
-        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: col, line_height: Some(16.0), valign: egui::Align::Center, ..Default::default() },
+        egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: col, line_height: Some(18.0), valign: egui::Align::Max, ..Default::default() },
     );
     ui.add_enabled(
         enabled,

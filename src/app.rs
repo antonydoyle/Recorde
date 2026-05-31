@@ -1130,9 +1130,18 @@ impl RecordeApp {
 
     fn render_about(&self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Recorde").color(theme::text_primary()).size(14.0).strong());
-        ui.label(styled_muted("A desktop Git client built with Rust, egui, and eframe."));
+        ui.label(styled_muted("A cross-platform desktop Git client built with Rust by Antony Doyle"));
+        ui.hyperlink_to("https://github.com/antonydoyle/recorde", "https://github.com/antonydoyle/recorde");
+        ui.hyperlink_to("https://antonydoyle.com/", "https://antonydoyle.com/");
         ui.add_space(8.0);
-        ui.label(styled_muted("Keyboard: Ctrl+K command palette, Ctrl+B branch switcher, Ctrl+F search."));
+        ui.label(
+            RichText::new("Robert Recorde (c. 1510 – 1558) was a Welsh physician and mathematician. He invented the equals sign (=) and also introduced the pre-existing plus (+) and minus (−) signs to English speakers in 1557.")
+                .color(theme::text_muted())
+                .size(12.0)
+                .italics(),
+        );
+        ui.add_space(8.0);
+        ui.label(styled_muted("Keyboard: Ctrl+K command palette, Ctrl+B branch switcher, Ctrl+F search, Ctrl+Shift+F fetch, Ctrl+Shift+P pull, Ctrl+Shift+U push, Ctrl+1 sidebar, Ctrl+2 commit graph, Ctrl+3 changes, Ctrl+4 diff."));
     }
 
     fn render_pull_requests(&mut self, ctx: &Context) {
@@ -1451,6 +1460,30 @@ impl eframe::App for RecordeApp {
                 ui.horizontal_centered(|ui| {
                     self.show_menu_contents(ctx, ui);
 
+                    ui.add_space(14.0);
+                    let mut layout_changed = false;
+                    layout_changed |= panel_toggle(
+                        ui,
+                        &mut self.config.show_sidebar,
+                        "Sidebar",
+                        "Show or hide the branch/sidebar panel",
+                    );
+                    layout_changed |= panel_toggle(
+                        ui,
+                        &mut self.config.show_right_panel,
+                        "Changes",
+                        "Show or hide the Changes and Details panel",
+                    );
+                    layout_changed |= panel_toggle(
+                        ui,
+                        &mut self.config.show_diff_panel,
+                        "Diff",
+                        "Show or hide the bottom diff panel",
+                    );
+                    if layout_changed {
+                        self.config.save();
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(16.0);
                         ui.label(RichText::new("Recorde").color(theme::text_muted()).size(12.5));
@@ -1507,10 +1540,10 @@ impl eframe::App for RecordeApp {
         }
 
         if self.config.show_right_panel {
-            egui::SidePanel::right("right_panel")
+            egui::SidePanel::right("right_panel_v2")
                 .resizable(true)
-                .default_width(300.0)
-                .width_range(220.0..=600.0)
+                .default_width(260.0)
+                .width_range(180.0..=560.0)
                 .frame(egui::Frame::none())
                 .show(ctx, |ui| {
                 let has_commit = self.state.lock().unwrap().selected_commit.is_some();
@@ -2656,6 +2689,24 @@ fn focus_ring(ui: &egui::Ui) {
     );
 }
 
+fn panel_toggle(ui: &mut egui::Ui, visible: &mut bool, label: &str, tip: &str) -> bool {
+    let color = if *visible { theme::ACCENT_TEAL } else { theme::text_muted() };
+    let resp = ui.add(
+        egui::Button::new(RichText::new(label).color(color).size(11.0))
+            .fill(if *visible { theme::bg_panel_alt() } else { Color32::TRANSPARENT })
+            .stroke(Stroke::new(1.0, if *visible { theme::ACCENT_TEAL.gamma_multiply(0.45) } else { theme::border() }))
+            .rounding(5.0)
+            .min_size(egui::Vec2::new(0.0, 24.0)),
+    )
+    .on_hover_text(tip);
+    if resp.clicked() {
+        *visible = !*visible;
+        true
+    } else {
+        false
+    }
+}
+
 fn modal_window(ctx: &Context, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Window::new(title)
         .collapsible(false)
@@ -2694,6 +2745,7 @@ impl RecordeApp {
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .default_size([820.0, 560.0])
+            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(14.0)))
             .show(ctx, |ui| {
                 // ── Tab bar ─────────────────────────────────────────────
                 ui.horizontal(|ui| {
@@ -2703,13 +2755,20 @@ impl RecordeApp {
                         let active = self.provider_tab == tab;
                         let color = if active { theme::text_primary() } else { theme::text_muted() };
                         let btn = ui.add(egui::Button::new(RichText::new(label).size(12.5).color(color))
-                            .fill(Color32::TRANSPARENT));
+                            .fill(Color32::TRANSPARENT))
+                            .on_hover_text(match tab {
+                                ProviderTab::Issues => "View provider issues for this repository",
+                                ProviderTab::Ci => "View CI/check runs for this repository",
+                                ProviderTab::Releases => "View provider releases for this repository",
+                            });
                         if active { ui.painter().line_segment([btn.rect.left_bottom(), btn.rect.right_bottom()], egui::Stroke::new(2.0, theme::ACCENT_TEAL)); }
                         if btn.clicked() { self.provider_tab = tab; }
                         ui.add_space(8.0);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new("✕").fill(Color32::TRANSPARENT)).clicked() {
+                        if ui.add(egui::Button::new("✕").fill(Color32::TRANSPARENT))
+                            .on_hover_text("Close provider integrations")
+                            .clicked() {
                             self.provider_open = false;
                         }
                     });
