@@ -68,12 +68,16 @@ pub struct Config {
     pub font_scale: f32,
     #[serde(default)]
     pub colorblind_graph: bool,
+    /// Persisted right-panel (Changes/Details) width.
+    #[serde(default = "default_right_panel_w")]
+    pub right_panel_width: f32,
 }
 
 fn default_true() -> bool { true }
 fn default_protected() -> Vec<String> { vec!["main".into(), "master".into()] }
 fn default_300() -> u32 { 300 }
 fn default_font_scale() -> f32 { 1.0 }
+fn default_right_panel_w() -> f32 { 360.0 }
 
 impl Config {
     pub fn load() -> Self {
