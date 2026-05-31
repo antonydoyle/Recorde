@@ -553,3 +553,100 @@ pub fn load_prs(state: crate::state::SharedState) {
         }
     });
 }
+
+// ── Phase 13 loaders ─────────────────────────────────────────────────────────
+
+/// Shared helper: resolve (owner, repo, host, token, provider) for the open repo.
+fn resolve_repo_info(state: &crate::state::SharedState)
+    -> Option<(String, String, String, String, crate::git::capabilities::ProviderType)>
+{
+    use crate::providers::parse_remote;
+    let (path, caps) = {
+        let s = state.lock().unwrap();
+        (s.repo_path.clone()?, s.capabilities.clone()?)
+    };
+    let url = (|| -> Option<String> {
+        let repo = git2::Repository::open(&path).ok()?;
+        let remote = repo.find_remote("origin").ok()?;
+        remote.url().map(str::to_string)
+    })()?;
+    let (owner, repo, host) = parse_remote(&url)?;
+    let token = crate::auth::store::lookup_for_url(&url).map(|(_, t)| t)?;
+    Some((owner, repo, host, token, caps.provider))
+}
+
+pub fn load_issues(state: crate::state::SharedState) {
+    use crate::git::capabilities::ProviderType;
+    use crate::providers::IssueFilter;
+
+    let filter = state.lock().unwrap().issue_filter;
+    let Some((owner, repo, host, token, provider)) = resolve_repo_info(&state) else {
+        state.lock().unwrap().issue_error = Some("No token stored. Add an account in Settings > Accounts & SSH.".into());
+        return;
+    };
+
+    state.lock().unwrap().issue_loading = true;
+    std::thread::spawn(move || {
+        let api_state = filter.api_state();
+        let result = match provider {
+            ProviderType::GitHub => crate::providers::github::list_issues(&host, &owner, &repo, &token, api_state),
+            ProviderType::GitLab => crate::providers::gitlab::list_issues(&host, &owner, &repo, &token, api_state),
+            _ => Err(format!("Provider at {} not yet supported for issues.", host)),
+        };
+        let mut s = state.lock().unwrap();
+        s.issue_loading = false;
+        match result {
+            Ok(issues) => { s.issue_list = issues; s.issue_error = None; s.issue_selected = None; }
+            Err(e)     => { s.issue_error = Some(e); }
+        }
+    });
+}
+
+pub fn load_ci_runs(state: crate::state::SharedState) {
+    use crate::git::capabilities::ProviderType;
+
+    let branch = state.lock().unwrap().head_branch.clone().unwrap_or_default();
+    let Some((owner, repo, host, token, provider)) = resolve_repo_info(&state) else {
+        state.lock().unwrap().ci_error = Some("No token stored. Add an account in Settings > Accounts & SSH.".into());
+        return;
+    };
+
+    state.lock().unwrap().ci_loading = true;
+    std::thread::spawn(move || {
+        let result = match provider {
+            ProviderType::GitHub => crate::providers::github::list_ci_runs(&host, &owner, &repo, &branch, &token),
+            ProviderType::GitLab => crate::providers::gitlab::list_pipelines(&host, &owner, &repo, &branch, &token),
+            _ => Err(format!("Provider at {} not yet supported for CI.", host)),
+        };
+        let mut s = state.lock().unwrap();
+        s.ci_loading = false;
+        match result {
+            Ok(runs) => { s.ci_runs = runs; s.ci_error = None; }
+            Err(e)   => { s.ci_error = Some(e); }
+        }
+    });
+}
+
+pub fn load_releases(state: crate::state::SharedState) {
+    use crate::git::capabilities::ProviderType;
+
+    let Some((owner, repo, host, token, provider)) = resolve_repo_info(&state) else {
+        state.lock().unwrap().releases_error = Some("No token stored. Add an account in Settings > Accounts & SSH.".into());
+        return;
+    };
+
+    state.lock().unwrap().releases_loading = true;
+    std::thread::spawn(move || {
+        let result = match provider {
+            ProviderType::GitHub => crate::providers::github::list_releases(&host, &owner, &repo, &token),
+            ProviderType::GitLab => crate::providers::gitlab::list_releases(&host, &owner, &repo, &token),
+            _ => Err(format!("Provider at {} not yet supported for releases.", host)),
+        };
+        let mut s = state.lock().unwrap();
+        s.releases_loading = false;
+        match result {
+            Ok(rel) => { s.releases = rel; s.releases_error = None; }
+            Err(e)  => { s.releases_error = Some(e); }
+        }
+    });
+}
