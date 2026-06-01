@@ -28,7 +28,7 @@ impl StatusBar {
                     let s = self.state.lock().unwrap();
 
                     // ── Left: version + repo ───────────────────────────
-                    ui.label(RichText::new("Recorde v0.1.0").color(theme::text_muted()).size(11.0));
+                    ui.label(RichText::new(concat!("Recorde v", env!("CARGO_PKG_VERSION"))).color(theme::text_muted()).size(11.0));
 
                     if let Some(ref p) = s.repo_path {
                         let name = p.file_name()
