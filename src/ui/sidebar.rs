@@ -54,12 +54,12 @@ impl Sidebar {
             Stroke::new(1.0, theme::border()),
         );
 
-        let (graph_opt, head, stashes, ab_map, merged_set, deleted, worktrees) = {
+        let (graph_opt, head, stashes, ab_map, merged_set, deleted, worktrees, selected_commit) = {
             let s = self.state.lock().unwrap();
             (s.commit_graph.clone(), s.head_branch.clone().unwrap_or_default(),
              s.stashes.clone(), s.branch_ahead_behind.clone(),
              s.merged_into_head.clone(), s.deleted_branches.clone(),
-             s.worktrees.clone())
+             s.worktrees.clone(), s.selected_commit.clone())
         };
 
         let mut action: Option<SidebarAction> = None;
@@ -90,9 +90,13 @@ impl Sidebar {
                 all_refs.dedup();
 
                 for r in &all_refs {
-                    if r.contains('/') { remote.push(r); }
-                    else if r.starts_with('v') && r.chars().nth(1).map_or(false, |c| c.is_ascii_digit()) { tags.push(r); }
-                    else { local.push(r); }
+                    if r.contains('/') {
+                        remote.push(r);
+                    } else if graph.tag_names.contains(*r) {
+                        tags.push(r);
+                    } else {
+                        local.push(r);
+                    }
                 }
 
                 // ── LOCAL BRANCHES ────────────────────────────────────
@@ -212,13 +216,20 @@ impl Sidebar {
                                 }
                             });
                         }
-                        // Create tag button
+                        // Create tag button — tag the selected commit if one is active
                         ui.horizontal(|ui| {
                             ui.add_space(14.0);
-                            if ui.add(egui::Button::new(
-                                RichText::new("+ Create Tag").color(theme::text_muted()).size(11.5),
-                            ).fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
-                                action = Some(SidebarAction::CreateTag(String::new()));
+                            let label = if selected_commit.is_some() {
+                                RichText::new("+ Tag Selected Commit").color(theme::ACCENT_TEAL).size(11.5)
+                            } else {
+                                RichText::new("+ Create Tag at HEAD").color(theme::text_muted()).size(11.5)
+                            };
+                            if ui.add(egui::Button::new(label)
+                                .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked()
+                            {
+                                action = Some(SidebarAction::CreateTag(
+                                    selected_commit.clone().unwrap_or_default()
+                                ));
                             }
                         });
                         if tags.is_empty() { empty_hint(ui, "No tags"); }
