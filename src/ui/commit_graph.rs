@@ -37,6 +37,8 @@ pub struct CommitGraphView {
     cols_dirty: bool,
     last_saved_refs_w: f32,
     last_saved_graph_w: f32,
+    last_saved_time_w: f32,
+    last_saved_hash_w: f32,
     colorblind: bool,
 }
 
@@ -53,6 +55,8 @@ impl CommitGraphView {
             cols_dirty: false,
             last_saved_refs_w: REFS_W_DEF,
             last_saved_graph_w: GRAPH_W_DEF,
+            last_saved_time_w: TIME_W_DEF,
+            last_saved_hash_w: HASH_W_DEF,
             colorblind: false,
         }
     }
@@ -69,6 +73,8 @@ impl CommitGraphView {
         if let Some(w) = hash_w  { self.hash_w  = w.clamp(HASH_W_MIN,  120.0); }
         self.last_saved_refs_w  = self.refs_w;
         self.last_saved_graph_w = self.graph_w;
+        self.last_saved_time_w  = self.time_w;
+        self.last_saved_hash_w  = self.hash_w;
         self.cols_dirty = false;
     }
 
@@ -78,22 +84,28 @@ impl CommitGraphView {
         self.commit_w = COMMIT_W_DEF;
         self.time_w = TIME_W_DEF;
         self.hash_w = HASH_W_DEF;
-        self.last_saved_refs_w = REFS_W_DEF;
+        self.last_saved_refs_w  = REFS_W_DEF;
         self.last_saved_graph_w = GRAPH_W_DEF;
+        self.last_saved_time_w  = TIME_W_DEF;
+        self.last_saved_hash_w  = HASH_W_DEF;
         self.cols_dirty = false;
     }
 
-    /// Returns column widths if they have changed since last call, then resets the flag.
+    /// Returns column widths if any changed since last save, then resets the flag.
     pub fn take_dirty_widths(&mut self) -> Option<(f32, f32, f32, f32)> {
+        if !self.cols_dirty { return None; }
+        self.cols_dirty = false;
         let changed = (self.refs_w - self.last_saved_refs_w).abs() > 0.5
-            || (self.graph_w - self.last_saved_graph_w).abs() > 0.5;
-        if self.cols_dirty && changed {
-            self.cols_dirty = false;
+            || (self.graph_w - self.last_saved_graph_w).abs() > 0.5
+            || (self.time_w - self.last_saved_time_w).abs() > 0.5
+            || (self.hash_w - self.last_saved_hash_w).abs() > 0.5;
+        if changed {
             self.last_saved_refs_w  = self.refs_w;
             self.last_saved_graph_w = self.graph_w;
+            self.last_saved_time_w  = self.time_w;
+            self.last_saved_hash_w  = self.hash_w;
             Some((self.refs_w, self.graph_w, self.time_w, self.hash_w))
         } else {
-            self.cols_dirty = false;
             None
         }
     }
@@ -217,10 +229,25 @@ impl CommitGraphView {
         ui.painter().text(Pos2::new(time_x + 8.0, header_rect.center().y), egui::Align2::LEFT_CENTER, "Time", header_font.clone(), hcol);
         ui.painter().text(Pos2::new(hash_x + 8.0, header_rect.center().y), egui::Align2::LEFT_CENTER, "Hash", header_font.clone(), hcol);
 
-        self.resize_handle(ui, header_rect, graph_start, ColumnDivider::RefsGraph);
-        self.resize_handle(ui, header_rect, msg_start, ColumnDivider::GraphCommit);
-        self.resize_handle(ui, header_rect, time_x, ColumnDivider::CommitTime);
-        self.resize_handle(ui, header_rect, hash_x, ColumnDivider::TimeHash);
+        // Compute content-based auto-widths for double-click sizing
+        let auto_refs_w = {
+            let max_chars = graph.nodes.iter()
+                .flat_map(|n| n.refs.iter())
+                .map(|r| r.chars().count())
+                .max()
+                .unwrap_or(0);
+            ((max_chars as f32 * 6.5 + 40.0)).clamp(REFS_W_MIN, REFS_W_MAX)
+        };
+        let auto_graph_w = {
+            let max_lane = graph.nodes.iter().map(|n| n.lane).max().unwrap_or(0);
+            ((max_lane as f32 + 1.0) * LANE_W + GRAPH_LEFT + DOT_R * 3.0 + 10.0)
+                .clamp(GRAPH_W_MIN, GRAPH_W_MAX)
+        };
+
+        self.resize_handle(ui, header_rect, graph_start, ColumnDivider::RefsGraph, auto_refs_w);
+        self.resize_handle(ui, header_rect, msg_start, ColumnDivider::GraphCommit, auto_graph_w);
+        self.resize_handle(ui, header_rect, time_x, ColumnDivider::CommitTime, TIME_W_DEF);
+        self.resize_handle(ui, header_rect, hash_x, ColumnDivider::TimeHash, HASH_W_DEF);
         ui.painter().line_segment(
             [Pos2::new(end_x, header_rect.min.y), Pos2::new(end_x, header_rect.max.y)],
             Stroke::new(1.0, theme::border()),
@@ -530,12 +557,13 @@ impl CommitGraphView {
         self.commit_w = (avail - fixed).max(COMMIT_W_MIN);
     }
 
-    fn resize_handle(&mut self, ui: &mut Ui, header_rect: Rect, x: f32, divider: ColumnDivider) {
+    fn resize_handle(&mut self, ui: &mut Ui, header_rect: Rect, x: f32, divider: ColumnDivider, auto_w: f32) {
         let rect = Rect::from_min_size(
             Pos2::new(x - RESIZE_HIT_W / 2.0, header_rect.min.y),
             Vec2::new(RESIZE_HIT_W, HEADER_H),
         );
-        let resp = ui.allocate_rect(rect, Sense::drag()).on_hover_text("Drag to resize column");
+        let resp = ui.allocate_rect(rect, Sense::click_and_drag())
+            .on_hover_text("Drag to resize  •  Double-click to fit content");
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
             ui.painter().rect_filled(
@@ -554,7 +582,15 @@ impl CommitGraphView {
             );
         }
 
-        if resp.dragged() {
+        if resp.double_clicked() {
+            match divider {
+                ColumnDivider::RefsGraph   => { self.refs_w  = auto_w.clamp(REFS_W_MIN,  REFS_W_MAX);  }
+                ColumnDivider::GraphCommit => { self.graph_w = auto_w.clamp(GRAPH_W_MIN, GRAPH_W_MAX); }
+                ColumnDivider::CommitTime  => { self.time_w  = TIME_W_DEF; }
+                ColumnDivider::TimeHash    => { self.time_w  = TIME_W_DEF; self.hash_w = HASH_W_DEF; }
+            }
+            self.cols_dirty = true;
+        } else if resp.dragged() {
             let delta = resp.drag_delta().x;
             match divider {
                 ColumnDivider::RefsGraph => {

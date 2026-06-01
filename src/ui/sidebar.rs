@@ -366,11 +366,6 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
     let text_color = if is_head { theme::text_primary() }
         else if is_merged { theme::text_muted() }
         else { theme::text_secondary() };
-    let text_style = if is_head {
-        RichText::new(name).color(text_color).size(12.0).strong()
-    } else {
-        RichText::new(name).color(text_color).size(12.0)
-    };
 
     // Right-side indicator: "merged" badge or ahead/behind counts
     let compact_merged = is_merged && !is_head && avail < 245.0;
@@ -393,11 +388,13 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
         Pos2::new(dot_x + 12.0, row_rect.min.y),
         Pos2::new(row_rect.max.x - ab_width - right_margin, row_rect.max.y),
     );
-    ui.allocate_ui_at_rect(text_rect, |ui| {
-        ui.horizontal_centered(|ui| {
-            ui.label(text_style);
-        });
-    });
+    ui.painter_at(text_rect).text(
+        Pos2::new(text_rect.left() + 4.0, text_rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        name,
+        egui::FontId::proportional(12.0),
+        text_color,
+    );
 
     if !ab_text.is_empty() {
         let ab_rect = Rect::from_min_max(
@@ -409,11 +406,13 @@ fn branch_row(ui: &mut Ui, name: &str, is_head: bool, is_remote: bool, ahead_beh
         if compact_merged {
             ab_resp.on_hover_text("Merged into current branch");
         }
-        ui.allocate_ui_at_rect(ab_rect, |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.label(RichText::new(&ab_text).color(ab_color).size(10.5));
-            });
-        });
+        ui.painter_at(ab_rect).text(
+            ab_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &ab_text,
+            egui::FontId::proportional(10.5),
+            ab_color,
+        );
     }
 
     resp

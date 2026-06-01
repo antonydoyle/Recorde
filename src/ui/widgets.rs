@@ -156,9 +156,9 @@ pub fn toolbar_btn_icon_colored(
     ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, stroke));
 
     let center_y = rect.center().y + 1.5;
-    let icon_pos = Pos2::new(rect.min.x + padding.x, center_y);
+    let icon_pos = Pos2::new(rect.min.x + padding.x - 5.0, center_y - 1.0);
     ui.painter().text(icon_pos, egui::Align2::LEFT_CENTER, icon, icon_font, col);
-    let text_pos = Pos2::new(icon_pos.x + icon_galley.size().x + gap, center_y + 0.5);
+    let text_pos = Pos2::new(icon_pos.x + icon_galley.size().x + gap - 5.0, center_y - 1.5);
     ui.painter().text(text_pos, egui::Align2::LEFT_CENTER, label, text_font, col);
     resp
 }

@@ -3225,6 +3225,7 @@ fn ref_stamp(repo_path: &std::path::Path) -> u64 {
     // refs/heads and refs/tags directories update when individual ref files change
     stamp = stamp.wrapping_add(mtime(&git_dir.join("refs").join("heads")));
     stamp = stamp.wrapping_add(mtime(&git_dir.join("refs").join("tags")));
+    stamp = stamp.wrapping_add(mtime(&git_dir.join("index")));
     stamp
 }
 
