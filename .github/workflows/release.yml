@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
 
+# ── Semver tag validation ─────────────────────────────────────────────────────
 jobs:
   validate-tag:
     name: Validate semver tag
@@ -15,58 +16,28 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Validate tag
+      - name: Check tag format
         id: version
         shell: bash
         run: |
           tag="${GITHUB_REF_NAME}"
           if [[ ! "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Tag '${tag}' is not a valid semver tag (expected v1.2.3, v1.2.3-rc.1, etc.)" >&2
+            echo "::error::Tag '${tag}' is not a valid semver tag (expected v1.2.3, v1.2.3-rc.1, etc.)" >&2
             exit 1
           fi
           echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
 
-  build:
-    name: Build ${{ matrix.name }}
+  # ── Linux: portable .tar.gz  +  .deb installer  +  .AppImage ────────────────
+  build-linux:
+    name: Linux x86_64
     needs: validate-tag
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux x86_64
-            os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            archive: recorde-linux-x86_64
-            binary: recorde
-            deb: true
-
-          - name: Windows x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: recorde-windows-x86_64
-            binary: recorde.exe
-            deb: false
-
-          - name: macOS x86_64
-            os: macos-13
-            target: x86_64-apple-darwin
-            archive: recorde-macos-x86_64
-            binary: recorde
-            deb: false
-
-          - name: macOS aarch64
-            os: macos-latest
-            target: aarch64-apple-darwin
-            archive: recorde-macos-aarch64
-            binary: recorde
-            deb: false
-
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.validate-tag.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -78,87 +49,257 @@ jobs:
             libx11-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev \
             libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
-            libwayland-dev libxkbcommon-dev
-
-      - name: Install cmake (macOS, for vendored libgit2)
-        if: runner.os == 'macOS'
-        run: brew install cmake
+            libwayland-dev libxkbcommon-dev \
+            fuse libfuse2
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked
 
-      # ── Linux: also produce a .deb via cargo-deb ────────────────────────────
+      # ── Portable tar.gz ────────────────────────────────────────────────────
+      - name: Package portable tar.gz
+        run: |
+          mkdir -p dist/recorde-${VERSION}-linux-x86_64
+          cp target/release/recorde     dist/recorde-${VERSION}-linux-x86_64/
+          cp README.md LICENSE          dist/recorde-${VERSION}-linux-x86_64/
+          cp packaging/recorde.desktop  dist/recorde-${VERSION}-linux-x86_64/
+          cp assets/icon.png            dist/recorde-${VERSION}-linux-x86_64/recorde.png
+          cd dist
+          tar -czf recorde-${VERSION}-linux-x86_64.tar.gz recorde-${VERSION}-linux-x86_64/
+
+      # ── .deb installer ────────────────────────────────────────────────────
       - name: Install cargo-deb
-        if: ${{ matrix.deb }}
         run: cargo install cargo-deb --locked
 
-      - name: Build .deb package
-        if: ${{ matrix.deb }}
-        run: cargo deb --no-build --target ${{ matrix.target }}
+      - name: Build .deb
+        run: cargo deb --no-build
 
-      - name: Rename .deb with version
-        if: ${{ matrix.deb }}
-        shell: bash
+      - name: Rename .deb
         run: |
-          VERSION="${{ needs.validate-tag.outputs.version }}"
-          DEB=$(ls target/${{ matrix.target }}/debian/*.deb target/debian/*.deb 2>/dev/null | head -1)
-          cp "$DEB" "recorde_${VERSION}_amd64.deb"
+          DEB=$(ls target/debian/*.deb | head -1)
+          cp "$DEB" "dist/recorde_${VERSION}_amd64.deb"
 
-      - name: Upload .deb artifact
-        if: ${{ matrix.deb }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-deb
-          path: "*.deb"
-          if-no-files-found: error
-
-      # ── Stage binary + extras for tar/zip ──────────────────────────────────
-      - name: Stage artifact
-        shell: bash
+      # ── AppImage ──────────────────────────────────────────────────────────
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          DEPLOY_GTK_VERSION: "3"
         run: |
-          mkdir -p "dist/${{ matrix.archive }}"
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.archive }}/"
-          cp README.md LICENSE "dist/${{ matrix.archive }}/"
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
-            cp packaging/recorde.desktop "dist/${{ matrix.archive }}/"
-            cp assets/icon.png "dist/${{ matrix.archive }}/recorde.png"
-          fi
+          # Download tools
+          wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          wget -q "https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/releases/download/continuous/linuxdeploy-plugin-gtk.sh"
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
 
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          cd dist
-          tar -czf "${{ matrix.archive }}.tar.gz" "${{ matrix.archive }}"
+          # Build AppImage (linuxdeploy creates the AppImage in the current directory)
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --executable target/release/recorde \
+            --desktop-file packaging/recorde.desktop \
+            --icon-file assets/icon.png \
+            --plugin gtk \
+            --output appimage
 
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "dist/${{ matrix.archive }}" -DestinationPath "dist/${{ matrix.archive }}.zip"
+          # Rename to versioned name
+          mv Recorde*.AppImage "dist/Recorde-${VERSION}-x86_64.AppImage" 2>/dev/null || \
+          mv recorde*.AppImage "dist/Recorde-${VERSION}-x86_64.AppImage"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
+          name: linux-artifacts
+          path: dist/
           if-no-files-found: error
 
+  # ── Windows: portable .zip  +  .msi installer ────────────────────────────────
+  build-windows:
+    name: Windows x86_64
+    needs: validate-tag
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.validate-tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      # ── Portable .zip ──────────────────────────────────────────────────────
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $dir = "dist\recorde-$env:VERSION-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $dir
+          Copy-Item target\release\recorde.exe $dir\
+          Copy-Item README.md, LICENSE $dir\
+          Compress-Archive -Path $dir -DestinationPath "dist\recorde-$env:VERSION-windows-x86_64.zip"
+
+      # ── MSI installer ─────────────────────────────────────────────────────
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --locked
+
+      - name: Build MSI
+        run: cargo wix --no-build --nocapture
+
+      - name: Rename MSI
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem target\wix\*.msi | Select-Object -First 1
+          Copy-Item $msi.FullName "dist\recorde-$env:VERSION-windows-x86_64.msi"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: dist/
+          if-no-files-found: error
+
+  # ── macOS individual builds (for lipo) ───────────────────────────────────────
+  build-macos-x86_64:
+    name: macOS x86_64 binary
+    needs: validate-tag
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cmake
+        run: brew install cmake
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked --target x86_64-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-binary-x86_64
+          path: target/x86_64-apple-darwin/release/recorde
+          if-no-files-found: error
+
+  build-macos-aarch64:
+    name: macOS aarch64 binary
+    needs: validate-tag
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cmake
+        run: brew install cmake
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked --target aarch64-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-binary-aarch64
+          path: target/aarch64-apple-darwin/release/recorde
+          if-no-files-found: error
+
+  # ── macOS: universal binary  →  portable .tar.gz  +  .dmg installer ─────────
+  build-macos-installers:
+    name: macOS universal installers
+    needs: [validate-tag, build-macos-x86_64, build-macos-aarch64]
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.validate-tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download x86_64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-binary-x86_64
+          path: binaries/x86_64
+
+      - name: Download aarch64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-binary-aarch64
+          path: binaries/aarch64
+
+      - name: Create universal binary
+        run: |
+          chmod +x binaries/x86_64/recorde binaries/aarch64/recorde
+          lipo -create \
+            binaries/x86_64/recorde \
+            binaries/aarch64/recorde \
+            -output recorde-universal
+          chmod +x recorde-universal
+          lipo -info recorde-universal
+
+      # ── Portable tar.gz (universal) ────────────────────────────────────────
+      - name: Package portable tar.gz
+        run: |
+          mkdir -p dist
+          mkdir -p "recorde-${VERSION}-macos-universal"
+          cp recorde-universal "recorde-${VERSION}-macos-universal/recorde"
+          cp README.md LICENSE "recorde-${VERSION}-macos-universal/"
+          tar -czf "dist/recorde-${VERSION}-macos-universal.tar.gz" \
+            "recorde-${VERSION}-macos-universal/"
+
+      # ── .app bundle + .dmg installer ──────────────────────────────────────
+      - name: Create .icns icon
+        run: |
+          # Pad non-square PNG to square before generating icon sizes
+          SRC="assets/icon.png"
+          mkdir -p Recorde.iconset
+          for size in 16 32 64 128 256 512; do
+            sips -z $size $size "$SRC" --out "Recorde.iconset/icon_${size}x${size}.png"  2>/dev/null
+            double=$((size * 2))
+            sips -z $double $double "$SRC" --out "Recorde.iconset/icon_${size}x${size}@2x.png" 2>/dev/null
+          done
+          iconutil -c icns Recorde.iconset -o recorde.icns
+
+      - name: Build .app bundle
+        run: |
+          APP="Recorde.app"
+          mkdir -p "${APP}/Contents/MacOS"
+          mkdir -p "${APP}/Contents/Resources"
+
+          cp recorde-universal "${APP}/Contents/MacOS/recorde"
+          cp recorde.icns       "${APP}/Contents/Resources/icon.icns"
+
+          # Inject version into Info.plist
+          sed "s/RECORDE_VERSION/${VERSION}/g" packaging/Info.plist \
+            > "${APP}/Contents/Info.plist"
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build .dmg
+        run: |
+          create-dmg \
+            --volname "Recorde ${VERSION}" \
+            --volicon recorde.icns \
+            --window-pos 200 120 \
+            --window-size 580 400 \
+            --icon-size 100 \
+            --icon "Recorde.app" 160 185 \
+            --hide-extension "Recorde.app" \
+            --app-drop-link 420 185 \
+            "dist/Recorde-${VERSION}-macos-universal.dmg" \
+            "Recorde.app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: dist/
+          if-no-files-found: error
+
+  # ── Publish GitHub Release ────────────────────────────────────────────────────
   publish:
     name: Publish GitHub Release
-    needs: [validate-tag, build]
+    needs: [validate-tag, build-linux, build-windows, build-macos-installers]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+
+      - name: List release artifacts
+        run: ls -lh dist/
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -170,3 +311,6 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/*.deb
+            dist/*.msi
+            dist/*.AppImage
+            dist/*.dmg

@@ -42,10 +42,15 @@ strip = true
 [package.metadata.deb]
 section = "devel"
 priority = "optional"
-# $auto detects linked .so deps from the compiled binary; the rest are runtime requirements
 depends = "$auto, libgl1, libgtk-3-0, libglib2.0-0, libfontconfig1, libfreetype6"
 assets = [
-    ["target/release/recorde",            "usr/bin/recorde",                                        "755"],
-    ["assets/icon.png",                   "usr/share/icons/hicolor/256x256/apps/recorde.png",       "644"],
-    ["packaging/recorde.desktop",         "usr/share/applications/recorde.desktop",                 "644"],
+    ["target/release/recorde",    "usr/bin/recorde",                                          "755"],
+    ["assets/icon.png",           "usr/share/icons/hicolor/256x256/apps/recorde.png",         "644"],
+    ["packaging/recorde.desktop", "usr/share/applications/recorde.desktop",                   "644"],
 ]
+
+[package.metadata.wix]
+upgrade-guid = "F8B2C4E6-A3D5-4F7E-9B2C-6E8A1C3F5B7D"
+path-guid    = "A9C1E3F5-B7D9-4E6F-8A2C-1B3D5E7F9A2C"
+license      = false
+eula         = false
