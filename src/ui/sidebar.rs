@@ -109,7 +109,8 @@ impl Sidebar {
                             let is_head = *name == head.as_str();
                             let is_merged = merged_set.contains(*name);
                             let ab = ab_map.get(*name).copied();
-                            let resp = branch_row(ui, name, is_head, false, ab, is_merged);
+                            let resp = branch_row(ui, name, is_head, false, ab, is_merged)
+                                .on_hover_text("Right-click for options");
                             resp.context_menu(|ui| {
                                 ui.set_min_width(195.0);
                                 if !is_head {
@@ -196,7 +197,8 @@ impl Sidebar {
                     if *open {
                         ui.add_space(2.0);
                         for name in &tags {
-                            let resp = tag_row(ui, name);
+                            let resp = tag_row(ui, name)
+                                .on_hover_text("Right-click for options");
                             resp.context_menu(|ui| {
                                 ui.set_min_width(160.0);
                                 if ui.button("Push to Remote").clicked() {
@@ -256,7 +258,7 @@ impl Sidebar {
                                 ui.painter().circle_filled(dr.center(), 3.5, theme::ACCENT_YELLOW);
                                 ui.add_space(6.0);
                                 ui.label(RichText::new(&display).color(theme::text_secondary()).size(12.0));
-                            }).response;
+                            }).response.on_hover_text("Right-click for options");
                             resp.context_menu(|ui| {
                                 ui.set_min_width(155.0);
                                 if ui.button("Preview Diff").clicked() {
@@ -315,7 +317,7 @@ impl Sidebar {
                                 ui.painter().circle_filled(dr.center(), 3.5, theme::ACCENT_RED);
                                 ui.add_space(6.0);
                                 ui.label(RichText::new(&entry.name).color(theme::text_secondary()).size(12.0).strikethrough());
-                            }).response;
+                            }).response.on_hover_text("Right-click to restore");
                             resp.context_menu(|ui| {
                                 ui.set_min_width(155.0);
                                 if ui.button("Restore Branch").clicked() {
