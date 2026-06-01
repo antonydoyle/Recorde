@@ -2,7 +2,7 @@
 <!--
   WiX v3 installer template for Recorde.
   cargo-wix injects $(var.Version) from Cargo.toml.
-  Binary is always at target\release\ (cargo build --release, no --target flag).
+  Binary is always at target\release\ (release profile, no explicit target flag).
   UpgradeCode must never change between versions.
 -->
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
