@@ -1572,17 +1572,8 @@ impl eframe::App for RecordeApp {
                         self.config.save();
                     }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(10.0);
-                        let icon_size = egui::Vec2::splat(22.0);
-                        let (rect, _) = ui.allocate_exact_size(icon_size, egui::Sense::hover());
-                        ui.painter().image(
-                            self.app_icon_texture.id(),
-                            rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
-                    });
+                    // Icon is rendered inside menu::bar (see show_menu_contents),
+                    // because menu::bar expands to fill all available width.
                 });
             });
 
@@ -2613,6 +2604,7 @@ impl RecordeApp {
     }
 
     fn show_menu_contents(&mut self, ctx: &Context, ui: &mut egui::Ui) {
+        let icon_texture = self.app_icon_texture.clone();
         ui.add_space(6.0);
         egui::menu::bar(ui, |ui| {
                     ui.menu_button("File", |ui| {
@@ -2830,6 +2822,16 @@ impl RecordeApp {
                             self.open_settings(SettingsTab::About);
                             ui.close_menu();
                         }
+                    });
+
+                    // App icon — pinned to the right inside the menu bar
+                    // (menu::bar fills all available width, so right-to-left works here)
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                            icon_texture.id(),
+                            [20.0, 20.0],
+                        )));
                     });
                 });
     }
