@@ -439,7 +439,9 @@ pub fn push_tag(name: &str, state: SharedState) {
     let n = name.to_string();
     let path = state.lock().unwrap().repo_path.clone();
     let Some(path) = path else { return };
-    std::thread::spawn(move || match run_git_seq(&path, &["push", "origin", &n]) {
+    // Use full refspec to avoid ambiguity with branch names of the same name.
+    let refspec = format!("refs/tags/{}", n);
+    std::thread::spawn(move || match run_git_seq(&path, &["push", "origin", &refspec]) {
         Ok(()) => reload_repo(state),
         Err(e) => state.lock().unwrap().error = Some(e.user_message()),
     });

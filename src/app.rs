@@ -45,6 +45,7 @@ pub struct RecordeApp {
     create_branch_name: String,
     create_branch_checkout: bool,
     create_tag_name: String,
+    push_tag_after_create: bool,
     // New modals
     command_palette_open: bool,
     command_palette_query: String,
@@ -162,6 +163,7 @@ impl RecordeApp {
             create_branch_name: String::new(),
             create_branch_checkout: true,
             create_tag_name: String::new(),
+            push_tag_after_create: false,
             command_palette_open: false,
             command_palette_query: String::new(),
             branch_switcher_open: false,
@@ -283,8 +285,10 @@ impl RecordeApp {
                 self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid },
             SidebarAction::DeleteBranch(n)  =>
                 self.state.lock().unwrap().modal = ModalKind::ConfirmDeleteBranch { branch_name: n },
-            SidebarAction::CreateTag(_)     =>
-                self.state.lock().unwrap().modal = ModalKind::CreateTag { from_oid: None },
+            SidebarAction::CreateTag(oid) => {
+                let from = if oid.is_empty() { None } else { Some(oid) };
+                self.state.lock().unwrap().modal = ModalKind::CreateTag { from_oid: from };
+            }
             SidebarAction::DeleteTag(n)     =>
                 self.state.lock().unwrap().modal = ModalKind::ConfirmDeleteTag { tag_name: n },
             SidebarAction::StashApply(i)  => branches::stash_apply(i, self.state.clone()),
@@ -430,14 +434,21 @@ impl RecordeApp {
                 ui.add_space(4.0);
                 ui.add(egui::TextEdit::multiline(&mut self.tag_message_input)
                     .desired_width(f32::INFINITY).desired_rows(2).hint_text("Annotated tag message…"));
-                ui.add_space(12.0);
+                ui.add_space(8.0);
+                ui.checkbox(&mut self.push_tag_after_create,
+                    RichText::new("Push to remote after creating").color(theme::text_secondary()).size(12.0));
+                ui.add_space(8.0);
                 let can = !self.create_tag_name.trim().is_empty();
                 ui.horizontal(|ui| {
                     let ok     = ui.add_enabled(can, primary_btn("Create Tag")).clicked() || (can && ui.input(|i| i.key_pressed(Key::Enter)));
                     let cancel = ui.add(secondary_btn("Cancel")).clicked() || ui.input(|i| i.key_pressed(Key::Escape));
                     if ok {
+                        let tag_name = self.create_tag_name.trim().to_string();
                         let msg = if self.tag_message_input.trim().is_empty() { None } else { Some(self.tag_message_input.trim()) };
-                        branches::create_tag(self.create_tag_name.trim(), from_oid.as_deref(), msg, self.state.clone());
+                        branches::create_tag(&tag_name, from_oid.as_deref(), msg, self.state.clone());
+                        if self.push_tag_after_create {
+                            branches::push_tag(&tag_name, self.state.clone());
+                        }
                         self.state.lock().unwrap().modal = ModalKind::None;
                         self.create_tag_name.clear();
                         self.tag_message_input.clear();
