@@ -1,6 +1,7 @@
 [Desktop Entry]
 Name=Recorde
-Comment=Git client
+GenericName=Git Client
+Comment=A cross-platform desktop Git client built with Rust
 Exec=recorde
 Icon=recorde
 Type=Application

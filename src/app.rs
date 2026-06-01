@@ -85,6 +85,9 @@ pub struct RecordeApp {
     // Phase 13: Provider integrations
     provider_open: bool,
     provider_tab: ProviderTab,
+    issues_fetched: bool,
+    ci_fetched: bool,
+    releases_fetched: bool,
     branch_from_issue_input: String,
     branch_from_issue_number: Option<u32>,
     // Phase 10: Auth & Accounts
@@ -213,6 +216,9 @@ impl RecordeApp {
             compare_file_selected: None,
             provider_open: false,
             provider_tab: ProviderTab::Issues,
+            issues_fetched: false,
+            ci_fetched: false,
+            releases_fetched: false,
             branch_from_issue_input: String::new(),
             branch_from_issue_number: None,
             add_account_open: false,
@@ -297,7 +303,12 @@ impl RecordeApp {
             }
             ToolbarAction::OpenReflog  => self.state.lock().unwrap().modal = ModalKind::Reflog,
             ToolbarAction::OpenBisect  => self.state.lock().unwrap().modal = ModalKind::Bisect,
-            ToolbarAction::OpenProvider => self.provider_open = true,
+            ToolbarAction::OpenProvider => {
+                self.provider_open = true;
+                self.issues_fetched = false;
+                self.ci_fetched = false;
+                self.releases_fetched = false;
+            }
         }
     }
 
@@ -2950,7 +2961,8 @@ impl RecordeApp {
                         });
                         ui.add_space(4.0);
 
-                        if issue_list.is_empty() && !issue_loading && issue_error.is_none() {
+                        if !self.issues_fetched {
+                            self.issues_fetched = true;
                             load_issues(self.state.clone());
                         }
                         if issue_loading {
@@ -3053,7 +3065,8 @@ impl RecordeApp {
                         });
                         ui.add_space(4.0);
 
-                        if ci_runs.is_empty() && !ci_loading && ci_error.is_none() {
+                        if !self.ci_fetched {
+                            self.ci_fetched = true;
                             load_ci_runs(self.state.clone());
                         }
                         if ci_loading {
@@ -3113,7 +3126,8 @@ impl RecordeApp {
                         });
                         ui.add_space(4.0);
 
-                        if releases.is_empty() && !rel_loading && rel_error.is_none() {
+                        if !self.releases_fetched {
+                            self.releases_fetched = true;
                             load_releases(self.state.clone());
                         }
                         if rel_loading {

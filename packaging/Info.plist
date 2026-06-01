@@ -9,7 +9,7 @@
     <key>CFBundleIconFile</key>
     <string>icon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.recorde.gitclient</string>
+    <string>com.antonydoyle.recorde</string>
     <key>CFBundleName</key>
     <string>Recorde</string>
     <key>CFBundlePackageType</key>

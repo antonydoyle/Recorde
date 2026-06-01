@@ -17,7 +17,7 @@
 
     <Package Id='*'
              Keywords='Installer'
-             Description='Recorde git client'
+             Description='A cross-platform desktop Git client built with Rust'
              Manufacturer='Antony Doyle'
              InstallerVersion='450'
              Languages='1033'
