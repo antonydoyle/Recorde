@@ -411,7 +411,7 @@ impl CommitGraphView {
                         )
                         .on_hover_text(&node.author);
 
-                        draw_ref_column(&painter, origin.x, refs_w, row_top, cy, node, lane_col);
+                        draw_ref_column(&painter, origin.x, refs_w, row_top, cy, node, lane_col, &graph.tag_names);
 
                         // Commit summary
                         let summary_start = msg_start + 8.0;
@@ -637,6 +637,7 @@ fn draw_ref_column(
     cy: f32,
     node: &crate::git::graph::CommitNode,
     branch_color: Color32,
+    tag_names: &std::collections::HashSet<String>,
 ) {
     let clip = Rect::from_min_max(
         Pos2::new(origin_x + 8.0, row_top),
@@ -645,7 +646,7 @@ fn draw_ref_column(
     let painter = painter.with_clip_rect(clip);
     let mut x = origin_x + 10.0;
     for name in node.refs.iter().take(3) {
-        let is_tag = name.starts_with('v') && name.chars().nth(1).map_or(false, |c| c.is_ascii_digit());
+        let is_tag = tag_names.contains(name.as_str());
         let color = if is_tag { theme::ACCENT_PURPLE } else { branch_color };
         let font = FontId::proportional(10.5);
         let galley = painter.layout_no_wrap(name.to_string(), font, color);
