@@ -110,6 +110,20 @@ impl CommitGraph {
             });
         }
 
+        // Sort each node's refs so tags come first, ensuring they appear
+        // within the 3-badge limit in the graph column even on busy commits.
+        for node in nodes.iter_mut() {
+            node.refs.sort_by(|a, b| {
+                let a_tag = tag_names.contains(a.as_str());
+                let b_tag = tag_names.contains(b.as_str());
+                match (a_tag, b_tag) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => a.cmp(b),
+                }
+            });
+        }
+
         // Build OID→row index.
         let oid_to_row: HashMap<String, usize> = nodes
             .iter()
