@@ -1538,7 +1538,7 @@ impl eframe::App for RecordeApp {
         egui::TopBottomPanel::top("title_bar")
             .exact_height(36.0)
             .frame(egui::Frame::none().fill(theme::bg_titlebar())
-                .inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+                .inner_margin(egui::Margin::symmetric(12.0, 0.0)))
             .show(ctx, |ui| {
                 let r = ui.max_rect();
                 ui.painter().line_segment(
@@ -2605,7 +2605,6 @@ impl RecordeApp {
 
     fn show_menu_contents(&mut self, ctx: &Context, ui: &mut egui::Ui) {
         let icon_texture = self.app_icon_texture.clone();
-        ui.add_space(6.0);
         egui::menu::bar(ui, |ui| {
                     // App icon on the far left of the menu bar
                     ui.add(egui::Image::new(egui::load::SizedTexture::new(
