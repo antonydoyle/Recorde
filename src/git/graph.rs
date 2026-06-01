@@ -31,6 +31,8 @@ pub struct CommitGraph {
     pub edges: Vec<GraphEdge>,
     pub oid_to_row: HashMap<String, usize>,
     pub max_lane: usize,
+    /// Shorthand names of all tag refs (used by the sidebar for correct classification).
+    pub tag_names: std::collections::HashSet<String>,
 }
 
 impl CommitGraph {
@@ -39,15 +41,37 @@ impl CommitGraph {
         walk.push_glob("refs/*")?;
         walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
 
+        // Collect tag shorthand names so the sidebar can classify them correctly.
+        let tag_names: std::collections::HashSet<String> = repo
+            .tag_names(None)?
+            .iter()
+            .flatten()
+            .map(str::to_string)
+            .collect();
+
         // Map OID → ref names for badge display.
+        // For annotated tags reference.target() returns the tag-object OID, not the
+        // commit OID, so we peel each reference to its underlying commit before
+        // inserting into the map.
         let mut ref_map: HashMap<String, Vec<String>> = HashMap::new();
         for reference in repo.references()? {
             let reference = reference?;
-            if let (Some(name), Some(target)) = (reference.shorthand(), reference.target()) {
+            let Some(shorthand) = reference.shorthand() else { continue };
+            // peel_to_commit handles both lightweight tags (direct) and annotated tags
+            let commit_oid = reference
+                .peel_to_commit()
+                .map(|c| c.id().to_string())
+                .or_else(|_| {
+                    // fallback for refs that aren't commits (e.g. blobs, trees)
+                    reference.target().map(|o| o.to_string()).ok_or_else(|| {
+                        git2::Error::from_str("no target")
+                    })
+                });
+            if let Ok(oid) = commit_oid {
                 ref_map
-                    .entry(target.to_string())
+                    .entry(oid)
                     .or_default()
-                    .push(name.to_string());
+                    .push(shorthand.to_string());
             }
         }
 
@@ -108,7 +132,7 @@ impl CommitGraph {
             }
         }
 
-        Ok(Self { nodes, edges, oid_to_row, max_lane })
+        Ok(Self { nodes, edges, oid_to_row, max_lane, tag_names })
     }
 }
 
