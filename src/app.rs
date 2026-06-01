@@ -121,14 +121,16 @@ impl RecordeApp {
             fonts.families.entry(egui::FontFamily::Proportional).or_default().push("noto_symbols2".into());
             fonts.families.entry(egui::FontFamily::Monospace).or_default().push("noto_symbols2".into());
         }
-        // Material Icons — named font family for icon rendering
-        if let Ok(bytes) = std::fs::read("assets/MaterialIcons.ttf") {
-            fonts.font_data.insert("material-icons".into(), egui::FontData::from_owned(bytes));
-            fonts.families.insert(
-                egui::FontFamily::Name("material-icons".into()),
-                vec!["material-icons".into()],
-            );
-        }
+        // Material Icons — embedded at compile time so the installed binary
+        // doesn't need assets/ alongside it (fixes the deb/AppImage install crash).
+        fonts.font_data.insert(
+            "material-icons".into(),
+            egui::FontData::from_static(include_bytes!("../assets/MaterialIcons.ttf")),
+        );
+        fonts.families.insert(
+            egui::FontFamily::Name("material-icons".into()),
+            vec!["material-icons".into()],
+        );
         cc.egui_ctx.set_fonts(fonts);
 
         theme::apply(&cc.egui_ctx, dark_theme, high_contrast);
