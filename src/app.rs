@@ -39,6 +39,8 @@ pub struct RecordeApp {
     right_tab: RightTab,
     last_auto_detail_commit: Option<String>,
     config: Config,
+    /// Pre-loaded texture of the app icon for rendering in the title bar.
+    app_icon_texture: egui::TextureHandle,
     /// Tracks the last-seen mtimes of key .git ref files so external changes
     /// (tags created in a terminal, commits from another tool, etc.) are picked up.
     last_ref_stamp: u64,
@@ -134,6 +136,18 @@ impl RecordeApp {
             cc.egui_ctx.set_pixels_per_point(config.font_scale);
         }
 
+        // Pre-load the app icon as a texture so the title bar can render it.
+        let app_icon_texture = {
+            let icon_bytes = include_bytes!("../assets/icon.png");
+            let icon_data = eframe::icon_data::from_png_bytes(icon_bytes)
+                .expect("failed to decode app icon");
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                [icon_data.width as usize, icon_data.height as usize],
+                &icon_data.rgba,
+            );
+            cc.egui_ctx.load_texture("app_icon", color_image, egui::TextureOptions::LINEAR)
+        };
+
         let state = new_shared_state();
         let runner = GitRunner::new();
         let to_open = initial_repo.or_else(|| config.recent_repos.first().cloned());
@@ -160,6 +174,7 @@ impl RecordeApp {
             status_bar: StatusBar::new(state.clone()),
             right_tab: RightTab::Changes,
             last_auto_detail_commit: None,
+            app_icon_texture,
             last_ref_stamp: 0,
             last_ref_check: std::time::Instant::now(),
             config,
@@ -1558,8 +1573,15 @@ impl eframe::App for RecordeApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(16.0);
-                        ui.label(RichText::new("Recorde").color(theme::text_muted()).size(12.5));
+                        ui.add_space(10.0);
+                        let icon_size = egui::Vec2::splat(22.0);
+                        let (rect, _) = ui.allocate_exact_size(icon_size, egui::Sense::hover());
+                        ui.painter().image(
+                            self.app_icon_texture.id(),
+                            rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
                     });
                 });
             });

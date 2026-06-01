@@ -30,6 +30,9 @@
       Schedule='afterInstallInitialize'
       DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
+    <Icon Id='RecordeIcon.ico' SourceFile='assets\icon.ico'/>
+    <Property Id='ARPPRODUCTICON' Value='RecordeIcon.ico'/>
+
     <Media Id='1' Cabinet='main.cab' EmbedCab='yes'/>
 
     <Directory Id='TARGETDIR' Name='SourceDir'>
@@ -66,7 +69,8 @@
                   Name='Recorde'
                   Description='Git client'
                   Target='[APPLICATIONFOLDER]recorde.exe'
-                  WorkingDirectory='APPLICATIONFOLDER'/>
+                  WorkingDirectory='APPLICATIONFOLDER'
+                  Icon='RecordeIcon.ico'/>
         <RemoveFolder Id='CleanUpShortCut'
                       Directory='ApplicationProgramsFolder'
                       On='uninstall'/>
