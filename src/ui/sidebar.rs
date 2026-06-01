@@ -38,7 +38,7 @@ impl Sidebar {
         let mut open = HashMap::new();
         open.insert("LOCAL", true);
         open.insert("REMOTE", false);
-        open.insert("TAGS", false);
+        open.insert("TAGS", true);
         open.insert("STASHES", false);
         open.insert("WORKTREES", true);
         Self { state, open }
