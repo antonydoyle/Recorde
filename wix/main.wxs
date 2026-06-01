@@ -1,8 +1,8 @@
 <?xml version='1.0' encoding='windows-1252'?>
 <!--
   WiX v3 installer template for Recorde.
-  cargo-wix injects $(var.Version) from Cargo.toml and
-  $(var.RecordeBinDir) as the path to the compiled binary.
+  cargo-wix injects $(var.Version) from Cargo.toml.
+  Binary is always at target\release\ (cargo build --release, no --target flag).
   UpgradeCode must never change between versions.
 -->
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
@@ -43,7 +43,7 @@
             <File Id='exe0'
                   Name='recorde.exe'
                   DiskId='1'
-                  Source='$(var.RecordeBinDir)\recorde.exe'
+                  Source='target\release\recorde.exe'
                   KeyPath='yes'/>
           </Component>
 

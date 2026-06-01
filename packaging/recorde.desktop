@@ -4,6 +4,6 @@ Comment=Git client
 Exec=recorde
 Icon=recorde
 Type=Application
-Categories=Development;VersionControl;
+Categories=Development;RevisionControl;
 Keywords=git;version-control;repository;
 StartupWMClass=recorde
