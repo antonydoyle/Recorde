@@ -1,6 +1,6 @@
 [package]
 name = "recorde"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 authors = ["Antony Doyle <antony@siege21.com>"]
 description = "A cross-platform desktop Git client built with Rust"
@@ -19,6 +19,8 @@ path = "src/main.rs"
 eframe = { version = "0.28", default-features = false, features = [
     "default_fonts",
     "glow",
+    "wayland",
+    "x11",
 ] }
 egui = "0.28"
 git2 = { version = "0.19", features = ["vendored-libgit2", "vendored-openssl"] }
