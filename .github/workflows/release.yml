@@ -83,27 +83,32 @@ jobs:
 
       # ── AppImage ──────────────────────────────────────────────────────────
       - name: Build AppImage
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-          DEPLOY_GTK_VERSION: "3"
         run: |
-          # Download tools
-          wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
-          wget -q "https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/releases/download/continuous/linuxdeploy-plugin-gtk.sh"
-          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
+          # Download appimagetool (more reliable on CI than linuxdeploy)
+          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool-x86_64.AppImage
 
-          # Build AppImage (linuxdeploy creates the AppImage in the current directory)
-          ./linuxdeploy-x86_64.AppImage \
-            --appdir AppDir \
-            --executable target/release/recorde \
-            --desktop-file packaging/recorde.desktop \
-            --icon-file assets/icon.png \
-            --plugin gtk \
-            --output appimage
+          # Build AppDir structure
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
 
-          # Rename to versioned name
-          mv Recorde*.AppImage "dist/Recorde-${VERSION}-x86_64.AppImage" 2>/dev/null || \
-          mv recorde*.AppImage "dist/Recorde-${VERSION}-x86_64.AppImage"
+          cp target/release/recorde                          AppDir/usr/bin/recorde
+          cp packaging/recorde.desktop                       AppDir/usr/share/applications/recorde.desktop
+          cp assets/icon.png                                 AppDir/usr/share/icons/hicolor/256x256/apps/recorde.png
+          # AppImage root-level symlinks required by the spec
+          cp assets/icon.png                                 AppDir/recorde.png
+          cp packaging/recorde.desktop                       AppDir/recorde.desktop
+
+          cat > AppDir/AppRun << 'APPRUN'
+          #!/bin/bash
+          APPDIR="$(dirname "$(readlink -f "$0")")"
+          exec "$APPDIR/usr/bin/recorde" "$@"
+          APPRUN
+          chmod +x AppDir/AppRun
+
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run \
+            AppDir "dist/Recorde-${VERSION}-x86_64.AppImage"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -132,7 +137,7 @@ jobs:
         run: |
           $dir = "dist\recorde-$env:VERSION-windows-x86_64"
           New-Item -ItemType Directory -Force -Path $dir
-          Copy-Item target\release\recorde.exe $dir\
+          Copy-Item target\x86_64-pc-windows-msvc\release\recorde.exe $dir\
           Copy-Item README.md, LICENSE $dir\
           Compress-Archive -Path $dir -DestinationPath "dist\recorde-$env:VERSION-windows-x86_64.zip"
 
@@ -141,7 +146,7 @@ jobs:
         run: cargo install cargo-wix --locked
 
       - name: Build MSI
-        run: cargo wix --no-build --nocapture
+        run: cargo wix --no-build --nocapture --target x86_64-pc-windows-msvc
 
       - name: Rename MSI
         shell: pwsh
