@@ -39,6 +39,10 @@ pub struct RecordeApp {
     right_tab: RightTab,
     last_auto_detail_commit: Option<String>,
     config: Config,
+    /// Tracks the last-seen mtimes of key .git ref files so external changes
+    /// (tags created in a terminal, commits from another tool, etc.) are picked up.
+    last_ref_stamp: u64,
+    last_ref_check: std::time::Instant,
     dark_theme: bool,
     high_contrast: bool,
     // Modal form inputs
@@ -156,6 +160,8 @@ impl RecordeApp {
             status_bar: StatusBar::new(state.clone()),
             right_tab: RightTab::Changes,
             last_auto_detail_commit: None,
+            last_ref_stamp: 0,
+            last_ref_check: std::time::Instant::now(),
             config,
             dark_theme,
             high_contrast,
@@ -1459,6 +1465,11 @@ impl eframe::App for RecordeApp {
             self.focus_pane(4);
         }
 
+        // ── Detect external repo changes (tags, commits from other tools) ──
+        // Request a wakeup in ~1 s so the poller fires even when the window is idle.
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        self.poll_external_changes();
+
         // ── Drain runner progress events ──────────────────────────────────
         self.apply_runner_progress();
 
@@ -2369,6 +2380,31 @@ impl RecordeApp {
         }
     }
 
+    /// Check whether the repo's ref files have been modified by an external tool
+    /// (e.g. `git tag`, `git commit`, another git client). Polls at most once
+    /// per second to keep the overhead negligible. Triggers a graph reload when
+    /// a change is detected.
+    fn poll_external_changes(&mut self) {
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+        if self.last_ref_check.elapsed() < POLL_INTERVAL { return; }
+        self.last_ref_check = std::time::Instant::now();
+
+        // Only watch when a repo is open and no load is already in flight
+        let repo_path = self.state.lock().unwrap().repo_path.clone();
+        let Some(ref path) = repo_path else { return };
+        let busy = !self.state.lock().unwrap().active_ops.is_empty();
+        if busy { return; }
+
+        let stamp = ref_stamp(path);
+        if stamp != 0 && stamp != self.last_ref_stamp {
+            if self.last_ref_stamp != 0 {
+                // Something changed externally — reload silently
+                crate::git::branches::reload_repo(self.state.clone());
+            }
+            self.last_ref_stamp = stamp;
+        }
+    }
+
     fn apply_runner_progress(&mut self) {
         let events = self.runner.drain_progress();
         if events.is_empty() { return; }
@@ -3146,6 +3182,30 @@ impl RecordeApp {
         if let Some(sel) = new_issue_sel { self.state.lock().unwrap().issue_selected = sel; }
         if let Some(ref url) = open_url_req { let _ = open_url(url); }
     }
+}
+
+/// Returns a combined modification-time fingerprint for the ref files that
+/// change when tags, branches, or commits are added/removed externally.
+/// Returns 0 if the repo path can't be opened.
+fn ref_stamp(repo_path: &std::path::Path) -> u64 {
+    fn mtime(p: &std::path::Path) -> u64 {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+            .unwrap_or(0)
+    }
+
+    let Ok(repo) = git2::Repository::open(repo_path) else { return 0 };
+    let git_dir = repo.path();
+
+    // Combine mtimes of the files most likely to change on external ref operations
+    let mut stamp: u64 = 0;
+    stamp = stamp.wrapping_add(mtime(&git_dir.join("packed-refs")));
+    stamp = stamp.wrapping_add(mtime(&git_dir.join("HEAD")));
+    // refs/heads and refs/tags directories update when individual ref files change
+    stamp = stamp.wrapping_add(mtime(&git_dir.join("refs").join("heads")));
+    stamp = stamp.wrapping_add(mtime(&git_dir.join("refs").join("tags")));
+    stamp
 }
 
 fn slugify(s: &str) -> String {
