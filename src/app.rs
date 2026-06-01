@@ -2607,6 +2607,12 @@ impl RecordeApp {
         let icon_texture = self.app_icon_texture.clone();
         ui.add_space(6.0);
         egui::menu::bar(ui, |ui| {
+                    // App icon on the far left of the menu bar
+                    ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                        icon_texture.id(),
+                        [20.0, 20.0],
+                    )));
+                    ui.add_space(6.0);
                     ui.menu_button("File", |ui| {
                         if ui.button("Open Repository…").clicked() {
                             if let Some(path) = rfd::FileDialog::new().pick_folder() {
@@ -2824,15 +2830,6 @@ impl RecordeApp {
                         }
                     });
 
-                    // App icon — pinned to the right inside the menu bar
-                    // (menu::bar fills all available width, so right-to-left works here)
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(8.0);
-                        ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                            icon_texture.id(),
-                            [20.0, 20.0],
-                        )));
-                    });
                 });
     }
 }
