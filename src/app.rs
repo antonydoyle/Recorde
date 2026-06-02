@@ -137,7 +137,7 @@ impl RecordeApp {
         cc.egui_ctx.set_fonts(fonts);
 
         theme::apply(&cc.egui_ctx, dark_theme, high_contrast);
-        if config.font_scale != 1.0 {
+        if config.font_scale > 0.0 && config.font_scale != 1.0 {
             cc.egui_ctx.set_pixels_per_point(config.font_scale);
         }
 

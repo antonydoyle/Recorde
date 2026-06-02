@@ -91,10 +91,8 @@ fn default_font_scale() -> f32 { 1.0 }
 
 impl Config {
     pub fn load() -> Self {
-        std::fs::read_to_string(config_path())
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        let content = std::fs::read_to_string(config_path()).unwrap_or_default();
+        toml::from_str(&content).unwrap_or_else(|_| toml::from_str("").unwrap_or_default())
     }
 
     pub fn save(&self) {
