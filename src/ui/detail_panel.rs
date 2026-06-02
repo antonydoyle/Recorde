@@ -76,7 +76,8 @@ impl DetailPanel {
                 ui.add_space(8.0);
                 meta_row(ui, "Author", &detail.author);
                 meta_row(ui, "Email", &detail.author_email);
-                meta_row(ui, "Date", &theme::relative_time(detail.timestamp));
+                meta_row(ui, "Date", &theme::relative_time(detail.timestamp))
+                    .on_hover_text(theme::absolute_time(detail.timestamp));
 
                 ui.add_space(10.0);
                 ui.add(egui::Separator::default().spacing(0.0));
@@ -226,7 +227,7 @@ fn status_tooltip(status: char) -> &'static str {
     }
 }
 
-fn meta_row(ui: &mut Ui, label: &str, value: &str) {
+fn meta_row(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
     ui.horizontal(|ui| {
         ui.add_space(12.0);
         ui.label(
@@ -235,6 +236,6 @@ fn meta_row(ui: &mut Ui, label: &str, value: &str) {
                 .font(FontId::monospace(11.0)),
         );
         ui.add_space(4.0);
-        ui.label(RichText::new(value).color(theme::text_secondary()).size(12.0));
-    });
+        ui.label(RichText::new(value).color(theme::text_secondary()).size(12.0))
+    }).response
 }

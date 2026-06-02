@@ -1,6 +1,6 @@
 [package]
 name = "recorde"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 authors = ["Antony Doyle <antony@siege21.com>"]
 description = "A cross-platform desktop Git client built with Rust"

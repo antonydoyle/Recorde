@@ -427,6 +427,14 @@ impl CommitGraphView {
                             &theme::relative_time(node.time),
                             FontId::proportional(11.5), dim_col(theme::text_muted()),
                         );
+                        ui.interact(
+                            Rect::from_min_max(
+                                Pos2::new(time_start, row_top),
+                                Pos2::new(time_start + time_w, row_top + ROW_H),
+                            ),
+                            egui::Id::new(("time_cell", i)),
+                            Sense::hover(),
+                        ).on_hover_text(theme::absolute_time(node.time));
                         // Author indicator attached to the graph, icon-only.
                         let author_x = (dot_x + 18.0).min(origin.x + refs_w + graph_w - 14.0);
                         let author_pos = Pos2::new(author_x, cy);
