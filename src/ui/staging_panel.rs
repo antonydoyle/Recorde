@@ -568,11 +568,26 @@ fn load_commit_template(repo_path: &std::path::Path) -> Option<String> {
 fn open_file_in_editor(file_path: &str, repo_path: &Option<std::path::PathBuf>) {
     let Some(rp) = repo_path else { return };
     let full = rp.join(file_path);
-    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "xdg-open".into());
+    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| {
+        #[cfg(target_os = "windows")] { "notepad".into() }
+        #[cfg(not(target_os = "windows"))] { "xdg-open".into() }
+    });
     let mut parts = editor.split_whitespace();
-    if let Some(prog) = parts.next() {
-        let _ = std::process::Command::new(prog).args(parts).arg(full).spawn();
-    }
+    let Some(prog) = parts.next() else { return };
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", prog]).args(parts).arg(full)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    #[cfg(not(target_os = "windows"))]
+    let _ = std::process::Command::new(prog)
+        .args(parts).arg(full)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn reveal_in_folder(file_path: &str, repo_path: &Option<std::path::PathBuf>) {

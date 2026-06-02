@@ -1,3 +1,6 @@
+// On Windows, suppress the console window that would otherwise open alongside the GUI.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod app;
 mod auth;
 mod config;

@@ -3393,14 +3393,38 @@ fn open_repo_in_editor(repo_path: Option<std::path::PathBuf>, configured_editor:
             .map_err(|_| "Set a default editor in App Settings first.".to_string())?
     };
 
-    let mut parts = editor.split_whitespace();
-    let program = parts.next().ok_or_else(|| "Set a default editor in App Settings first.".to_string())?;
-    let mut command = std::process::Command::new(program);
-    for arg in parts {
-        command.arg(arg);
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, run through cmd /C so .cmd/.bat wrappers (e.g. code.cmd) work.
+        let mut parts = editor.split_whitespace();
+        let program = parts.next().ok_or_else(|| "Set a default editor in App Settings first.".to_string())?;
+        std::process::Command::new("cmd")
+            .args(["/C", program])
+            .args(parts)
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open editor: {e}"))
     }
-    command.arg(path);
-    command.spawn().map(|_| ()).map_err(|e| format!("Could not open editor: {e}"))
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut parts = editor.split_whitespace();
+        let program = parts.next().ok_or_else(|| "Set a default editor in App Settings first.".to_string())?;
+        let mut command = std::process::Command::new(program);
+        for arg in parts {
+            command.arg(arg);
+        }
+        command.arg(&path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open editor: {e}"))
+    }
 }
 
 fn pull_request_target(repo_path: &std::path::Path, branch: &str) -> Option<(String, String)> {
