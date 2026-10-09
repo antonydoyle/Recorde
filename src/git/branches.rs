@@ -339,10 +339,6 @@ pub fn stash_branch(branch_name: &str, stash_index: usize, state: SharedState) {
     });
 }
 
-fn do_stash_save(_path: &Path) -> Result<(), git2::Error> {
-    Ok(())
-} // kept for ABI compat, unused
-
 pub fn stash_apply(index: usize, state: SharedState) {
     let path = state.lock().unwrap().repo_path.clone();
     let Some(path) = path else { return };
