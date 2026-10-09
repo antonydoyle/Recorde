@@ -120,6 +120,20 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/windows_task.ps1 -Executable cargo -Arguments @('build', '--locked') -Purpose 'CI GUI build' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 1200 -MaxMemoryMiB 8192
+          # Hosted Windows runners expose legacy OpenGL without a GPU driver.
+          # Pin and verify Mesa; deploy only beside the CI debug executable.
+          $mesa = "$env:RUNNER_TEMP/recorde-mesa"
+          New-Item -ItemType Directory -Force -Path $mesa | Out-Null
+          $archive = "$mesa/mesa.7z"
+          Invoke-WebRequest 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne '351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695') {
+            throw 'Mesa archive checksum mismatch'
+          }
+          tar -xf $archive -C $mesa x64/opengl32.dll x64/libgallium_wgl.dll
+          if ($LASTEXITCODE -ne 0) { throw 'Mesa extraction failed' }
+          Copy-Item "$mesa/x64/opengl32.dll", "$mesa/x64/libgallium_wgl.dll" target/debug/
+          $env:GALLIUM_DRIVER = 'llvmpipe'
+          $env:LIBGL_ALWAYS_SOFTWARE = '1'
           ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts") -Purpose 'CI GUI smoke test' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 120
       - name: Upload Windows process ledgers
         if: always() && runner.os == 'Windows'
