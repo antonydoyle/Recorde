@@ -123,7 +123,7 @@ jobs:
           ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts") -Purpose 'CI GUI smoke test' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 120
       - name: Upload Windows process ledgers
         if: always() && runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-process-safety
           path: ${{ runner.temp }}/process-safety
@@ -137,13 +137,13 @@ jobs:
           done
       - name: Upload Linux process ledgers
         if: always() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-process-safety
           path: ${{ runner.temp }}/process-safety
       - name: Upload GUI smoke artifacts
         if: always() && (runner.os == 'Linux' || runner.os == 'Windows')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gui-smoke-${{ runner.os }}
           path: ${{ runner.temp }}/gui-artifacts

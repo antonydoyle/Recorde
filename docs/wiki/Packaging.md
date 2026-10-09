@@ -1,5 +1,11 @@
 # Packaging
 
+The Release workflow can also be run manually from a branch to validate and build
+every platform without publishing. After that run passes, push the matching
+`vX.Y.Z` tag to publish; the tag must match `Cargo.toml`. Publishing waits for all
+platform builds and the shared CI/security checks. Font licences are included in
+portable archives and installers as well as the application's About panel.
+
 Recorde includes packaging metadata for Linux desktop integration, Debian-style
 packages, macOS app metadata, and Windows WiX installers.
 

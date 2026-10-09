@@ -1,4 +1,5 @@
 use crate::git::commit_settings::{self, Signing};
+use crate::ui::button::Button;
 use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver},
@@ -76,7 +77,7 @@ impl CommitSigning {
             });
         }
         if ui
-            .add_enabled(!busy, egui::Button::new("Reload signing settings"))
+            .add_enabled(!busy, Button::new("Reload signing settings"))
             .clicked()
         {
             self.reload(path.clone());

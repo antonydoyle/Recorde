@@ -1,3 +1,4 @@
+use crate::ui::button::Button;
 use egui::{Color32, FontId, Key, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::git::operations::load_commit_detail;
@@ -24,6 +25,7 @@ const DOT_R: f32 = 6.0;
 const DOT_R_SEL: f32 = 8.0;
 const GRAPH_LEFT: f32 = 10.0;
 const HEADER_H: f32 = 34.0;
+const NAVIGATION_H: f32 = 52.0;
 const RESIZE_HIT_W: f32 = 14.0;
 
 pub struct CommitGraphView {
@@ -41,6 +43,8 @@ pub struct CommitGraphView {
     last_saved_time_w: f32,
     last_saved_hash_w: f32,
     colorblind: bool,
+    palette_repo: Option<std::path::PathBuf>,
+    color_order: [usize; 8],
     range_start: String,
     range_end: String,
     ref_query: String,
@@ -63,6 +67,8 @@ impl CommitGraphView {
             last_saved_time_w: TIME_W_DEF,
             last_saved_hash_w: HASH_W_DEF,
             colorblind: false,
+            palette_repo: None,
+            color_order: theme::graph_color_order(None),
             range_start: String::new(),
             range_end: String::new(),
             ref_query: String::new(),
@@ -280,10 +286,12 @@ impl CommitGraphView {
         let navigation_top = ui.min_rect().min.y + search_h + fh_h;
         let navigation_rect = Rect::from_min_size(
             Pos2::new(ui.min_rect().min.x, navigation_top),
-            Vec2::new(avail, 42.0),
+            Vec2::new(avail, NAVIGATION_H),
         );
         ui.allocate_ui_at_rect(navigation_rect, |ui| {
+            ui.add_space(10.0);
             ui.horizontal(|ui| {
+                ui.add_space(10.0);
                 let (dirty, loading) = { let s = self.state.lock().unwrap(); (s.dirty_count, s.repo_load_path.is_some()) };
                 if ui.button(format!("Working changes ({dirty})")).clicked() {
                     let mut s = self.state.lock().unwrap();
@@ -306,13 +314,13 @@ impl CommitGraphView {
                 self.filter_menu(ui, &graph);
                 ui.label(format!("{} commits", graph.nodes.len()));
                 if graph.replacement_refs { ui.colored_label(theme::accent_yellow(), "Original object history").on_hover_text("This repository has replacement refs. The graph and commit detail show stored original objects; native Git operations may honor replacements. Review replacement refs in Git before editing this history."); }
-                if graph.has_more && ui.add_enabled(!loading, egui::Button::new("More...")).clicked() {
+                if graph.has_more && ui.add_enabled(!loading, Button::new("More...")).clicked() {
                     crate::git::operations::load_more_history(self.state.clone());
                 }
                 if graph.has_more && search_active { ui.label("Search covers loaded commits."); }
             });
         });
-        let header_top = navigation_top + 42.0;
+        let header_top = navigation_top + NAVIGATION_H;
         let header_rect = Rect::from_min_size(
             Pos2::new(ui.min_rect().min.x, header_top),
             Vec2::new(avail, HEADER_H),
@@ -467,6 +475,10 @@ impl CommitGraphView {
             self.scroll_to_oid = None;
         }
         let repo_key = self.state.lock().unwrap().repo_path.clone();
+        if self.palette_repo != repo_key {
+            self.color_order = theme::graph_color_order(repo_key.as_deref());
+            self.palette_repo = repo_key.clone();
+        }
         ui.allocate_ui_at_rect(scroll_rect, |ui| {
             egui::ScrollArea::vertical()
                 .id_source(("commit_log_scroll", repo_key))
@@ -597,7 +609,10 @@ impl CommitGraphView {
                             continue;
                         }
 
-                        let color = theme::lane_color_for_palette(edge.from_lane, self.colorblind);
+                        let color = theme::lane_color_for_palette(
+                            self.color_order[edge.from_lane % self.color_order.len()],
+                            self.colorblind,
+                        );
                         let from_x =
                             origin.x + refs_w + GRAPH_LEFT + edge.from_lane as f32 * LANE_W;
                         let to_x = origin.x + refs_w + GRAPH_LEFT + edge.to_lane as f32 * LANE_W;
@@ -652,8 +667,11 @@ impl CommitGraphView {
                         }
 
                         let fade = if dim { 0.25 } else { 1.0 };
-                        let lane_col = theme::lane_color_for_palette(node.lane, self.colorblind)
-                            .gamma_multiply(fade);
+                        let lane_col = theme::lane_color_for_palette(
+                            self.color_order[node.lane % self.color_order.len()],
+                            self.colorblind,
+                        )
+                        .gamma_multiply(fade);
                         let dot_x = origin.x + refs_w + GRAPH_LEFT + node.lane as f32 * LANE_W;
 
                         // Node circle
@@ -923,7 +941,7 @@ impl CommitGraphView {
             if ui
                 .add_enabled(
                     !self.range_start.trim().is_empty() && !self.range_end.trim().is_empty(),
-                    egui::Button::new("Apply range"),
+                    Button::new("Apply range"),
                 )
                 .clicked()
             {

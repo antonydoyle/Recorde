@@ -1,3 +1,4 @@
+use crate::ui::button::Button;
 use egui::{Color32, Context, Key, Modifiers, RichText, Stroke};
 
 use crate::auth::{ProviderKind, StoredAccount};
@@ -1378,7 +1379,7 @@ impl RecordeApp {
                     if ui
                         .add_enabled(
                             self.account_task.is_none(),
-                            egui::Button::new(
+                            Button::new(
                                 RichText::new("Remove")
                                     .color(theme::accent_red())
                                     .size(12.0),
@@ -1467,7 +1468,7 @@ impl RecordeApp {
                     };
                     if ui
                         .add(
-                            egui::Button::new(RichText::new(p.label()).size(12.0).color(color))
+                            Button::new(RichText::new(p.label()).size(12.0).color(color))
                                 .fill(Color32::TRANSPARENT),
                         )
                         .clicked()
@@ -1725,7 +1726,7 @@ impl RecordeApp {
         egui::CollapsingHeader::new("Checkout and history").show(ui, |ui| {
             let caps = self.state.lock().unwrap().capabilities.clone().unwrap_or_default();
             ui.label(if caps.is_shallow { "Shallow history" } else { "Full history" });
-            if ui.add_enabled(!caps.is_shallow, egui::Button::new("Optimize history loading")).clicked() {
+            if ui.add_enabled(!caps.is_shallow, Button::new("Optimize history loading")).clicked() {
                 self.state.lock().unwrap().remote_op = Some("Optimize history loading".into());
                 crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), crate::git::lifecycle::optimize_history);
             }
@@ -1738,7 +1739,7 @@ impl RecordeApp {
             ui.add(egui::TextEdit::multiline(&mut self.repo_ui.sparse_paths).desired_rows(3));
             ui.label(styled_muted("Root files remain included. Applying or disabling sparse checkout requires a clean worktree and index."));
             ui.horizontal(|ui| {
-                if ui.add_enabled(!self.repo_ui.sparse_paths.trim().is_empty(), egui::Button::new("Apply sparse checkout")).clicked() {
+                if ui.add_enabled(!self.repo_ui.sparse_paths.trim().is_empty(), Button::new("Apply sparse checkout")).clicked() {
                     let directories = self.repo_ui.sparse_paths.lines().map(str::to_string).collect();
                     crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |repo| crate::git::lifecycle::set_sparse(repo, Some(directories)));
                 }
@@ -2329,13 +2330,13 @@ impl RecordeApp {
                     for f in [PrFilter::Open, PrFilter::Closed, PrFilter::All] {
                         let active = pr_filter == f;
                         let color = if active { theme::accent_teal() } else { theme::text_muted() };
-                        let btn = ui.add(egui::Button::new(RichText::new(f.label()).size(13.0).color(color))
+                        let btn = ui.add(Button::new(RichText::new(f.label()).size(13.0).color(color))
                             .fill(Color32::TRANSPARENT));
                         if active { ui.painter().line_segment([btn.rect.left_bottom(), btn.rect.right_bottom()], egui::Stroke::new(2.0, theme::accent_teal())); }
                         if btn.clicked() && !active { new_filter = Some(f); }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new("✕").fill(Color32::TRANSPARENT)).clicked() {
+                        if ui.add(Button::new("✕").fill(Color32::TRANSPARENT)).clicked() {
                             self.repo_ui.pull_requests_open = false;
                         }
                         if ui.add(secondary_btn("Refresh")).clicked() {
@@ -2918,7 +2919,7 @@ impl eframe::App for RecordeApp {
                                     };
                                     let btn = ui
                                         .add(
-                                            egui::Button::new(
+                                            Button::new(
                                                 RichText::new(*lbl).size(14.0).color(text_col),
                                             )
                                             .fill(Color32::TRANSPARENT)
@@ -3386,7 +3387,7 @@ impl RecordeApp {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add(egui::Button::new("✕").fill(Color32::TRANSPARENT))
+                            .add(Button::new("✕").fill(Color32::TRANSPARENT))
                             .clicked()
                         {
                             close = true;
@@ -3583,7 +3584,7 @@ impl RecordeApp {
                     if ui
                         .add_enabled(
                             has_sel,
-                            egui::Button::new(RichText::new("Mark Good").color(Color32::WHITE))
+                            Button::new(RichText::new("Mark Good").color(Color32::WHITE))
                                 .fill(theme::accent_green())
                                 .min_size([110.0, 26.0].into()),
                         )
@@ -3595,7 +3596,7 @@ impl RecordeApp {
                     if ui
                         .add_enabled(
                             has_sel,
-                            egui::Button::new(RichText::new("Mark Bad").color(Color32::WHITE))
+                            Button::new(RichText::new("Mark Bad").color(Color32::WHITE))
                                 .fill(theme::accent_red())
                                 .min_size([110.0, 26.0].into()),
                         )
@@ -3691,7 +3692,7 @@ impl RecordeApp {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add(egui::Button::new("✕").fill(Color32::TRANSPARENT))
+                            .add(Button::new("✕").fill(Color32::TRANSPARENT))
                             .clicked()
                         {
                             close = true;
@@ -3945,12 +3946,10 @@ impl RecordeApp {
                     ui.add_space(10.0);
                     if ui
                         .add(
-                            egui::Button::new(
-                                RichText::new("Continue").color(Color32::WHITE).size(13.0),
-                            )
-                            .fill(theme::accent_teal())
-                            .rounding(5.0)
-                            .min_size(egui::Vec2::new(72.0, 24.0)),
+                            Button::new(RichText::new("Continue").color(Color32::WHITE).size(13.0))
+                                .fill(theme::accent_teal())
+                                .rounding(5.0)
+                                .min_size(egui::Vec2::new(72.0, 24.0)),
                         )
                         .clicked()
                     {
@@ -3960,7 +3959,7 @@ impl RecordeApp {
                         ui.add_space(4.0);
                         if ui
                             .add(
-                                egui::Button::new(
+                                Button::new(
                                     RichText::new("Skip")
                                         .color(theme::text_secondary())
                                         .size(13.0),
@@ -3978,7 +3977,7 @@ impl RecordeApp {
                     ui.add_space(4.0);
                     if ui
                         .add(
-                            egui::Button::new(
+                            Button::new(
                                 RichText::new("Abort").color(theme::accent_red()).size(13.0),
                             )
                             .fill(Color32::TRANSPARENT)
@@ -4244,7 +4243,7 @@ impl RecordeApp {
                                     .add_enabled(
                                         !self.workspace_name.trim().is_empty()
                                             && !self.config.open_repos.is_empty(),
-                                        egui::Button::new("Save open tabs as workspace"),
+                                        Button::new("Save open tabs as workspace"),
                                     )
                                     .clicked()
                                 {
@@ -4556,13 +4555,10 @@ impl RecordeApp {
                                     if ui
                                         .add_sized(
                                             [width, 38.0],
-                                            egui::Button::new(format!(
-                                                "{name}    {}",
-                                                path.display()
-                                            ))
-                                            .truncate()
-                                            .fill(theme::bg_panel())
-                                            .stroke(Stroke::new(1.0, theme::border())),
+                                            Button::new(format!("{name}    {}", path.display()))
+                                                .truncate()
+                                                .fill(theme::bg_panel())
+                                                .stroke(Stroke::new(1.0, theme::border())),
                                         )
                                         .on_hover_text(path.display().to_string())
                                         .clicked()
@@ -4723,7 +4719,7 @@ impl RecordeApp {
             ui.menu_button("Repository", |ui| {
                 let has_repo = self.state.lock().unwrap().repo_path.is_some();
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Open in Editor"))
+                    .add_enabled(has_repo, Button::new("Open in Editor"))
                     .clicked()
                 {
                     if let Err(e) = open_repo_in_editor(
@@ -4735,7 +4731,7 @@ impl RecordeApp {
                     ui.close_menu();
                 }
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Open Terminal"))
+                    .add_enabled(has_repo, Button::new("Open Terminal"))
                     .clicked()
                 {
                     if let Some(rp) = self.state.lock().unwrap().repo_path.clone() {
@@ -4744,7 +4740,7 @@ impl RecordeApp {
                     ui.close_menu();
                 }
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Reveal in File Manager"))
+                    .add_enabled(has_repo, Button::new("Reveal in File Manager"))
                     .clicked()
                 {
                     if let Some(rp) = self.state.lock().unwrap().repo_path.clone() {
@@ -4752,10 +4748,7 @@ impl RecordeApp {
                     }
                     ui.close_menu();
                 }
-                if ui
-                    .add_enabled(has_repo, egui::Button::new("Copy Path"))
-                    .clicked()
-                {
+                if ui.add_enabled(has_repo, Button::new("Copy Path")).clicked() {
                     let path_str = self
                         .state
                         .lock()
@@ -4768,38 +4761,26 @@ impl RecordeApp {
                     ui.close_menu();
                 }
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Pull Requests…"))
+                    .add_enabled(has_repo, Button::new("Pull Requests…"))
                     .clicked()
                 {
                     self.repo_ui.pull_requests_open = true;
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui
-                    .add_enabled(has_repo, egui::Button::new("Fetch"))
-                    .clicked()
-                {
+                if ui.add_enabled(has_repo, Button::new("Fetch")).clicked() {
                     remote::fetch_all(&mut self.runner, &self.state);
                     ui.close_menu();
                 }
-                if ui
-                    .add_enabled(has_repo, egui::Button::new("Pull"))
-                    .clicked()
-                {
+                if ui.add_enabled(has_repo, Button::new("Pull")).clicked() {
                     remote::pull_branch(&mut self.runner, &self.state);
                     ui.close_menu();
                 }
-                if ui
-                    .add_enabled(has_repo, egui::Button::new("Push"))
-                    .clicked()
-                {
+                if ui.add_enabled(has_repo, Button::new("Push")).clicked() {
                     remote::push_branch(&mut self.runner, &self.state);
                     ui.close_menu();
                 }
-                if ui
-                    .add_enabled(has_repo, egui::Button::new("Refresh"))
-                    .clicked()
-                {
+                if ui.add_enabled(has_repo, Button::new("Refresh")).clicked() {
                     if let Some(path) = self.state.lock().unwrap().repo_path.clone() {
                         load_repo(path, self.state.clone());
                     }
@@ -4808,7 +4789,7 @@ impl RecordeApp {
                 ui.separator();
                 let has_diff = self.state.lock().unwrap().current_diff.is_some();
                 if ui
-                    .add_enabled(has_diff, egui::Button::new("Export Patch…"))
+                    .add_enabled(has_diff, Button::new("Export Patch…"))
                     .clicked()
                 {
                     let diff = self.state.lock().unwrap().current_diff.clone();
@@ -4827,7 +4808,7 @@ impl RecordeApp {
                     ui.close_menu();
                 }
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Apply Patch File…"))
+                    .add_enabled(has_repo, Button::new("Apply Patch File…"))
                     .clicked()
                 {
                     let repo_path = self.state.lock().unwrap().repo_path.clone();
@@ -4850,7 +4831,7 @@ impl RecordeApp {
                 }
                 ui.separator();
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Repository Settings"))
+                    .add_enabled(has_repo, Button::new("Repository Settings"))
                     .clicked()
                 {
                     self.open_settings(SettingsTab::Repository);
@@ -4861,14 +4842,14 @@ impl RecordeApp {
             ui.menu_button("Branch", |ui| {
                 let has_repo = self.state.lock().unwrap().repo_path.is_some();
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Switch Branch..."))
+                    .add_enabled(has_repo, Button::new("Switch Branch..."))
                     .clicked()
                 {
                     self.branch_switcher_open = true;
                     ui.close_menu();
                 }
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("New Branch..."))
+                    .add_enabled(has_repo, Button::new("New Branch..."))
                     .clicked()
                 {
                     self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None };
@@ -4876,14 +4857,14 @@ impl RecordeApp {
                 }
                 ui.separator();
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Merge Branch…"))
+                    .add_enabled(has_repo, Button::new("Merge Branch…"))
                     .clicked()
                 {
                     self.state.lock().unwrap().modal = ModalKind::MergeBranch;
                     ui.close_menu();
                 }
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Rebase Onto…"))
+                    .add_enabled(has_repo, Button::new("Rebase Onto…"))
                     .clicked()
                 {
                     self.state.lock().unwrap().modal = ModalKind::RebaseOnto;
@@ -4891,7 +4872,7 @@ impl RecordeApp {
                 }
                 ui.separator();
                 if ui
-                    .add_enabled(has_repo, egui::Button::new("Stash Changes…"))
+                    .add_enabled(has_repo, Button::new("Stash Changes…"))
                     .clicked()
                 {
                     self.repo_ui.stash_message_input = "WIP".into();
@@ -4929,7 +4910,7 @@ fn panel_toggle(ui: &mut egui::Ui, visible: &mut bool, label: &str, tip: &str) -
     };
     let resp = ui
         .add(
-            egui::Button::new(RichText::new(label).color(color).size(12.0))
+            Button::new(RichText::new(label).color(color).size(12.0))
                 .fill(if *visible {
                     theme::bg_panel_alt()
                 } else {
@@ -5029,7 +5010,7 @@ impl RecordeApp {
                         };
                         let btn = ui
                             .add(
-                                egui::Button::new(RichText::new(label).size(13.0).color(color))
+                                Button::new(RichText::new(label).size(13.0).color(color))
                                     .fill(Color32::TRANSPARENT),
                             )
                             .on_hover_text(match tab {
@@ -5052,7 +5033,7 @@ impl RecordeApp {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add(egui::Button::new("✕").fill(Color32::TRANSPARENT))
+                            .add(Button::new("✕").fill(Color32::TRANSPARENT))
                             .on_hover_text("Close provider integrations")
                             .clicked()
                         {
@@ -5074,10 +5055,8 @@ impl RecordeApp {
                                     theme::text_muted()
                                 };
                                 let btn = ui.add(
-                                    egui::Button::new(
-                                        RichText::new(f.label()).size(12.0).color(color),
-                                    )
-                                    .fill(Color32::TRANSPARENT),
+                                    Button::new(RichText::new(f.label()).size(12.0).color(color))
+                                        .fill(Color32::TRANSPARENT),
                                 );
                                 if active {
                                     ui.painter().line_segment(
@@ -5372,7 +5351,7 @@ impl RecordeApp {
                                             |ui| {
                                                 if ui
                                                     .add(
-                                                        egui::Button::new(
+                                                        Button::new(
                                                             RichText::new("Open")
                                                                 .size(12.0)
                                                                 .color(theme::accent_teal()),
@@ -5481,7 +5460,7 @@ impl RecordeApp {
                                                 ui.add_space(8.0);
                                                 if ui
                                                     .add(
-                                                        egui::Button::new(
+                                                        Button::new(
                                                             RichText::new("Open")
                                                                 .size(12.0)
                                                                 .color(theme::accent_teal()),
@@ -5588,22 +5567,22 @@ fn slugify(s: &str) -> String {
         .join("-")
 }
 
-fn primary_btn(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(Color32::WHITE).size(14.0))
+fn primary_btn(label: &str) -> Button<'_> {
+    Button::new(RichText::new(label).color(Color32::WHITE).size(14.0))
         .fill(theme::primary_fill())
         .rounding(7.0)
         .min_size(egui::Vec2::new(120.0, 28.0))
 }
 
-fn danger_btn(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(Color32::WHITE))
+fn danger_btn(label: &str) -> Button<'_> {
+    Button::new(RichText::new(label).color(Color32::WHITE))
         .fill(theme::accent_red())
         .rounding(6.0)
         .min_size(egui::Vec2::new(0.0, 28.0))
 }
 
-fn secondary_btn(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(theme::text_secondary()))
+fn secondary_btn(label: &str) -> Button<'_> {
+    Button::new(RichText::new(label).color(theme::text_secondary()))
         .fill(Color32::TRANSPARENT)
         .stroke(Stroke::new(1.0, theme::border()))
         .rounding(6.0)
@@ -5645,7 +5624,7 @@ fn settings_tab_button(ui: &mut egui::Ui, tab: &mut SettingsTab, value: Settings
     };
     if ui
         .add(
-            egui::Button::new(RichText::new(label).color(color).size(13.0))
+            Button::new(RichText::new(label).color(color).size(13.0))
                 .fill(if selected {
                     theme::bg_selected()
                 } else {

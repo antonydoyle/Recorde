@@ -1,12 +1,13 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate-code:
@@ -25,7 +26,8 @@ jobs:
         id: version
         shell: bash
         run: |
-          tag="${GITHUB_REF_NAME}"
+          tag="v$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['package']['version'])")"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then tag="${GITHUB_REF_NAME}"; fi
           if [[ ! "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Tag '${tag}' is not a valid semver tag (expected v1.2.3, v1.2.3-rc.1, etc.)" >&2
             exit 1
@@ -37,7 +39,8 @@ jobs:
           import os, tomllib
           with open('Cargo.toml', 'rb') as manifest:
               version = tomllib.load(manifest)['package']['version']
-          assert os.environ['GITHUB_REF_NAME'] == f'v{version}', 'Release tag must match Cargo.toml version'
+          if os.environ['GITHUB_REF_TYPE'] == 'tag':
+              assert os.environ['GITHUB_REF_NAME'] == f'v{version}', 'Release tag must match Cargo.toml version'
           PY
 
   # ── Linux: portable .tar.gz  +  .deb  +  .AppImage ──────────────────────────
@@ -45,6 +48,7 @@ jobs:
     name: Linux x86_64
     needs: validate-tag
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     env:
       VERSION: ${{ needs.validate-tag.outputs.version }}
     steps:
@@ -78,6 +82,8 @@ jobs:
           cp README.md LICENSE          dist/recorde-${VERSION}-linux-x86_64/
           cp packaging/recorde.desktop  dist/recorde-${VERSION}-linux-x86_64/
           cp assets/icon.png            dist/recorde-${VERSION}-linux-x86_64/recorde.png
+          mkdir -p dist/recorde-${VERSION}-linux-x86_64/licenses
+          cp assets/fonts/*-*.txt dist/recorde-${VERSION}-linux-x86_64/licenses/
           cd dist && tar -czf recorde-${VERSION}-linux-x86_64.tar.gz recorde-${VERSION}-linux-x86_64/
 
       # ── .deb installer ────────────────────────────────────────────────────
@@ -107,6 +113,8 @@ jobs:
           cp assets/icon.png                          AppDir/usr/share/icons/hicolor/256x256/apps/recorde.png
           cp assets/icon.png                          AppDir/recorde.png
           cp packaging/recorde.desktop                AppDir/recorde.desktop
+          mkdir -p AppDir/usr/share/doc/recorde/licenses
+          cp assets/fonts/*-*.txt AppDir/usr/share/doc/recorde/licenses/
 
           printf '#!/bin/bash\nAPPDIR="$(dirname "$(readlink -f "$0")")"\nexec "$APPDIR/usr/bin/recorde" "$@"\n' > AppDir/AppRun
           chmod +x AppDir/AppRun
@@ -127,6 +135,7 @@ jobs:
     name: Windows x86_64
     needs: validate-tag
     runs-on: windows-latest
+    timeout-minutes: 60
     env:
       VERSION: ${{ needs.validate-tag.outputs.version }}
     steps:
@@ -145,6 +154,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dir
           Copy-Item target\release\recorde.exe $dir\
           Copy-Item README.md, LICENSE $dir\
+          New-Item -ItemType Directory -Path "$dir\licenses"
+          Copy-Item assets\fonts\*-*.txt "$dir\licenses\"
           Compress-Archive -Path $dir -DestinationPath "dist\recorde-$env:VERSION-windows-x86_64.zip"
 
       # ── MSI installer ─────────────────────────────────────────────────────
@@ -173,6 +184,7 @@ jobs:
     name: macOS (universal)
     needs: validate-tag
     runs-on: macos-latest
+    timeout-minutes: 60
     env:
       VERSION: ${{ needs.validate-tag.outputs.version }}
     steps:
@@ -209,6 +221,8 @@ jobs:
           mkdir -p "recorde-${VERSION}-macos-universal"
           cp recorde-universal "recorde-${VERSION}-macos-universal/recorde"
           cp README.md LICENSE "recorde-${VERSION}-macos-universal/"
+          mkdir -p "recorde-${VERSION}-macos-universal/licenses"
+          cp assets/fonts/*-*.txt "recorde-${VERSION}-macos-universal/licenses/"
           tar -czf "dist/recorde-${VERSION}-macos-universal.tar.gz" "recorde-${VERSION}-macos-universal/"
 
       # ── .app bundle + .dmg installer ──────────────────────────────────────
@@ -228,6 +242,8 @@ jobs:
           mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
           cp recorde-universal "${APP}/Contents/MacOS/recorde"
           cp recorde.icns       "${APP}/Contents/Resources/icon.icns"
+          mkdir -p "${APP}/Contents/Resources/licenses"
+          cp assets/fonts/*-*.txt "${APP}/Contents/Resources/licenses/"
           sed "s/RECORDE_VERSION/${VERSION}/g" packaging/Info.plist > "${APP}/Contents/Info.plist"
 
       - name: Install create-dmg
@@ -256,6 +272,9 @@ jobs:
   # ── Publish GitHub Release ────────────────────────────────────────────────────
   publish:
     name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     needs: [validate-tag, validate-code, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
