@@ -1,7 +1,27 @@
 use std::path::Path;
 
+pub fn add(repo: &Path, destination: &Path, branch: &str) -> Result<(), String> {
+    git2::Branch::name_is_valid(branch).map_err(|e| e.to_string()).and_then(|valid| if valid { Ok(()) } else { Err("Invalid branch name.".into()) })?;
+    let destination = destination.to_str().ok_or("Worktree path is not valid UTF-8.")?;
+    crate::git::merge::run_git_seq(repo, &["worktree", "add", "-b", branch, "--", destination])
+        .map_err(|e| e.user_message())
+}
+pub fn set_locked(repo: &Path, destination: &Path, locked: bool) -> Result<(), String> {
+    let destination = destination.to_str().ok_or("Worktree path is not valid UTF-8.")?;
+    crate::git::merge::run_git_seq(repo, &["worktree", if locked { "lock" } else { "unlock" }, "--", destination])
+        .map_err(|e| e.user_message())
+}
+pub fn remove(repo: &Path, destination: &Path) -> Result<(), String> {
+    // No --force: native Git refuses dirty, locked and main worktrees.
+    let destination = destination.to_str().ok_or("Worktree path is not valid UTF-8.")?;
+    crate::git::merge::run_git_seq(repo, &["worktree", "remove", "--", destination])
+        .map_err(|e| e.user_message())
+}
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
+    pub locked: bool,
+    pub prunable: bool,
     pub path: String,
     pub head_oid: String,
     pub branch: Option<String>,
@@ -14,7 +34,7 @@ pub fn list(repo_path: &Path) -> Vec<WorktreeInfo> {
     let output = match std::process::Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(["worktree", "list", "--porcelain"])
+        .args(["worktree", "list", "--porcelain", "-z"])
         .output()
     {
         Ok(o) => o,
@@ -34,60 +54,47 @@ pub fn list(repo_path: &Path) -> Vec<WorktreeInfo> {
 }
 
 fn parse_porcelain(text: &str) -> Vec<WorktreeInfo> {
+    let fields: Vec<_> = if text.contains('\0') { text.split('\0').collect() } else { text.lines().collect() };
     let mut result = Vec::new();
-
-    // Blocks are separated by blank lines
-    let mut wt_path: Option<String> = None;
-    let mut head_oid: Option<String> = None;
-    let mut branch: Option<String> = None;
-
-    let flush = |wt_path: &mut Option<String>,
-                 head_oid: &mut Option<String>,
-                 branch: &mut Option<String>,
-                 result: &mut Vec<WorktreeInfo>| {
-        if let (Some(p), Some(h)) = (wt_path.take(), head_oid.take()) {
-            let is_main = result.is_empty();
-            result.push(WorktreeInfo {
-                path: p,
-                head_oid: h,
-                branch: branch.take(),
-                is_main,
-            });
-        } else {
-            wt_path.take();
-            head_oid.take();
-            branch.take();
-        }
-    };
-
-    for line in text.lines() {
-        if line.is_empty() {
-            flush(&mut wt_path, &mut head_oid, &mut branch, &mut result);
-            continue;
-        }
-
-        if let Some(val) = line.strip_prefix("worktree ") {
-            wt_path = Some(val.to_string());
-        } else if let Some(val) = line.strip_prefix("HEAD ") {
-            head_oid = Some(val.to_string());
-        } else if let Some(val) = line.strip_prefix("branch ") {
-            // Strip "refs/heads/" prefix if present
-            let name = val.strip_prefix("refs/heads/").unwrap_or(val);
-            branch = Some(name.to_string());
-        } else if line == "detached" {
-            branch = None;
+    let mut current: Option<WorktreeInfo> = None;
+    for field in fields {
+        if let Some(path) = field.strip_prefix("worktree ") {
+            if let Some(info) = current.take() { result.push(info); }
+            current = Some(WorktreeInfo { path: path.into(), head_oid: String::new(), branch: None, is_main: result.is_empty(), locked: false, prunable: false });
+        } else if let Some(info) = &mut current {
+            if let Some(oid) = field.strip_prefix("HEAD ") { info.head_oid = oid.into(); }
+            else if let Some(branch) = field.strip_prefix("branch ") { info.branch = Some(branch.strip_prefix("refs/heads/").unwrap_or(branch).into()); }
+            else if field == "locked" || field.starts_with("locked ") { info.locked = true; }
+            else if field == "prunable" || field.starts_with("prunable ") { info.prunable = true; }
         }
     }
-
-    // Flush any trailing block (output may not end with a blank line)
-    flush(&mut wt_path, &mut head_oid, &mut branch, &mut result);
-
+    if let Some(info) = current { result.push(info); }
     result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_lifecycle_refuses_locked_and_dirty_removal() {
+        let repo = crate::git::test_support::TestRepo::new();
+        repo.commit("file.txt", b"base\n");
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("linked space");
+        add(repo.path(), &destination, "linked").unwrap();
+        set_locked(repo.path(), &destination, true).unwrap();
+        let entries = list(repo.path());
+        assert!(entries.iter().any(|w| !w.is_main && w.locked && Path::new(&w.path).canonicalize().ok() == destination.canonicalize().ok()));
+        assert!(remove(repo.path(), &destination).is_err());
+        set_locked(repo.path(), &destination, false).unwrap();
+        std::fs::write(destination.join("file.txt"), b"keep local edits\n").unwrap();
+        assert!(remove(repo.path(), &destination).is_err());
+        assert_eq!(std::fs::read(destination.join("file.txt")).unwrap(), b"keep local edits\n");
+        std::fs::write(destination.join("file.txt"), b"base\n").unwrap();
+        remove(repo.path(), &destination).unwrap();
+        assert!(!destination.exists());
+    }
 
     #[test]
     fn test_parse_porcelain_basic() {
@@ -125,4 +132,14 @@ detached
         assert_eq!(worktrees.len(), 2);
         assert!(worktrees[1].branch.is_none());
     }
+    #[test]
+    fn nul_porcelain_preserves_newlines_and_bare_main_identity() {
+        let entries = parse_porcelain("worktree /main\0bare\0\0worktree /linked\nspace\0HEAD abcd\0detached\0locked reason\0prunable missing\0\0");
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].is_main);
+        assert!(!entries[1].is_main);
+        assert_eq!(entries[1].path, "/linked\nspace");
+        assert!(entries[1].locked && entries[1].prunable);
+    }
+
 }

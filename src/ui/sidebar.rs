@@ -7,6 +7,7 @@ use crate::theme;
 use crate::ui::widgets;
 
 pub enum SidebarAction {
+    OpenRepository(std::path::PathBuf),
     CheckoutBranch(String),
     OpenCreateBranch { from_oid: Option<String> },
     DeleteBranch(String),
@@ -19,7 +20,7 @@ pub enum SidebarAction {
     RebaseOnto(String),
     RenameBranch(String),
     PublishBranch(String),
-    SetUpstream(String),
+    SetUpstream(String, String),
     ForceDeleteBranch(String),
     PushTag(String),
     DeleteRemoteTag(String),
@@ -79,25 +80,10 @@ impl Sidebar {
                 };
 
                 // Split refs into categories
-                let mut local:  Vec<&str> = Vec::new();
-                let mut remote: Vec<&str> = Vec::new();
-                let mut tags:   Vec<&str> = Vec::new();
-
-                let mut all_refs: Vec<&str> = graph.nodes.iter()
-                    .flat_map(|n| n.refs.iter().map(|r| r.as_str()))
-                    .collect();
-                all_refs.sort_unstable();
-                all_refs.dedup();
-
-                for r in &all_refs {
-                    if r.contains('/') {
-                        remote.push(r);
-                    } else if graph.tag_names.contains(*r) {
-                        tags.push(r);
-                    } else {
-                        local.push(r);
-                    }
-                }
+                let mut local: Vec<&str> = graph.local_names.iter().map(String::as_str).collect();
+                let mut remote: Vec<&str> = graph.remote_names.iter().map(String::as_str).collect();
+                let mut tags: Vec<&str> = graph.tag_names.iter().map(String::as_str).collect();
+                local.sort_unstable(); remote.sort_unstable(); tags.sort_unstable();
 
                 // ── LOCAL BRANCHES ────────────────────────────────────
                 {
@@ -124,15 +110,20 @@ impl Sidebar {
                                     action = Some(SidebarAction::RenameBranch(name.to_string()));
                                     ui.close_menu();
                                 }
+                                if ui.button("Publish Branch").clicked() {
+                                    action = Some(SidebarAction::PublishBranch(name.to_string()));
+                                    ui.close_menu();
+                                }
+                                ui.menu_button("Set Upstream", |ui| {
+                                    if remote.is_empty() { ui.label("Fetch remote branches first."); }
+                                    for target in &remote {
+                                        if ui.button(*target).clicked() {
+                                            action = Some(SidebarAction::SetUpstream(name.to_string(), target.to_string()));
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
                                 if !is_head {
-                                    if ui.button("Publish Branch").clicked() {
-                                        action = Some(SidebarAction::PublishBranch(name.to_string()));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("Set Upstream…").clicked() {
-                                        action = Some(SidebarAction::SetUpstream(name.to_string()));
-                                        ui.close_menu();
-                                    }
                                     ui.separator();
                                     if ui.button("Merge into current").clicked() {
                                         action = Some(SidebarAction::MergeBranch(name.to_string()));
@@ -146,7 +137,7 @@ impl Sidebar {
                                 if !is_head {
                                     ui.separator();
                                     if ui.button("Create Branch From Here").clicked() {
-                                        action = Some(SidebarAction::OpenCreateBranch { from_oid: None });
+                                        action = Some(SidebarAction::OpenCreateBranch { from_oid: graph.ref_targets.get(&format!("refs/heads/{name}")).cloned() });
                                         ui.close_menu();
                                     }
                                     ui.separator();
@@ -297,7 +288,9 @@ impl Sidebar {
                                 let (dr, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
                                 ui.painter().circle_filled(dr.center(), 3.5, theme::ACCENT_TEAL);
                                 ui.add_space(6.0);
-                                ui.label(RichText::new(label).color(theme::text_secondary()).size(12.0));
+                                if ui.selectable_label(false, RichText::new(label).color(theme::text_secondary()).size(12.0)).on_hover_text(&wt.path).clicked() {
+                                    action = Some(SidebarAction::OpenRepository(wt.path.clone().into()));
+                                }
                             });
                         }
                         ui.add_space(4.0);

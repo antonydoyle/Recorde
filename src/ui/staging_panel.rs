@@ -6,40 +6,35 @@ use crate::theme;
 
 pub struct StagingPanel {
     state: SharedState,
-    subject: String,
-    body: String,
-    is_amend: bool,
+    drafts: super::commit_draft::Drafts,
+    selections: std::collections::HashMap<std::path::PathBuf, std::collections::BTreeSet<(bool, String)>>,
     conflicts_expanded: bool,
     staged_expanded: bool,
     unstaged_expanded: bool,
     untracked_expanded: bool,
-    // Phase 3: commit workflow
-    co_author_input: String,
-    co_authors: Vec<String>,
-    signoff_enabled: bool,
-    template_loaded: bool,
 }
 
 impl StagingPanel {
     pub fn new(state: SharedState) -> Self {
         Self {
             state,
-            subject: String::new(),
-            body: String::new(),
-            is_amend: false,
+            drafts: Default::default(),
+            selections: Default::default(),
             conflicts_expanded: true,
             staged_expanded: true,
             unstaged_expanded: true,
             untracked_expanded: true,
-            co_author_input: String::new(),
-            co_authors: Vec::new(),
-            signoff_enabled: false,
-            template_loaded: false,
         }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
+        let repo = self.state.lock().unwrap().repo_path.clone();
+        self.drafts.switch_to(repo);
+        self.drafts.poll();
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme::bg_surface());
+        for (path, error) in &self.drafts.save_errors {
+            ui.colored_label(theme::ACCENT_RED, format!("Draft is only in memory ({}): {error}", path.display()));
+        }
 
         let (files, conflicted, head_branch, selected_file, repo_path, any_seq_in_progress, git_user) = {
             let s = self.state.lock().unwrap();
@@ -68,6 +63,19 @@ impl StagingPanel {
             .iter()
             .filter(|f| f.unstaged_status == Some('?'))
             .collect();
+
+        let selection = self.selections.entry(repo_path.clone().unwrap_or_default()).or_default();
+        selection.retain(|(staged, path)| files.iter().any(|file| &file.path == path && if *staged { file.staged_status.is_some() } else { file.unstaged_status.is_some() }));
+        let mut batch = None;
+        if !selection.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for (staged, label) in [(false, "Stage selected"), (true, "Unstage selected")] {
+                    let paths: Vec<_> = selection.iter().filter(|(side, _)| *side == staged).map(|(_, path)| path.clone()).collect();
+                    if ui.add_enabled(!paths.is_empty(), egui::Button::new(format!("{label} ({})", paths.len()))).clicked() { batch = Some((paths, staged)); }
+                }
+                if ui.button("Clear selection").clicked() { selection.clear(); }
+            });
+        }
 
         // Actions collected during rendering, applied after
         let mut do_choose_ours: Option<String> = None;
@@ -112,11 +120,15 @@ impl StagingPanel {
                         for cf in &conflicted {
                             let is_sel = selected_file.as_deref() == Some(cf.path.as_str());
                             let resp = conflict_file_row(ui, &cf.path, is_sel, |ui| {
-                                if ui.add(small_btn_danger("Ours")).clicked()     { do_choose_ours   = Some(cf.path.clone()); }
-                                if ui.add(small_btn_danger("Theirs")).clicked()   { do_choose_theirs = Some(cf.path.clone()); }
+                                if ui.add(small_btn_danger(if cf.ours_deleted { "Delete (ours)" } else { "Ours" })).clicked()     { do_choose_ours   = Some(cf.path.clone()); }
+                                if ui.add(small_btn_danger(if cf.theirs_deleted { "Delete (theirs)" } else { "Theirs" })).clicked()   { do_choose_theirs = Some(cf.path.clone()); }
                                 if ui.add(small_btn("Resolved")).clicked()        { do_mark_resolved = Some(cf.path.clone()); }
                             });
                             resp.context_menu(|ui| {
+                                if ui.button("Resolve in Recorde...").clicked() {
+                                    self.state.lock().unwrap().pending_conflict_editor = Some(cf.path.clone());
+                                    ui.close_menu();
+                                }
                                 if ui.button("Open Merge Tool").clicked() {
                                     do_open_mergetool = Some(cf.path.clone());
                                     ui.close_menu();
@@ -148,7 +160,7 @@ impl StagingPanel {
                     } else {
                         for f in &unstaged {
                             let is_sel = selected_file.as_deref() == Some(f.path.as_str());
-                            let resp = file_row(ui, &f.path, f.unstaged_status.unwrap_or('M'), is_sel, |ui| {
+                            let resp = file_row(ui, &f.path, f.unstaged_status.unwrap_or('M'), is_sel, selection, false, |ui| {
                                 let btn = if is_sel { small_btn_accent("Stage") } else { small_btn("Stage") };
                                 if ui.add(btn).clicked() { do_stage_file = Some(f.path.clone()); }
                                 if ui.add(small_btn_danger("Discard")).clicked() {
@@ -207,7 +219,7 @@ impl StagingPanel {
                     } else {
                         for f in &staged {
                             let is_sel = selected_file.as_deref() == Some(f.path.as_str());
-                            let resp = file_row(ui, &f.path, f.staged_status.unwrap_or('M'), is_sel, |ui| {
+                            let resp = file_row(ui, &f.path, f.staged_status.unwrap_or('M'), is_sel, selection, true, |ui| {
                                 let btn = if is_sel { small_btn_accent("Unstage") } else { small_btn("Unstage") };
                                 if ui.add(btn).clicked() { do_unstage_file = Some(f.path.clone()); }
                             });
@@ -240,7 +252,7 @@ impl StagingPanel {
                     } else {
                         for f in &untracked {
                             let is_sel = selected_file.as_deref() == Some(f.path.as_str());
-                            let resp = file_row(ui, &f.path, '?', is_sel, |ui| {
+                            let resp = file_row(ui, &f.path, '?', is_sel, selection, false, |ui| {
                                 if ui.add(small_btn("Stage")).clicked() {
                                     do_stage_file = Some(f.path.clone());
                                 }
@@ -282,14 +294,14 @@ impl StagingPanel {
                 // ── COMMIT FORM ──────────────────────────────────────────
 
                 // Load commit template on first open
-                if !self.template_loaded && self.subject.is_empty() && self.body.is_empty() && !self.is_amend {
-                    self.template_loaded = true;
+                if !self.drafts.current.template_loaded && self.drafts.current.subject.is_empty() && self.drafts.current.body.is_empty() && !self.drafts.current.is_amend {
+                    self.drafts.current.template_loaded = true;
                     if let Some(ref rp) = repo_path {
                         if let Some(tmpl) = load_commit_template(rp) {
                             let mut lines = tmpl.lines().filter(|l| !l.trim_start().starts_with('#'));
-                            self.subject = lines.next().unwrap_or("").trim().to_string();
+                            self.drafts.current.subject = lines.next().unwrap_or("").trim().to_string();
                             let rest: String = lines.skip_while(|l| l.is_empty()).collect::<Vec<_>>().join("\n");
-                            self.body = rest.trim().to_string();
+                            self.drafts.current.body = rest.trim().to_string();
                         }
                     }
                 }
@@ -300,24 +312,24 @@ impl StagingPanel {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
                         if ui.add(small_btn("📋 Copy")).on_hover_text("Copy assembled commit message").clicked() {
-                            let msg = build_message(&self.subject, &self.body, &self.co_authors,
-                                self.signoff_enabled, &repo_path, &git_user);
+                            let msg = build_message(&self.drafts.current.subject, &self.drafts.current.body, &self.drafts.current.co_authors,
+                                self.drafts.current.signoff_enabled, &repo_path, &git_user);
                             ui.output_mut(|o| o.copied_text = msg);
                         }
                         ui.add_space(4.0);
-                        let amend_color = if self.is_amend { theme::ACCENT_YELLOW } else { theme::text_muted() };
+                        let amend_color = if self.drafts.current.is_amend { theme::ACCENT_YELLOW } else { theme::text_muted() };
                         if ui.add(
                             egui::Button::new(RichText::new("Amend").color(amend_color).size(11.0))
-                                .fill(if self.is_amend { Color32::from_rgb(0x2A, 0x24, 0x10) } else { Color32::TRANSPARENT })
-                                .stroke(egui::Stroke::new(1.0, if self.is_amend { theme::ACCENT_YELLOW } else { theme::border() })),
+                                .fill(if self.drafts.current.is_amend { Color32::from_rgb(0x2A, 0x24, 0x10) } else { Color32::TRANSPARENT })
+                                .stroke(egui::Stroke::new(1.0, if self.drafts.current.is_amend { theme::ACCENT_YELLOW } else { theme::border() })),
                         ).clicked() {
-                            self.is_amend = !self.is_amend;
-                            if self.is_amend && self.subject.is_empty() {
+                            self.drafts.current.is_amend = !self.drafts.current.is_amend;
+                            if self.drafts.current.is_amend && self.drafts.current.subject.is_empty() {
                                 if let Some(msg) = staging::load_head_message(self.state.clone()) {
                                     let mut lines = msg.lines();
-                                    self.subject = lines.next().unwrap_or("").to_string();
+                                    self.drafts.current.subject = lines.next().unwrap_or("").to_string();
                                     let rest: String = lines.skip_while(|l| l.is_empty()).collect::<Vec<_>>().join("\n");
-                                    self.body = rest;
+                                    self.drafts.current.body = rest;
                                 }
                             }
                         }
@@ -329,7 +341,7 @@ impl StagingPanel {
                     ui.add_space(12.0);
                     ui.add_sized(
                         [form_width(ui, 12.0, 240.0), 28.0],
-                        egui::TextEdit::singleline(&mut self.subject)
+                        egui::TextEdit::singleline(&mut self.drafts.current.subject)
                             .margin(egui::Vec2::new(8.0, 5.0))
                             .hint_text("Summary (required)")
                             .font(egui::FontId::proportional(12.5)),
@@ -339,7 +351,7 @@ impl StagingPanel {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
                     ui.add(
-                        egui::TextEdit::multiline(&mut self.body)
+                        egui::TextEdit::multiline(&mut self.drafts.current.body)
                             .desired_width(form_width(ui, 24.0, 240.0))
                             .desired_rows(3)
                             .hint_text("Description (optional)")
@@ -355,19 +367,19 @@ impl StagingPanel {
                     ui.add_space(12.0);
                     ui.add_sized(
                         [form_width(ui, 68.0, 190.0), 28.0],
-                        egui::TextEdit::singleline(&mut self.co_author_input)
+                        egui::TextEdit::singleline(&mut self.drafts.current.co_author_input)
                             .margin(egui::Vec2::new(8.0, 5.0))
                             .hint_text("Co-author: Name <email>")
                             .font(egui::FontId::proportional(11.5)),
                     );
                     ui.add_space(4.0);
-                    if ui.add(small_btn("+ Add")).clicked() && !self.co_author_input.trim().is_empty() {
-                        self.co_authors.push(self.co_author_input.trim().to_string());
-                        self.co_author_input.clear();
+                    if ui.add(small_btn("+ Add")).clicked() && !self.drafts.current.co_author_input.trim().is_empty() {
+                        self.drafts.current.co_authors.push(self.drafts.current.co_author_input.trim().to_string());
+                        self.drafts.current.co_author_input.clear();
                     }
                 });
                 let mut remove_co_author: Option<usize> = None;
-                for (i, author) in self.co_authors.iter().enumerate() {
+                for (i, author) in self.drafts.current.co_authors.iter().enumerate() {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
                         ui.label(RichText::new(format!("Co-Authored-By: {}", author))
@@ -377,13 +389,13 @@ impl StagingPanel {
                         }
                     });
                 }
-                if let Some(i) = remove_co_author { self.co_authors.remove(i); }
+                if let Some(i) = remove_co_author { self.drafts.current.co_authors.remove(i); }
 
                 // ── Sign-off + copy ──────────────────────────────────────
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.checkbox(&mut self.signoff_enabled,
+                    ui.checkbox(&mut self.drafts.current.signoff_enabled,
                         RichText::new("Sign off").color(theme::text_muted()).size(11.0));
                 });
 
@@ -392,7 +404,7 @@ impl StagingPanel {
                 // ── Branch protection warning ─────────────────────────────
                 let is_protected = ["main", "master", "production", "release"]
                     .iter().any(|p| *p == head_branch.as_str());
-                if is_protected && !self.is_amend {
+                if is_protected && !self.drafts.current.is_amend {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
                         ui.label(RichText::new(format!(
@@ -403,13 +415,15 @@ impl StagingPanel {
                     ui.add_space(4.0);
                 }
 
-                let can_commit = !self.subject.trim().is_empty() && !staged.is_empty();
+                let can_commit = !self.drafts.current.subject.trim().is_empty()
+                    && (!staged.is_empty() || self.drafts.current.is_amend)
+                    && !self.drafts.busy() && conflicted.is_empty();
                 let compact_commit_label = ui.available_width() < 280.0;
-                let btn_label = if compact_commit_label && self.is_amend {
+                let btn_label = if compact_commit_label && self.drafts.current.is_amend {
                     "Amend commit".to_string()
                 } else if compact_commit_label {
                     "Commit".to_string()
-                } else if self.is_amend {
+                } else if self.drafts.current.is_amend {
                     format!("Amend commit on {}", head_branch)
                 } else {
                     format!("Commit to {}", head_branch)
@@ -423,7 +437,7 @@ impl StagingPanel {
                             .min_size(Vec2::new(form_width(ui, 12.0, 240.0), 28.0)),
                     );
                     if btn.clicked() {
-                        if self.is_amend { do_amend = true; } else { do_commit = true; }
+                        if self.drafts.current.is_amend { do_amend = true; } else { do_commit = true; }
                     }
                 });
 
@@ -453,7 +467,7 @@ impl StagingPanel {
         if let Some(path) = do_mark_resolved { conflicts::mark_resolved(&path, self.state.clone()); }
         if let Some(path) = do_open_mergetool {
             if let Some(ref rp) = repo_path {
-                conflicts::open_mergetool(&path, rp);
+                conflicts::open_mergetool(&path, rp, self.state.clone());
             }
         }
         if let Some(path) = do_stage_file {
@@ -462,6 +476,7 @@ impl StagingPanel {
         if let Some(path) = do_unstage_file {
             staging::unstage_file(&path, self.state.clone());
         }
+        if let Some((paths, reverse)) = batch { staging::stage_files(paths, reverse, self.state.clone()); }
         if do_stage_all { staging::stage_all(self.state.clone()); }
         if do_unstage_all { staging::unstage_all(self.state.clone()); }
 
@@ -470,28 +485,23 @@ impl StagingPanel {
         }
 
         if let Some(path) = do_ignore_file {
-            add_to_gitignore(&path, &repo_path);
-            // Trigger a reload so the file disappears from untracked
-            if let Some(rp) = repo_path.clone() {
-                crate::git::operations::load_repo(rp, self.state.clone());
-            }
+            staging::ignore_file(&path, self.state.clone());
         }
 
         if do_commit || do_amend {
             let full_msg = build_message(
-                &self.subject, &self.body,
-                &self.co_authors, self.signoff_enabled,
+                &self.drafts.current.subject, &self.drafts.current.body,
+                &self.drafts.current.co_authors, self.drafts.current.signoff_enabled,
                 &repo_path, &git_user,
             );
-            if do_commit {
-                staging::create_commit(&full_msg, self.signoff_enabled, self.state.clone());
+            let completion = if do_commit {
+                staging::create_commit(&full_msg, self.drafts.current.signoff_enabled, self.state.clone())
             } else {
-                staging::amend_commit(&full_msg, self.signoff_enabled, self.state.clone());
+                staging::amend_commit(&full_msg, self.drafts.current.signoff_enabled, self.state.clone())
+            };
+            if let Some(completion) = completion {
+                self.drafts.submitted(completion);
             }
-            self.subject.clear();
-            self.body.clear();
-            self.co_authors.clear();
-            self.is_amend = false;
         }
 
         if let Some((path, context)) = view_file {
@@ -597,15 +607,6 @@ fn reveal_in_folder(file_path: &str, repo_path: &Option<std::path::PathBuf>) {
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
 
-fn add_to_gitignore(file_path: &str, repo_path: &Option<std::path::PathBuf>) {
-    let Some(rp) = repo_path else { return };
-    let gitignore = rp.join(".gitignore");
-    let entry = format!("{}\n", file_path);
-    let _ = std::fs::OpenOptions::new()
-        .create(true).append(true)
-        .open(gitignore)
-        .map(|mut f| { use std::io::Write; let _ = f.write_all(entry.as_bytes()); });
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -641,10 +642,17 @@ fn file_row(
     path: &str,
     status: char,
     is_selected: bool,
+    selection: &mut std::collections::BTreeSet<(bool, String)>,
+    staged: bool,
     add_btns: impl FnOnce(&mut Ui),
 ) -> egui::Response {
     let row_resp = ui.horizontal(|ui| {
-        ui.add_space(12.0);
+        ui.add_space(4.0);
+        let key = (staged, path.to_owned());
+        let mut checked = selection.contains(&key);
+        if ui.checkbox(&mut checked, "").on_hover_text(format!("Select {path} for batch staging")).changed() {
+            if checked { selection.insert(key); } else { selection.remove(&key); }
+        }
         let (icon, color) = status_icon(status);
         ui.label(RichText::new(icon).font(egui::FontId::monospace(11.0)).color(color))
             .on_hover_text(status_tooltip(status));
@@ -656,18 +664,16 @@ fn file_row(
                 .color(if is_selected { theme::bg_app() } else { theme::text_secondary() })
                 .size(12.0),
         );
-        label.on_hover_text(path);
+        let label = label.on_hover_text(path);
         if ui.available_width() > 150.0 {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
                 add_btns(ui);
             });
         }
-    }).response;
+        label
+    }).inner;
 
-    if row_resp.hovered() {
-        ui.painter().rect_filled(row_resp.rect, 0.0, theme::bg_hover());
-    }
     row_resp
 }
 
@@ -729,17 +735,15 @@ fn conflict_file_row(
                 .color(if is_selected { theme::bg_app() } else { theme::ACCENT_RED.gamma_multiply(0.85) })
                 .size(12.0),
         );
-        label.on_hover_text(path);
+        let label = label.on_hover_text(path);
         if ui.available_width() > 170.0 {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
                 add_btns(ui);
             });
         }
-    }).response;
-    if row_resp.hovered() {
-        ui.painter().rect_filled(row_resp.rect, 0.0, theme::bg_hover());
-    }
+        label
+    }).inner;
     row_resp
 }
 

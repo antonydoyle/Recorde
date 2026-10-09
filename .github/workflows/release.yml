@@ -9,6 +9,10 @@ permissions:
   contents: write
 
 jobs:
+  validate-code:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
   # ── Semver tag validation ─────────────────────────────────────────────────────
   validate-tag:
     name: Validate semver tag
@@ -16,6 +20,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
+      - uses: actions/checkout@v6
       - name: Check tag format
         id: version
         shell: bash
@@ -26,6 +31,14 @@ jobs:
             exit 1
           fi
           echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
+      - name: Check manifest version
+        run: |
+          python3 - <<'PY'
+          import os, tomllib
+          with open('Cargo.toml', 'rb') as manifest:
+              version = tomllib.load(manifest)['package']['version']
+          assert os.environ['GITHUB_REF_NAME'] == f'v{version}', 'Release tag must match Cargo.toml version'
+          PY
 
   # ── Linux: portable .tar.gz  +  .deb  +  .AppImage ──────────────────────────
   build-linux:
@@ -49,7 +62,7 @@ jobs:
             libx11-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev \
             libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
-            libwayland-dev libxkbcommon-dev
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-0
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -243,16 +256,21 @@ jobs:
   # ── Publish GitHub Release ────────────────────────────────────────────────────
   publish:
     name: Publish GitHub Release
-    needs: [validate-tag, build-linux, build-windows, build-macos]
+    needs: [validate-tag, validate-code, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: '*-artifacts'
           merge-multiple: true
 
       - name: List release artifacts
         run: ls -lh dist/
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum -- *.tar.gz *.zip *.deb *.msi *.AppImage *.dmg > SHA256SUMS
 
       - uses: softprops/action-gh-release@v3
         with:
@@ -267,3 +285,4 @@ jobs:
             dist/*.msi
             dist/*.AppImage
             dist/*.dmg
+            dist/SHA256SUMS

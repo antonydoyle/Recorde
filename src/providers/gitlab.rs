@@ -1,22 +1,28 @@
+use super::pagination::{component, list};
 use super::{PrItem, PrState};
 
 pub fn list_mrs(host: &str, namespace: &str, project: &str, token: &str, state: &str) -> Result<Vec<PrItem>, String> {
     // GitLab accepts URL-encoded "namespace/project" as the project ID
-    let encoded = format!("{}/{}", namespace, project).replace('/', "%2F");
-    let gl_state = match state { "closed" => "closed", "merged" => "merged", _ => "opened" };
+    let encoded = component(&format!("{namespace}/{project}"));
+    let gl_state = match state { "closed" | "all" => "all", "merged" => "merged", _ => "opened" };
     let url = format!("https://{}/api/v4/projects/{}/merge_requests?state={}&per_page=50&order_by=updated_at",
         host, encoded, gl_state);
 
-    let resp = ureq::get(&url)
-        .set("PRIVATE-TOKEN", token)
-        .set("User-Agent", "Recorde/0.1")
-        .call()
-        .map_err(|e| format!("GitLab API error: {}", e))?;
+    let mrs = list(&url, "PRIVATE-TOKEN", token, None)?;
+    Ok(mrs.into_iter().filter_map(parse_mr).filter(|mr| state != "closed" || matches!(mr.state, PrState::Closed | PrState::Merged)).collect())
+}
 
-    let mrs: Vec<serde_json::Value> = resp.into_json()
-        .map_err(|e| format!("JSON parse error: {}", e))?;
-
-    Ok(mrs.into_iter().filter_map(parse_mr).collect())
+pub fn details(host: &str, namespace: &str, project: &str, number: u32, token: &str) -> Result<(PrItem, Vec<String>), String> {
+    let encoded = component(&format!("{namespace}/{project}"));
+    let url = format!("https://{host}/api/v4/projects/{encoded}/merge_requests/{number}");
+    let body = super::pagination::object(&url, "PRIVATE-TOKEN", token)?;
+    let mut item = parse_mr(body.clone()).ok_or("Invalid merge request details.")?;
+    item.check_state = body["head_pipeline"]["status"].as_str().map(|status| match status {
+        "success" | "skipped" => super::CheckState::Success,
+        "failed" | "canceled" => super::CheckState::Failure,
+        _ => super::CheckState::Pending,
+    });
+    Ok((item, Vec::new()))
 }
 
 fn parse_mr(v: serde_json::Value) -> Option<PrItem> {
@@ -41,23 +47,33 @@ fn parse_mr(v: serde_json::Value) -> Option<PrItem> {
         .unwrap_or_default();
 
     Some(PrItem {
+        queue_status: None,
+        head_oid: v["sha"].as_str().unwrap_or("").to_string(),
         number, title, author, state, head_ref, base_ref, url, updated_ts,
         label_names: labels, check_state: None, review_state: None, body, comments, changed_files: None,
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn merged_and_closed_drafts_keep_terminal_state() {
+        let mut fixture = serde_json::json!({"iid": 9, "title": "Draft: Change", "state": "merged", "draft": true});
+        assert_eq!(parse_mr(fixture.clone()).unwrap().state, PrState::Merged);
+        fixture["state"] = "closed".into();
+        assert_eq!(parse_mr(fixture).unwrap().state, PrState::Closed);
+    }
+}
+
 // ── Phase 13: Issues, CI, Releases ───────────────────────────────────────────
 
 pub fn list_issues(host: &str, namespace: &str, project: &str, token: &str, state: &str) -> Result<Vec<super::IssueItem>, String> {
-    let encoded = format!("{}/{}", namespace, project).replace('/', "%2F");
-    let gl_state = if state == "closed" { "closed" } else { "opened" };
+    let encoded = component(&format!("{namespace}/{project}"));
+    let gl_state = match state { "closed" => "closed", "all" => "all", _ => "opened" };
     let url = format!("https://{}/api/v4/projects/{}/issues?state={}&per_page=50&order_by=updated_at",
         host, encoded, gl_state);
-    let items: Vec<serde_json::Value> = ureq::get(&url)
-        .set("PRIVATE-TOKEN", token)
-        .set("User-Agent", "Recorde/0.1")
-        .call().map_err(|e| format!("GitLab: {}", e))?
-        .into_json().map_err(|e| format!("JSON: {}", e))?;
+    let items = list(&url, "PRIVATE-TOKEN", token, None)?;
     Ok(items.into_iter().filter_map(|v| {
         let number   = v["iid"].as_u64()? as u32;
         let title    = v["title"].as_str()?.to_string();
@@ -75,14 +91,10 @@ pub fn list_issues(host: &str, namespace: &str, project: &str, token: &str, stat
 }
 
 pub fn list_pipelines(host: &str, namespace: &str, project: &str, branch: &str, token: &str) -> Result<Vec<super::CiRun>, String> {
-    let encoded = format!("{}/{}", namespace, project).replace('/', "%2F");
+    let encoded = component(&format!("{namespace}/{project}"));
     let url = format!("https://{}/api/v4/projects/{}/pipelines?ref={}&per_page=15&order_by=updated_at",
-        host, encoded, branch);
-    let items: Vec<serde_json::Value> = ureq::get(&url)
-        .set("PRIVATE-TOKEN", token)
-        .set("User-Agent", "Recorde/0.1")
-        .call().map_err(|e| format!("GitLab: {}", e))?
-        .into_json().map_err(|e| format!("JSON: {}", e))?;
+        host, encoded, component(branch));
+    let items = list(&url, "PRIVATE-TOKEN", token, None)?;
     Ok(items.into_iter().filter_map(|p| {
         let id      = p["id"].as_u64()?.to_string();
         let name    = format!("Pipeline #{}", p["id"].as_u64().unwrap_or(0));
@@ -95,13 +107,9 @@ pub fn list_pipelines(host: &str, namespace: &str, project: &str, branch: &str, 
 }
 
 pub fn list_releases(host: &str, namespace: &str, project: &str, token: &str) -> Result<Vec<super::ReleaseItem>, String> {
-    let encoded = format!("{}/{}", namespace, project).replace('/', "%2F");
+    let encoded = component(&format!("{namespace}/{project}"));
     let url = format!("https://{}/api/v4/projects/{}/releases?per_page=20", host, encoded);
-    let items: Vec<serde_json::Value> = ureq::get(&url)
-        .set("PRIVATE-TOKEN", token)
-        .set("User-Agent", "Recorde/0.1")
-        .call().map_err(|e| format!("GitLab: {}", e))?
-        .into_json().map_err(|e| format!("JSON: {}", e))?;
+    let items = list(&url, "PRIVATE-TOKEN", token, None)?;
     Ok(items.into_iter().filter_map(|r| {
         let tag_name  = r["tag_name"].as_str()?.to_string();
         let name      = r["name"].as_str().unwrap_or(&tag_name).to_string();

@@ -6,7 +6,7 @@ use std::path::Path;
 pub fn file_history_oids(repo_path: &Path, file_path: &str) -> HashSet<String> {
     let Ok(output) = std::process::Command::new("git")
         .arg("-C").arg(repo_path)
-        .args(["log", "--follow", "--format=%H", "--", file_path])
+        .args(["--literal-pathspecs", "log", "--follow", "--format=%H", "--", file_path])
         .output()
     else {
         return HashSet::new();

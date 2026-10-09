@@ -15,6 +15,10 @@ mod ui;
 use app::RecordeApp;
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("--credential-helper") {
+        auth::helper::run(&std::env::args().nth(2).unwrap_or_default());
+        return Ok(());
+    }
     crash::install();
     env_logger::init();
 
@@ -40,3 +44,5 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| Ok(Box::new(RecordeApp::new(cc, initial_repo)))),
     )
 }
+
+pub mod external;

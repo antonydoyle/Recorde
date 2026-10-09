@@ -7,27 +7,8 @@ use crate::state::SharedState;
 
 /// Run `git -C <repo_path> <args>` and return stderr as a GitError on failure.
 pub(crate) fn run_git_seq(repo_path: &Path, args: &[&str]) -> Result<(), GitError> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(args)
-        .env("GIT_EDITOR", "true")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| GitError::Command {
-            cmd: format!("git {}", args.join(" ")),
-            stderr: e.to_string(),
-        })?;
+    crate::git::process::git(repo_path, args, &std::sync::atomic::AtomicBool::new(false)).map(|_| ())
 
-    if out.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(GitError::Command {
-            cmd: format!("git {}", args.join(" ")),
-            stderr,
-        })
-    }
 }
 
 // ── Merge ─────────────────────────────────────────────────────────────────────
@@ -54,23 +35,14 @@ pub fn merge_branch(branch_name: &str, state: SharedState) {
         s.console_log.push(format!("$ git merge {}", name));
     }
 
-    std::thread::spawn(move || {
-        let result = run_git_seq(&path, &["merge", "--no-edit", &name]);
-        {
-            let mut s = state.lock().unwrap();
-            s.remote_op = None;
-            if let Err(ref e) = result {
-                s.console_log.push(format!("error: {}", e.user_message()));
-                // Don't surface as UI error — capabilities reload will show conflict banner
-            }
-        }
-        crate::git::branches::reload_repo(state);
+    crate::git::mutation::spawn_operation(path, state, move |path| {
+        super::recovery::protect_sequence(path, "Merge", || run_git_seq(path, &["merge", "--no-edit", "--", &name]).map_err(|e| e.user_message()))
     });
 }
 
 pub fn continue_merge(state: SharedState) {
     seq_op("merge --continue", state, |path| {
-        run_git_seq(path, &["merge", "--continue", "--no-edit"])
+        run_git_seq(path, &["merge", "--continue"])
     });
 }
 
@@ -92,17 +64,11 @@ fn seq_op(label: &'static str, state: SharedState, f: impl FnOnce(&Path) -> Resu
         s.remote_op = Some(format!("{}…", label));
         s.console_log.push(format!("$ git {}", label));
     }
-    std::thread::spawn(move || {
-        let result = f(&path);
-        {
-            let mut s = state.lock().unwrap();
-            s.remote_op = None;
-            if let Err(ref e) = result {
-                let msg = e.user_message();
-                s.console_log.push(format!("error: {}", msg));
-                s.error = Some(msg);
-            }
+    crate::git::mutation::spawn_operation(path, state, move |path| {
+        if matches!(label, "cherry-pick" | "revert") {
+            super::recovery::protect_sequence(path, label, || f(path).map_err(|e| e.user_message()))
+        } else {
+            super::recovery::continue_sequence(path, || f(path).map_err(|e| e.user_message()))
         }
-        crate::git::branches::reload_repo(state);
     });
 }

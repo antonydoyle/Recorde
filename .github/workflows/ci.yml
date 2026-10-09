@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: Dependency security audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install audit tool
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Reject vulnerable and unsound dependencies
+        run: cargo audit --deny unsound
+  test:
+    name: Rust checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+      GIT_CONFIG_NOSYSTEM: '1'
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev libgtk-3-dev \
+            libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libx11-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libxtst6 git-lfs xvfb
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake
+      - name: Set isolated Git defaults
+        shell: bash
+        run: |
+          export GIT_CONFIG_GLOBAL="$RUNNER_TEMP/recorde-test-gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
+          git config --file "$GIT_CONFIG_GLOBAL" user.name 'Recorde Tests'
+          git config --file "$GIT_CONFIG_GLOBAL" user.email 'tests@example.invalid'
+          git config --file "$GIT_CONFIG_GLOBAL" commit.gpgsign false
+          git config --file "$GIT_CONFIG_GLOBAL" core.autocrlf false
+          git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
+      - name: Check all targets
+        run: cargo check --locked --all-targets
+      - name: Clippy
+        run: cargo clippy --locked --all-targets
+      - name: Test
+        run: cargo test --locked --all-targets
+      - name: LFS round trip
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: cargo test --locked --lib lfs_stage_push_clone_round_trip -- --ignored
+      - name: Windows credential vault
+        if: runner.os == 'Windows'
+        run: cargo test --locked --lib native_vault_round_trip -- --ignored
+      - name: Windows GUI startup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/windows_smoke.ps1 -Binary target/debug/recorde.exe -Artifacts "$env:RUNNER_TEMP/gui-artifacts"
+      - name: Linux GUI startup
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked
+          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts"
+          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/image-preview" --image-preview
+          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/line-selection" --line-selection
+          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/split-selection" --split-selection
+          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/frame-profile" --frame-profile
+      - name: Upload GUI smoke artifacts
+        if: always() && (runner.os == 'Linux' || runner.os == 'Windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-smoke-${{ runner.os }}
+          path: ${{ runner.temp }}/gui-artifacts

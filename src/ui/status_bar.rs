@@ -45,7 +45,7 @@ impl StatusBar {
                     let ab        = s.ahead_behind;
                     let dirty     = s.dirty_count;
                     let remote_op = s.remote_op.clone();
-                    let error     = s.error.clone();
+                    let error     = s.error.as_deref().map(crate::auth::redact::text);
                     drop(s);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -4,6 +4,7 @@ use crate::state::{RebaseAction, RebaseEntry};
 use crate::theme;
 
 pub struct RebaseModal {
+    pub preserve_merges: bool,
     pub upstream_oid: String,
     pub upstream_summary: String,
     pub entries: Vec<RebaseEntry>,
@@ -16,7 +17,7 @@ pub enum RebaseModalResult {
 
 impl RebaseModal {
     pub fn new(upstream_oid: String, upstream_summary: String, entries: Vec<RebaseEntry>) -> Self {
-        Self { upstream_oid, upstream_summary, entries }
+        Self { preserve_merges: false, upstream_oid, upstream_summary, entries }
     }
 
     /// Render the modal contents inside an already-open `egui::Window`.
@@ -45,6 +46,7 @@ impl RebaseModal {
         );
 
         ui.add_space(8.0);
+        if self.preserve_merges { ui.label("Merge topology is preserved. Keep the original order; Pick and Reword are available."); }
 
         // Column headers
         ui.horizontal(|ui| {
@@ -62,7 +64,7 @@ impl RebaseModal {
         // drag_from and drop_at are both set by the drop zone (payload = source index)
         let mut drag_from: Option<usize> = None;
         let mut drop_at:   Option<usize> = None;
-        let is_dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
+        let is_dragging = !self.preserve_merges && egui::DragAndDrop::has_any_payload(ui.ctx());
 
         egui::ScrollArea::vertical()
             .max_height(380.0)
@@ -98,10 +100,12 @@ impl RebaseModal {
                                 .show_ui(ui, |ui| {
                                     for a in &[
                                         RebaseAction::Pick,
+                                        RebaseAction::Reword,
                                         RebaseAction::Squash,
                                         RebaseAction::Fixup,
                                         RebaseAction::Drop,
                                     ] {
+                                        if self.preserve_merges && !matches!(a, RebaseAction::Pick | RebaseAction::Reword) { continue; }
                                         ui.selectable_value(
                                             &mut selected_action,
                                             *a,
@@ -128,6 +132,10 @@ impl RebaseModal {
                         });
                     });
                     let _ = item;
+                    if matches!(cur_action, RebaseAction::Reword | RebaseAction::Squash) {
+                        ui.label(if cur_action == RebaseAction::Squash { "Resulting combined commit message" } else { "New commit message" });
+                        ui.add(egui::TextEdit::multiline(&mut self.entries[i].message).desired_rows(3).desired_width(f32::INFINITY));
+                    }
 
                     // Drop zone after each row
                     receive_drop(ui, i + 1, is_dragging, &mut drag_from, &mut drop_at);
@@ -136,10 +144,16 @@ impl RebaseModal {
 
         // Apply action changes
         for (i, action) in action_changes {
+            if action == RebaseAction::Squash && self.entries[i].action != RebaseAction::Squash {
+                if let Some(previous) = self.entries[..i].iter().rev().find(|e| e.action != RebaseAction::Drop) {
+                    self.entries[i].message = format!("{}\n\n{}", previous.message.trim(), self.entries[i].message.trim());
+                }
+            }
             self.entries[i].action = action;
         }
 
         // Apply drag-and-drop reorder
+        if self.preserve_merges { drag_from = None; drop_at = None; }
         if let (Some(from), Some(to)) = (drag_from, drop_at) {
             if to != from && to != from + 1 {
                 let entry = self.entries.remove(from);
@@ -155,6 +169,7 @@ impl RebaseModal {
         // ── Legend ────────────────────────────────────────────────────────────
         ui.horizontal_wrapped(|ui| {
             for (a, desc) in &[
+                (RebaseAction::Reword, "edit message  ?  "),
                 (RebaseAction::Pick,   "use commit  ·  "),
                 (RebaseAction::Squash, "meld into prev, edit msg  ·  "),
                 (RebaseAction::Fixup,  "meld into prev, discard msg  ·  "),
@@ -168,12 +183,13 @@ impl RebaseModal {
         ui.add_space(12.0);
 
         // ── Buttons ───────────────────────────────────────────────────────────
-        let any_pick = self.entries.iter().any(|e| e.action != RebaseAction::Drop);
+        let validation = crate::git::rebase::validate_entries(&self.entries);
+        if let Err(error) = &validation { ui.colored_label(theme::ACCENT_RED, error); }
         let mut result = None;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    any_pick,
+                    validation.is_ok(),
                     egui::Button::new(RichText::new("Start Rebase").color(Color32::WHITE).size(13.0))
                         .fill(theme::ACCENT_BLUE)
                         .min_size(egui::Vec2::new(130.0, 28.0)),
@@ -205,7 +221,7 @@ impl RebaseModal {
 
 fn action_color(action: RebaseAction) -> Color32 {
     match action {
-        RebaseAction::Pick   => theme::ACCENT_BLUE,
+        RebaseAction::Pick | RebaseAction::Reword => theme::ACCENT_BLUE,
         RebaseAction::Squash => theme::ACCENT_YELLOW,
         RebaseAction::Fixup  => Color32::from_rgb(0xE5, 0x97, 0x20),
         RebaseAction::Drop   => theme::ACCENT_RED,

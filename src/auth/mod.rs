@@ -1,5 +1,8 @@
 pub mod ssh;
 pub mod store;
+pub mod endpoint;
+pub mod redact;
+pub mod helper;
 
 use serde::{Deserialize, Serialize};
 

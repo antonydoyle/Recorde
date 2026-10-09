@@ -1,116 +1,278 @@
-/// Token storage in ~/.local/share/recorde/tokens.toml (chmod 600 on Unix).
-/// Tokens are stored in plain text in a user-only file. For higher security,
-/// replace with a keyring crate that uses the OS credential store.
-use std::path::PathBuf;
-
+//! OS-vault secrets with an atomic, non-secret account index.
+//! Legacy plaintext entries are removed only after verified vault storage.
 use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+static ACCESS: Mutex<()> = Mutex::new(());
+
+#[derive(Default, Serialize, Deserialize)]
 struct TokenFile {
     #[serde(default)]
     tokens: Vec<TokenEntry>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 struct TokenEntry {
     host: String,
     username: String,
-    token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
 }
 
-fn token_path() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("recorde")
-        .join("tokens.toml")
+trait Vault {
+    fn get(&self, host: &str, username: &str) -> Result<Option<String>, String>;
+    fn set(&self, host: &str, username: &str, token: &str) -> Result<(), String>;
+    fn delete(&self, host: &str, username: &str) -> Result<(), String>;
 }
+struct NativeVault;
 
-fn read_file() -> TokenFile {
-    std::fs::read_to_string(token_path())
-        .ok()
-        .and_then(|s| toml::from_str(&s).ok())
-        .unwrap_or_default()
+fn vault_error(_: keyring::Error) -> String {
+    // Backend errors can contain raw secret bytes (e.g. BadEncoding).
+    "Cannot access the OS credential store. Unlock it and retry; no plaintext fallback is used."
+        .into()
 }
-
-fn write_file(tf: &TokenFile) -> Result<(), String> {
-    let path = token_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+fn entry(host: &str, username: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(&format!("Recorde:https://{host}"), username).map_err(vault_error)
+}
+impl Vault for NativeVault {
+    fn get(&self, host: &str, username: &str) -> Result<Option<String>, String> {
+        match entry(host, username)?.get_password() {
+            Ok(token) => Ok(Some(token)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(vault_error(error)),
+        }
     }
-    let content = toml::to_string_pretty(tf).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &content).map_err(|e| e.to_string())?;
+    fn set(&self, host: &str, username: &str, token: &str) -> Result<(), String> {
+        entry(host, username)?
+            .set_password(token)
+            .map_err(vault_error)
+    }
+    fn delete(&self, host: &str, username: &str) -> Result<(), String> {
+        match entry(host, username)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(vault_error(error)),
+        }
+    }
+}
 
-    // Restrict to owner-read/write on Unix
+struct Store<V> {
+    path: PathBuf,
+    vault: V,
+}
+
+impl<V: Vault> Store<V> {
+    fn read(&self) -> Result<TokenFile, String> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => toml::from_str(&text)
+                .map_err(|_| "Credential index is invalid; it has not been changed.".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TokenFile::default()),
+            Err(_) => Err("Cannot read credential index.".into()),
+        }
+    }
+    fn write(&self, file: &TokenFile) -> Result<(), String> {
+        if file.tokens.iter().any(|e| e.token.is_some()) {
+            return Err("Refusing to write plaintext credentials.".into());
+        }
+        let parent = self.path.parent().ok_or("Invalid credential index path.")?;
+        std::fs::create_dir_all(parent).map_err(|_| "Cannot create credential directory.")?;
+        // NamedTempFile is owner-only on Unix from creation, before any writes.
+        let mut temp = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|_| "Cannot create credential index.")?;
+        let content = toml::to_string(file).map_err(|_| "Cannot serialize credential index.")?;
+        temp.write_all(content.as_bytes())
+            .map_err(|_| "Cannot write credential index.")?;
+        temp.as_file()
+            .sync_all()
+            .map_err(|_| "Cannot sync credential index.")?;
+        temp.persist(&self.path)
+            .map_err(|_| "Cannot replace credential index.")?;
+        Ok(())
+    }
+    fn verified_set(&self, host: &str, username: &str, token: &str) -> Result<(), String> {
+        self.vault.set(host, username, token)?;
+        if self.vault.get(host, username)?.as_deref() != Some(token) {
+            return Err(
+                "Credential store verification failed; the existing index has been retained."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+    fn migrate(&self) -> Result<TokenFile, String> {
+        let mut file = self.read()?;
+        if !file.tokens.iter().any(|e| e.token.is_some()) {
+            return Ok(file);
+        }
+        // Validate every identity before changing the vault.
+        for e in &mut file.tokens {
+            e.host = super::endpoint::normalize_host(&e.host)?;
+            validate_username(&e.username)?;
+        }
+        for e in &mut file.tokens {
+            if let Some(token) = e.token.take() {
+                if self.vault.get(&e.host, &e.username)?.is_none() {
+                    self.verified_set(&e.host, &e.username, &token)?;
+                }
+                // Keep an existing, successfully read vault value: it may be
+                // newer than the legacy file after an interrupted migration.
+            }
+        }
+        // Any failure above leaves the original file byte-for-byte intact.
+        file.tokens
+            .dedup_by(|a, b| a.host == b.host && a.username == b.username);
+        self.write(&file)?;
+        Ok(file)
+    }
+    fn save(&self, host: &str, username: &str, token: &str) -> Result<(), String> {
+        let host = super::endpoint::normalize_host(host)?;
+        validate_username(username)?;
+        if token.is_empty() || token.chars().any(char::is_control) {
+            return Err("Token cannot be empty.".into());
+        }
+        let mut file = self.migrate()?;
+        self.verified_set(&host, username, token)?;
+        file.tokens
+            .retain(|e| !(e.host == host && e.username == username));
+        file.tokens.push(TokenEntry {
+            host,
+            username: username.into(),
+            token: None,
+        });
+        self.write(&file)
+    }
+    fn remove(&self, host: &str, username: &str) -> Result<(), String> {
+        let host = super::endpoint::normalize_host(host)?;
+        let mut file = self.migrate()?;
+        // Retire the index first. A failed vault deletion remains retryable from
+        // the account UI, and the retired token can no longer be selected.
+        file.tokens
+            .retain(|e| !(e.host == host && e.username == username));
+        self.write(&file)?;
+        self.vault.delete(&host, username)
+    }
+    fn lookup(
+        &self,
+        host: &str,
+        username: Option<&str>,
+    ) -> Result<Option<(String, String)>, String> {
+        let file = self.migrate()?;
+        let mut candidates: Vec<_> = file
+            .tokens
+            .iter()
+            .filter(|e| e.host == host && username.is_none_or(|u| u == e.username))
+            .map(|e| e.username.as_str())
+            .collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+        if candidates.len() > 1 {
+            return Err("Multiple accounts match this host. Choose an account for this repository in Settings > Accounts & SSH.".into());
+        }
+        match candidates.first() {
+            Some(user) => self
+                .vault
+                .get(host, user)
+                .map(|token| token.map(|t| ((*user).into(), t))),
+            None => Ok(None),
+        }
+    }
+}
+
+fn validate_username(username: &str) -> Result<(), String> {
+    if username.is_empty() || username.trim() != username || username.chars().any(char::is_control)
+    {
+        Err("Enter a non-empty account username without control characters.".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn with_store<T>(
+    operation: impl FnOnce(&Store<NativeVault>) -> Result<T, String>,
+) -> Result<T, String> {
+    let _guard = ACCESS
+        .lock()
+        .map_err(|_| "Credential store is busy; restart and retry.")?;
+    let directory = dirs::data_dir()
+        .ok_or("Cannot locate the application data directory.")?
+        .join("recorde");
+    std::fs::create_dir_all(&directory).map_err(|_| "Cannot create credential directory.")?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    Ok(())
+    let lock = options
+        .open(directory.join("credentials.lock"))
+        .map_err(|_| "Cannot lock credential index.")?;
+    fs2::FileExt::lock_exclusive(&lock).map_err(|_| "Cannot lock credential index.")?;
+    operation(&Store {
+        path: directory.join("tokens.toml"),
+        vault: NativeVault,
+    })
 }
 
-/// Save or update a token for (host, username).
+pub fn migrate() -> Result<(), String> {
+    with_store(|store| store.migrate().map(|_| ()))
+}
 pub fn save(host: &str, username: &str, token: &str) -> Result<(), String> {
-    let mut tf = read_file();
-    tf.tokens.retain(|e| !(e.host == host && e.username == username));
-    tf.tokens.push(TokenEntry {
-        host: host.to_string(),
-        username: username.to_string(),
-        token: token.to_string(),
+    super::redact::remember(token);
+    with_store(|store| store.save(host, username, token))
+}
+pub fn remove(host: &str, username: &str) -> Result<(), String> {
+    with_store(|store| store.remove(host, username))
+}
+pub fn lookup_for_url(
+    remote: &str,
+    repo_path: Option<&Path>,
+) -> Result<Option<(String, String)>, String> {
+    lookup(remote, repo_path, false)
+}
+pub fn lookup_for_api(remote: &str, repo_path: &Path) -> Result<Option<(String, String)>, String> {
+    lookup(remote, Some(repo_path), true)
+}
+fn lookup(
+    remote: &str,
+    repo_path: Option<&Path>,
+    for_api: bool,
+) -> Result<Option<(String, String)>, String> {
+    let endpoint = super::endpoint::parse(remote, for_api)?;
+    let config = crate::config::Config::try_load()?;
+    let binding = repo_path.and_then(|path| {
+        config
+            .get_repo_config(path)
+            .provider_accounts
+            .get(&endpoint.host)
+            .cloned()
     });
-    write_file(&tf)
+    let username = selected_username(endpoint.username.as_deref(), binding.as_deref())?;
+    let result = with_store(|store| store.lookup(&endpoint.host, username))?;
+    if result.is_none() && binding.is_some() {
+        return Err("No token for this repository's selected account. Update it in Settings > Accounts & SSH.".into());
+    }
+    if let Some((_, token)) = &result {
+        super::redact::remember(token);
+    }
+    Ok(result)
 }
 
-/// Retrieve the stored token for (host, username), if any.
-pub fn load(host: &str, username: &str) -> Option<String> {
-    read_file().tokens.into_iter()
-        .find(|e| e.host == host && e.username == username)
-        .map(|e| e.token)
-}
-
-/// Remove the stored token for (host, username).
-pub fn remove(host: &str, username: &str) {
-    let mut tf = read_file();
-    tf.tokens.retain(|e| !(e.host == host && e.username == username));
-    let _ = write_file(&tf);
-}
-
-/// Given an HTTPS remote URL, return (username, token) if we have a stored
-/// credential for that host. The username in the token entry is used as the
-/// HTTP username; for GitHub/GitLab PATs the password is the token itself.
-pub fn lookup_for_url(url: &str) -> Option<(String, String)> {
-    let host = extract_host(url)?;
-    let tf = read_file();
-    // Prefer an exact host match; accept a suffix match for enterprise hosts
-    let entry = tf.tokens.iter()
-        .find(|e| host == e.host || host.ends_with(&format!(".{}", e.host)))?;
-    Some((entry.username.clone(), entry.token.clone()))
-}
-
-fn extract_host(url: &str) -> Option<String> {
-    // HTTPS URL: https://host/path  or  https://user@host/path
-    let url = url.trim_start_matches("https://").trim_start_matches("http://");
-    let url = url.split_once('@').map(|(_, rest)| rest).unwrap_or(url);
-    let host = url.split('/').next()?.split(':').next()?; // strip port if present
-    Some(host.to_lowercase())
+fn selected_username<'a>(
+    url_user: Option<&'a str>,
+    binding: Option<&'a str>,
+) -> Result<Option<&'a str>, String> {
+    if let (Some(url_user), Some(bound_user)) = (url_user, binding) {
+        if url_user != bound_user {
+            return Err(
+                "Remote username conflicts with this repository's selected account.".into(),
+            );
+        }
+    }
+    Ok(binding.or(url_user))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_host_plain() {
-        assert_eq!(extract_host("https://github.com/owner/repo.git").as_deref(), Some("github.com"));
-    }
-
-    #[test]
-    fn extract_host_with_user() {
-        assert_eq!(extract_host("https://alice@gitlab.com/owner/repo.git").as_deref(), Some("gitlab.com"));
-    }
-
-    #[test]
-    fn extract_host_enterprise() {
-        assert_eq!(extract_host("https://git.corp.example.com/owner/repo").as_deref(), Some("git.corp.example.com"));
-    }
-}
+#[path = "store_tests.rs"]
+mod tests;

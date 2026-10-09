@@ -13,7 +13,7 @@ pub enum GitError {
 
 impl GitError {
     pub fn user_message(&self) -> String {
-        match self {
+        let message: String = match self {
             GitError::Git2(e) => e.message().to_string(),
             GitError::Command { cmd, stderr } => {
                 if stderr.is_empty() {
@@ -42,7 +42,8 @@ impl GitError {
                 "Authentication failed — check your SSH key or run 'gh auth login'.".into()
             }
             GitError::Cancelled => "Operation was cancelled.".into(),
-        }
+        };
+        crate::auth::redact::text(&message)
     }
 
     pub fn is_conflict(&self) -> bool {

@@ -9,10 +9,84 @@ const MAX_RECENT: usize = 10;
 /// Per-repository persistent settings (column widths, etc.).
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
+    #[serde(default)]
+    pub navigation: Option<RepoNavigation>,
+    #[serde(default)]
+    pub diff_preferences: DiffPreferences,
+    #[serde(default)]
+    pub layout: Option<RepoLayout>,
+    /// Exact HTTPS authority to selected account username; contains no secrets.
+    #[serde(default)]
+    pub provider_accounts: std::collections::HashMap<String, String>,
     pub refs_w:  Option<f32>,
     pub graph_w: Option<f32>,
     pub time_w:  Option<f32>,
     pub hash_w:  Option<f32>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffPreferences {
+    #[serde(default)]
+    pub whitespace: bool,
+    pub split: bool,
+    pub search_open: bool,
+    pub search_query: String,
+}
+
+/// Navigation only: no cached content, credentials or pending mutations are restored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoNavigation {
+    pub selected_commit: Option<String>,
+    pub selected_file: Option<String>,
+    pub diff_context: crate::state::DiffContext,
+    pub search_active: bool,
+    pub search_query: String,
+    pub show_all_branches: bool,
+    pub graph_filter: crate::git::graph::GraphFilter,
+    pub history_limit: usize,
+    pub focused_pane: u8,
+}
+
+impl RepoNavigation {
+    pub fn from_view(view: &crate::state::RepoView) -> Self {
+        Self { selected_commit: view.selected_commit.clone(), selected_file: view.selected_file.clone(),
+            diff_context: view.diff_context, search_active: view.search_active, search_query: view.search_query.clone(),
+            show_all_branches: view.show_all_branches, graph_filter: view.graph_filter.clone(),
+            history_limit: view.history_limit, focused_pane: view.focused_pane }
+    }
+
+    pub fn capture(state: &crate::state::AppState) -> Self {
+        Self { selected_commit: state.selected_commit.clone(), selected_file: state.selected_file.clone(),
+            diff_context: state.diff_context, search_active: state.search_active, search_query: state.search_query.clone(),
+            show_all_branches: state.show_all_branches, graph_filter: state.graph_filter.clone(),
+            history_limit: state.history_limit, focused_pane: state.focused_pane }
+    }
+
+    pub fn restored_view(&self, path: &Path) -> crate::state::RepoView {
+        let repo = git2::Repository::open(path).ok();
+        let selected_commit = self.selected_commit.clone().filter(|oid| repo.as_ref().is_some_and(|r|
+            git2::Oid::from_str(oid).ok().is_some_and(|oid| r.find_commit(oid).is_ok())));
+        let mut filter = self.graph_filter.clone();
+        if filter.solo_ref.as_ref().is_some_and(|name| !repo.as_ref().is_some_and(|r| r.find_reference(name).is_ok())) { filter.solo_ref = None; }
+        if filter.range.as_ref().is_some_and(|(a,b)| !repo.as_ref().is_some_and(|r|
+            r.revparse_single(a).and_then(|o| o.peel_to_commit()).is_ok() && r.revparse_single(b).and_then(|o| o.peel_to_commit()).is_ok())) { filter.range = None; }
+        let selected_file = self.selected_file.clone().filter(|file| crate::git::safe_path::relative(file).is_ok())
+            .filter(|_| self.diff_context != crate::state::DiffContext::CommitDiff || selected_commit.is_some());
+        crate::state::RepoView { selected_commit, selected_file, diff_context: self.diff_context,
+            search_active: self.search_active, search_query: self.search_query.clone(), show_all_branches: self.show_all_branches,
+            graph_filter: filter, history_limit: self.history_limit.clamp(2000, 100000), focused_pane: self.focused_pane.min(4),
+            ..Default::default() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoLayout {
+    pub show_sidebar: bool,
+    pub show_right_panel: bool,
+    pub show_diff_panel: bool,
+    pub sidebar_width: Option<f32>,
+    pub right_panel_width: Option<f32>,
+    pub diff_panel_height: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -35,6 +109,14 @@ impl PullStrategy {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub favorites: Vec<PathBuf>,
+    #[serde(default)]
+    pub workspaces: std::collections::BTreeMap<String, Vec<PathBuf>>,
+    #[serde(default)]
+    pub open_repos: Vec<PathBuf>,
+    #[serde(default)]
+    pub active_repo: Option<PathBuf>,
     #[serde(default)]
     pub recent_repos: Vec<PathBuf>,
     #[serde(default = "default_true")]
@@ -90,19 +172,54 @@ fn default_300() -> u32 { 300 }
 fn default_font_scale() -> f32 { 1.0 }
 
 impl Config {
+    pub fn remember_layout(&mut self, path: &Path) {
+        let layout = RepoLayout {
+            show_sidebar: self.show_sidebar, show_right_panel: self.show_right_panel,
+            show_diff_panel: self.show_diff_panel, sidebar_width: self.sidebar_width,
+            right_panel_width: self.right_panel_width, diff_panel_height: self.diff_panel_height,
+        };
+        self.per_repo.entry(path.display().to_string()).or_default().layout = Some(layout);
+    }
+
+    pub fn restore_layout(&mut self, path: &Path) {
+        if let Some(layout) = self.get_repo_config(path).layout {
+            self.show_sidebar = layout.show_sidebar;
+            self.show_right_panel = layout.show_right_panel;
+            self.show_diff_panel = layout.show_diff_panel;
+            self.sidebar_width = layout.sidebar_width;
+            self.right_panel_width = layout.right_panel_width;
+            self.diff_panel_height = layout.diff_panel_height;
+        }
+    }
+
     pub fn load() -> Self {
-        let content = std::fs::read_to_string(config_path()).unwrap_or_default();
-        toml::from_str(&content).unwrap_or_else(|_| toml::from_str("").unwrap_or_default())
+        Self::try_load().unwrap_or_else(|_| toml::from_str("").unwrap_or_default())
+    }
+
+    /// Authentication must not silently ignore a corrupt account binding.
+    pub fn try_load() -> Result<Self, String> {
+        match std::fs::read_to_string(config_path()) {
+            Ok(content) => toml::from_str(&content).map_err(|_| "Application configuration is invalid; account selection cannot be resolved.".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml::from_str("").unwrap_or_default()),
+            Err(_) => Err("Cannot read application configuration.".into()),
+        }
     }
 
     pub fn save(&self) {
+        if let Err(error) = self.try_save() { log::error!("{}", error); }
+    }
+
+    pub fn try_save(&self) -> Result<(), String> {
+        use std::io::Write;
         let path = config_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(s) = toml::to_string_pretty(self) {
-            let _ = std::fs::write(&path, s);
-        }
+        let parent = path.parent().ok_or("Invalid configuration path.")?;
+        std::fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory.")?;
+        let content = toml::to_string_pretty(self).map_err(|_| "Cannot serialize configuration.")?;
+        let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|_| "Cannot create configuration file.")?;
+        temp.write_all(content.as_bytes()).map_err(|_| "Cannot write configuration.")?;
+        temp.as_file().sync_all().map_err(|_| "Cannot sync configuration.")?;
+        temp.persist(&path).map_err(|_| "Cannot replace configuration.")?;
+        Ok(())
     }
 
     /// Prepend `path` to the recent list, de-duplicate, cap at MAX_RECENT.
@@ -150,4 +267,28 @@ fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("recorde")
         .join("config.toml")
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    #[test]
+    fn navigation_round_trip_restores_selection_and_drops_stale_refs() {
+        let repo = crate::git::test_support::TestRepo::new();
+        let oid = repo.commit("file", b"base").to_string();
+        let state = crate::state::AppState { selected_commit: Some(oid.clone()), selected_file: Some("file".into()),
+            show_all_branches: true, history_limit: 4000, graph_filter: crate::git::graph::GraphFilter {
+                solo_ref: Some("refs/heads/deleted".into()), ..Default::default()
+            }, ..Default::default() };
+        let settings = RepoConfig { navigation: Some(RepoNavigation::capture(&state)), diff_preferences: DiffPreferences { split: true, ..Default::default() }, ..Default::default() };
+        let decoded: RepoConfig = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        let view = decoded.navigation.unwrap().restored_view(repo.path());
+        assert_eq!(view.selected_commit.as_deref(), Some(oid.as_str()));
+        assert_eq!(view.selected_file.as_deref(), Some("file"));
+        assert_eq!(view.history_limit, 4000);
+        assert!(view.graph_filter.solo_ref.is_none());
+        assert!(view.current_diff.is_none() && view.selected_commit_detail.is_none());
+        assert!(decoded.diff_preferences.split);
+        assert_eq!(repo.head().to_string(), oid);
+    }
 }
