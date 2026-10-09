@@ -32,7 +32,7 @@ impl DetailPanel {
                 ui.label(
                     RichText::new("Select a commit to view details.")
                         .color(theme::text_muted())
-                        .size(12.0),
+                        .size(13.0),
                 );
             });
             return;
@@ -43,7 +43,7 @@ impl DetailPanel {
                 ui.label(
                     RichText::new("Loading…")
                         .color(theme::text_muted())
-                        .size(12.0),
+                        .size(13.0),
                 );
             });
             return;
@@ -63,12 +63,12 @@ impl DetailPanel {
                     let short = &detail.oid[..7.min(detail.oid.len())];
                     ui.label(
                         RichText::new(short)
-                            .font(FontId::monospace(13.0))
-                            .color(theme::ACCENT_BLUE),
+                            .font(FontId::monospace(14.0))
+                            .color(theme::accent_blue()),
                     );
                     ui.add_space(6.0);
                     if ui
-                        .small_button(RichText::new("Copy").color(theme::text_muted()).size(10.5))
+                        .small_button(RichText::new("Copy").color(theme::text_muted()).size(12.0))
                         .clicked()
                     {
                         ui.output_mut(|o| o.copied_text = detail.oid.clone());
@@ -99,7 +99,7 @@ impl DetailPanel {
                         ui.label(
                             RichText::new(first_line)
                                 .color(theme::text_primary())
-                                .size(13.0)
+                                .size(14.0)
                                 .strong(),
                         );
                     });
@@ -112,7 +112,7 @@ impl DetailPanel {
                             ui.label(
                                 RichText::new(rest)
                                     .color(theme::text_secondary())
-                                    .size(12.0),
+                                    .size(13.0),
                             );
                         });
                 }
@@ -127,7 +127,7 @@ impl DetailPanel {
                     ui.label(
                         RichText::new(format!("Changed files  ({})", detail.changed_files.len()))
                             .color(theme::text_muted())
-                            .size(10.5)
+                            .size(12.0)
                             .strong(),
                     );
                 });
@@ -142,7 +142,7 @@ impl DetailPanel {
                             ui.add_space(12.0);
                             ui.label(
                                 RichText::new(icon)
-                                    .font(FontId::monospace(11.0))
+                                    .font(FontId::monospace(12.0))
                                     .color(icon_color),
                             )
                             .on_hover_text(status_tooltip(file.status));
@@ -153,24 +153,18 @@ impl DetailPanel {
                                 is_sel,
                                 RichText::new(display)
                                     .color(if is_sel {
-                                        theme::bg_app()
+                                        theme::text_primary()
                                     } else {
                                         theme::text_secondary()
                                     })
-                                    .size(12.0),
+                                    .size(13.0),
                             );
 
-                            if display != file.path {
-                                label.on_hover_text(&file.path);
+                            if label.on_hover_text(&file.path).clicked() {
+                                clicked_file = Some(file.path.clone());
                             }
                         })
                         .response;
-
-                    // Row hover highlight
-                    if row_resp.hovered() {
-                        ui.painter()
-                            .rect_filled(row_resp.rect, 0.0, theme::bg_hover());
-                    }
 
                     if row_resp.interact(egui::Sense::click()).clicked() {
                         clicked_file = Some(file.path.clone());
@@ -211,11 +205,11 @@ impl DetailPanel {
 
 fn status_icon(status: char) -> (&'static str, egui::Color32) {
     match status {
-        'A' => ("A", theme::ACCENT_GREEN),
-        'D' => ("D", theme::ACCENT_RED),
-        'R' => ("R", theme::ACCENT_YELLOW),
-        'C' => ("C", theme::ACCENT_BLUE),
-        _ => ("M", theme::ACCENT_YELLOW),
+        'A' => ("A", theme::accent_green()),
+        'D' => ("D", theme::accent_red()),
+        'R' => ("R", theme::accent_yellow()),
+        'C' => ("C", theme::accent_blue()),
+        _ => ("M", theme::accent_yellow()),
     }
 }
 
@@ -235,13 +229,13 @@ fn meta_row(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
         ui.label(
             RichText::new(format!("{:<8}", label))
                 .color(theme::text_muted())
-                .font(FontId::monospace(11.0)),
+                .font(FontId::monospace(12.0)),
         );
         ui.add_space(4.0);
         ui.label(
             RichText::new(value)
                 .color(theme::text_secondary())
-                .size(12.0),
+                .size(13.0),
         )
     })
     .response

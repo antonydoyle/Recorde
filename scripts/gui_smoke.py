@@ -6,6 +6,7 @@ verifying both snapshots' colors in the framebuffer. Line mode checks selected
 index bytes and worktree preservation. Other mode checks startup.
 """
 import os
+import json
 from pathlib import Path
 import socket
 import struct
@@ -41,6 +42,13 @@ def png_from_xwd(source, destination):
 
 def main():
     binary, artifacts = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+    recent_menu = "--recent-menu" in sys.argv[3:]
+    assert not recent_menu or "--design-review" in sys.argv[3:], "Recent menu fixture requires --design-review"
+    design_review = "--design-review" in sys.argv[3:]
+    ui_scale = 1.25 if "--scaled" in sys.argv[3:] else 1.0
+    compact = "--compact" in sys.argv[3:]
+    welcome = "--welcome" in sys.argv[3:]
+    light = "--light" in sys.argv[3:]
     image_preview = "--image-preview" in sys.argv[3:]
     split_selection = "--split-selection" in sys.argv[3:]
     line_selection = "--line-selection" in sys.argv[3:] or split_selection
@@ -91,6 +99,36 @@ def main():
             (repo / "image.png").write_bytes(solid_png((0, 0, 255)))
         else:
             (repo / "file.txt").write_text("base\nfirst\nmiddle\nlast\n" if line_selection else "external working change\n")
+        if design_review:
+            git("checkout", "-b", "feature/workspace")
+            (repo / "workspace.rs").write_text('pub fn title() -> str { "Your workspace" }\n')
+            git("add", "workspace.rs")
+            git("commit", "-m", "Add workspace navigation")
+            git("checkout", "main")
+            (repo / "theme.rs").write_text('// Theme tokens\n')
+            git("add", "theme.rs")
+            git("commit", "-m", "Introduce adaptive theme tokens")
+            git("merge", "--no-ff", "feature/workspace", "-m", "Merge workspace navigation")
+            git("checkout", "-b", "feature/visual-refresh")
+            for name, message in [("icons.rs", "Bundle icons for every platform"), ("layout.rs", "Make room for the commit graph"), ("search.rs", "Improve repository search")]:
+                (repo / name).write_text('// Implementation\n')
+                git("add", name)
+                git("commit", "-m", message)
+            (repo / "theme.rs").write_text('// Theme tokens\n// Add warm light surfaces\n')
+            git("add", "theme.rs")
+            (repo / "workspace.rs").write_text('pub fn title() -> str { "Welcome to Recorde" }\n')
+            (repo / "accessibility-notes-with-a-long-filename.md").write_text('Keyboard and icon review\n')
+        settings = root / "config" / "recorde"
+        settings.mkdir(parents=True, exist_ok=True)
+        (settings / "config.toml").write_text(f'dark_theme = {str(not light).lower()}\nfont_scale = {ui_scale}\n')
+        if recent_menu:
+            recent_paths = [repo, root / 'projects' / 'recorde', root / 'archive' / 'recorde', root / 'team' / 'a-repository-with-a-very-long-name', root / 'labs' / 'café-client']
+            recent_paths += [root / 'projects' / name for name in ['website', 'shared-components', 'documentation']]
+            for recent_path in recent_paths[1:]:
+                recent_path.mkdir(parents=True)
+                subprocess.run(['git', 'init', '-b', 'main', str(recent_path)], env=env, check=True, stdout=subprocess.DEVNULL)
+            with (settings / 'config.toml').open('a') as config:
+                config.write('recent_repos = ' + json.dumps([str(p) for p in recent_paths], ensure_ascii=False) + '\n')
         # TCP avoids WSLg's read-only /tmp/.X11-unix; an ephemeral cookie protects it.
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -101,8 +139,9 @@ def main():
         auth.write_bytes(struct.pack(">H", 65535) + b"".join(struct.pack(">H", len(f)) + f for f in fields))
         auth.chmod(0o600)
         env.update(DISPLAY=f"127.0.0.1:{display}", XAUTHORITY=str(auth))
+        width, height = ((1100, 760) if compact else (1440, 900)) if design_review else (1280, 800)
         with (artifacts / "xvfb.log").open("w") as server_log:
-            server = subprocess.Popen(["Xvfb", f":{display}", "-screen", "0", "1280x800x24",
+            server = subprocess.Popen(["Xvfb", f":{display}", "-screen", "0", f"{width}x{height}x24",
                 "-nolisten", "unix", "-listen", "tcp", "-auth", str(auth), "-fbdir", temporary],
                 stdout=server_log, stderr=server_log)
             try:
@@ -112,12 +151,43 @@ def main():
                         raise RuntimeError("Xvfb did not start; see xvfb.log")
                     time.sleep(0.05)
                 with (artifacts / "gui-smoke.log").open("w") as log:
-                    app = subprocess.Popen([str(binary), str(repo)], env=env, stdout=log, stderr=log)
+                    app = subprocess.Popen([str(binary), *([] if welcome else [str(repo)])], env=env, stdout=log, stderr=log)
                     try:
-                        time.sleep(8)
+                        time.sleep(3)
+                        resize = '''import ctypes
+x = ctypes.CDLL("libX11.so.6")
+x.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x.XOpenDisplay.restype = ctypes.c_void_p
+x.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+x.XDefaultRootWindow.restype = ctypes.c_ulong
+x.XQueryTree.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)), ctypes.POINTER(ctypes.c_uint)]
+x.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_char_p)]
+x.XResizeWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_uint, ctypes.c_uint]
+x.XFlush.argtypes = [ctypes.c_void_p]
+x.XCloseDisplay.argtypes = [ctypes.c_void_p]
+x.XFree.argtypes = [ctypes.c_void_p]
+d = x.XOpenDisplay(None)
+assert d
+root, parent, children, count = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.POINTER(ctypes.c_ulong)(), ctypes.c_uint()
+x.XQueryTree(d, x.XDefaultRootWindow(d), ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count))
+found = False
+for i in range(count.value):
+    name = ctypes.c_char_p()
+    x.XFetchName(d, children[i], ctypes.byref(name))
+    if name.value and b'Recorde' in name.value:
+        x.XResizeWindow(d, children[i], WIDTH, HEIGHT)
+        found = True
+    if name: x.XFree(name)
+if children: x.XFree(children)
+assert found, 'Recorde native window not found'
+x.XFlush(d)
+x.XCloseDisplay(d)
+'''
+                        subprocess.run([sys.executable, "-c", resize.replace("WIDTH", str(width)).replace("HEIGHT", str(height))], env=env, check=True)
+                        time.sleep(5)
                         if app.poll() is not None:
                             raise RuntimeError(f"GUI exited with code {app.returncode}; see gui-smoke.log")
-                        if image_preview or line_selection or repository_settings:
+                        if image_preview or line_selection or repository_settings or (design_review and not welcome):
                             # Select the sole working file in the fixed 1280x800 fixture.
                             # Use a child so Xlib reads only this private display/cookie.
                             click = '''import ctypes
@@ -131,24 +201,50 @@ t.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, 
 t.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
 d = x.XOpenDisplay(None)
 assert d
-t.XTestFakeMotionEvent(d, -1, 80, 485, 0)
+t.XTestFakeMotionEvent(d, -1, 1090, 258, 0)
 t.XTestFakeButtonEvent(d, 1, 1, 0)
 t.XTestFakeButtonEvent(d, 1, 0, 20)
 x.XFlush(d)
 x.XCloseDisplay(d)
 '''
+                            if design_review:
+                                click = click.replace("1090, 258", f"{int(width - 190 * ui_scale)}, {int(294 * ui_scale)}")
+
                             subprocess.run([sys.executable, "-c", click], env=env, check=True)
                             time.sleep(2)
+                        if recent_menu:
+                            # Fixed native fixture: open the toolbar's repository chevron.
+                            # Verify removal only changes history, then open another real repo.
+                            base_click = click.replace(f"{int(width - 190 * ui_scale)}, {int(294 * ui_scale)}", "1090, 258")
+                            def menu_click(px, py):
+                                subprocess.run([sys.executable, "-c", base_click.replace("1090, 258", f"{px}, {py}")], env=env, check=True)
+                                time.sleep(0.7)
+                            menu_click(132, 115)
+                            png_from_xwd(root / 'Xvfb_screen0', artifacts / 'recent-menu.png')
+                            if '--recent-actions' in sys.argv[3:]:
+                                menu_click(496, 271)
+                                time.sleep(1)
+                                import tomllib
+                                stored = tomllib.loads((settings / 'config.toml').read_text())
+                                assert str(recent_paths[1]) not in stored['recent_repos'], 'Remove action did not update recent history'
+                                assert (recent_paths[1] / '.git').is_dir(), 'Remove action deleted repository files'
+                                menu_click(132, 115)
+                                menu_click(275, 271)
+                                time.sleep(3)
+                                stored = tomllib.loads((settings / 'config.toml').read_text())
+                                assert stored.get('active_repo') == str(recent_paths[2]), 'Recent row did not open the selected repository'
+                                assert stored['recent_repos'][0] == str(recent_paths[2]), 'Opening a recent row did not promote it'
+                                print('Recent menu: remove preserves repository, open updates active repo and history')
                         if repository_settings:
-                            menu = click.replace("80, 485", "180, 17")
+                            menu = click.replace("1090, 258", "1238, 114")
                             subprocess.run([sys.executable, "-c", menu], env=env, check=True)
                             time.sleep(1)
                             png_from_xwd(root / "Xvfb_screen0", artifacts / "settings-menu.png")
-                            choose = click.replace("80, 485", "225, 450")
+                            choose = click.replace("1090, 258", "600, 160")
                             subprocess.run([sys.executable, "-c", choose], env=env, check=True)
                             time.sleep(2)
                             png_from_xwd(root / "Xvfb_screen0", artifacts / "settings-top.png")
-                            scroll = click.split("t.XTestFakeMotionEvent(d, -1, 80, 485, 0)")[0] + '''import time
+                            scroll = click.split("t.XTestFakeMotionEvent(d, -1, 1090, 258, 0)")[0] + '''import time
 t.XTestFakeMotionEvent(d, -1, 700, 460, 0)
 for _ in range(9):
     t.XTestFakeButtonEvent(d, 5, 1, 0)
@@ -159,7 +255,7 @@ x.XCloseDisplay(d)'''
                             subprocess.run([sys.executable, "-c", scroll], env=env, check=True)
                             time.sleep(2)
                         if line_selection:
-                            select = click.split("t.XTestFakeMotionEvent(d, -1, 80, 485, 0)")[0] + '''import time
+                            select = click.split("t.XTestFakeMotionEvent(d, -1, 1090, 258, 0)")[0] + '''import time
 t.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
 x.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
 x.XKeysymToKeycode.restype = ctypes.c_uint
@@ -181,18 +277,23 @@ def press(px, py):
     t.XTestFakeButtonEvent(d, 1, 0, 20)
     x.XFlush(d)
     time.sleep(0.3)
-press(600, 544)
+press(600, 642)
 control = x.XKeysymToKeycode(d, 0xffe3)
 t.XTestFakeKeyEvent(d, control, 1, 0)
-press(600, 582)
+press(600, 686)
 t.XTestFakeKeyEvent(d, control, 0, 0)
-press(300, 482)
+press(250, 568)
 x.XCloseDisplay(d)'''
                             if split_selection:
-                                select = select.replace("press(600, 544)", "press(1020, 451)\npress(1050, 544)").replace("press(600, 582)", "press(1050, 582)")
+                                subprocess.run([sys.executable, "-c", click.replace("1090, 258", "858, 490")], env=env, check=True)
+                                time.sleep(1)
+                                png_from_xwd(root / "Xvfb_screen0", artifacts / "split-menu.png")
+                                select = select.replace("press(600, 642)", "press(910, 590)\npress(700, 642)").replace("press(600, 686)", "press(700, 686)")
                             subprocess.run([sys.executable, "-c", select], env=env, check=True)
                             time.sleep(2)
                             png_from_xwd(root / "Xvfb_screen0", artifacts / "gui-smoke.png")
+                            if split_selection:
+                                assert "split = true" in (settings / "config.toml").read_text(), "Split mode was not activated"
                             indexed = subprocess.check_output(["git", "-C", str(repo), "show", ":file.txt"], env=env)
                             assert indexed == b"base\nfirst\nlast\n", f"Incorrect selected index content: {indexed!r}"
                             assert (repo / "file.txt").read_bytes() == b"base\nfirst\nmiddle\nlast\n"
@@ -202,7 +303,7 @@ x.XCloseDisplay(d)'''
                             header = struct.unpack(">25I", raw[:100])
                             pixels = raw[header[0] + header[19] * 12:]
                             # Red before / blue after must both reach the rendered diff area.
-                            bottom = pixels[470 * header[12]:730 * header[12]]
+                            bottom = pixels[550 * header[12]:772 * header[12]]
                             colors = [bottom[i:i+3] for i in range(0, len(bottom), 4)]
                             assert colors.count(bytes((0, 0, 255))) > 100, "Before image was not rendered"
                             assert colors.count(bytes((255, 0, 0))) > 100, "After image was not rendered"

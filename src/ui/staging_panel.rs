@@ -17,6 +17,7 @@ pub struct StagingPanel {
     staged_expanded: bool,
     unstaged_expanded: bool,
     untracked_expanded: bool,
+    commit_options_open: bool,
 }
 
 impl StagingPanel {
@@ -29,6 +30,7 @@ impl StagingPanel {
             staged_expanded: true,
             unstaged_expanded: true,
             untracked_expanded: true,
+            commit_options_open: false,
         }
     }
 
@@ -40,7 +42,7 @@ impl StagingPanel {
             .rect_filled(ui.max_rect(), 0.0, theme::bg_surface());
         for (path, error) in &self.drafts.save_errors {
             ui.colored_label(
-                theme::ACCENT_RED,
+                theme::accent_red(),
                 format!("Draft is only in memory ({}): {error}", path.display()),
             );
         }
@@ -136,7 +138,16 @@ impl StagingPanel {
         let mut do_discard_file: Option<String> = None;
         let mut do_ignore_file: Option<String> = None;
 
+        let list_height = (ui.available_height()
+            - if self.commit_options_open {
+                400.0
+            } else {
+                300.0
+            })
+        .max(120.0);
         egui::ScrollArea::vertical()
+            .id_source("changes_file_list")
+            .max_height(list_height)
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 ui.add_space(8.0);
@@ -149,13 +160,21 @@ impl StagingPanel {
                         let arrow = if *conflicts_expanded { "▼" } else { "▶" };
                         let toggle = ui.add(
                             egui::Button::new(
-                                RichText::new(format!("{} ⚠ CONFLICTS  ({})", arrow, conflicted.len()))
-                                    .color(theme::ACCENT_RED).size(10.5).strong()
+                                RichText::new(format!(
+                                    "{} Conflicts ({})",
+                                    arrow,
+                                    conflicted.len()
+                                ))
+                                .color(theme::accent_red())
+                                .size(12.0)
+                                .strong(),
                             )
                             .fill(Color32::TRANSPARENT)
                             .stroke(egui::Stroke::NONE),
                         );
-                        if toggle.clicked() { *conflicts_expanded = !*conflicts_expanded; }
+                        if toggle.clicked() {
+                            *conflicts_expanded = !*conflicts_expanded;
+                        }
                     });
                     ui.add_space(2.0);
 
@@ -163,13 +182,34 @@ impl StagingPanel {
                         for cf in &conflicted {
                             let is_sel = selected_file.as_deref() == Some(cf.path.as_str());
                             let resp = conflict_file_row(ui, &cf.path, is_sel, |ui| {
-                                if ui.add(small_btn_danger(if cf.ours_deleted { "Delete (ours)" } else { "Ours" })).clicked()     { do_choose_ours   = Some(cf.path.clone()); }
-                                if ui.add(small_btn_danger(if cf.theirs_deleted { "Delete (theirs)" } else { "Theirs" })).clicked()   { do_choose_theirs = Some(cf.path.clone()); }
-                                if ui.add(small_btn("Resolved")).clicked()        { do_mark_resolved = Some(cf.path.clone()); }
+                                if ui
+                                    .add(small_btn_danger(if cf.ours_deleted {
+                                        "Delete (ours)"
+                                    } else {
+                                        "Ours"
+                                    }))
+                                    .clicked()
+                                {
+                                    do_choose_ours = Some(cf.path.clone());
+                                }
+                                if ui
+                                    .add(small_btn_danger(if cf.theirs_deleted {
+                                        "Delete (theirs)"
+                                    } else {
+                                        "Theirs"
+                                    }))
+                                    .clicked()
+                                {
+                                    do_choose_theirs = Some(cf.path.clone());
+                                }
+                                if ui.add(small_btn("Resolved")).clicked() {
+                                    do_mark_resolved = Some(cf.path.clone());
+                                }
                             });
                             resp.context_menu(|ui| {
                                 if ui.button("Resolve in Recorde...").clicked() {
-                                    self.state.lock().unwrap().pending_conflict_editor = Some(cf.path.clone());
+                                    self.state.lock().unwrap().pending_conflict_editor =
+                                        Some(cf.path.clone());
                                     ui.close_menu();
                                 }
                                 if ui.button("Open Merge Tool").clicked() {
@@ -191,8 +231,11 @@ impl StagingPanel {
 
                 // ── UNSTAGED CHANGES ─────────────────────────────────────
                 let unstaged_expanded = &mut self.unstaged_expanded;
-                collapsible_section(ui, "UNSTAGED CHANGES", unstaged.len(), unstaged_expanded, |ui| {
-                    if ui.add_enabled(!unstaged.is_empty(), small_btn("Stage All")).clicked() {
+                collapsible_section(ui, "Unstaged", unstaged.len(), unstaged_expanded, |ui| {
+                    if ui
+                        .add_enabled(!unstaged.is_empty(), small_btn("Stage All"))
+                        .clicked()
+                    {
                         do_stage_all = true;
                     }
                 });
@@ -203,13 +246,27 @@ impl StagingPanel {
                     } else {
                         for f in &unstaged {
                             let is_sel = selected_file.as_deref() == Some(f.path.as_str());
-                            let resp = file_row(ui, &f.path, f.unstaged_status.unwrap_or('M'), is_sel, selection, false, |ui| {
-                                let btn = if is_sel { small_btn_accent("Stage") } else { small_btn("Stage") };
-                                if ui.add(btn).clicked() { do_stage_file = Some(f.path.clone()); }
-                                if ui.add(small_btn_danger("Discard")).clicked() {
-                                    do_discard_file = Some(f.path.clone());
-                                }
-                            });
+                            let resp = file_row(
+                                ui,
+                                &f.path,
+                                f.unstaged_status.unwrap_or('M'),
+                                is_sel,
+                                selection,
+                                false,
+                                |ui| {
+                                    let btn = if is_sel {
+                                        small_btn_accent("Stage")
+                                    } else {
+                                        small_btn("Stage")
+                                    };
+                                    if ui.add(btn).clicked() {
+                                        do_stage_file = Some(f.path.clone());
+                                    }
+                                    if ui.add(small_btn_danger("Discard")).clicked() {
+                                        do_discard_file = Some(f.path.clone());
+                                    }
+                                },
+                            );
                             resp.context_menu(|ui| {
                                 if ui.button("Show File History").clicked() {
                                     load_file_history(&f.path, self.state.clone());
@@ -250,8 +307,11 @@ impl StagingPanel {
 
                 // ── STAGED CHANGES ───────────────────────────────────────
                 let staged_expanded = &mut self.staged_expanded;
-                collapsible_section(ui, "STAGED CHANGES", staged.len(), staged_expanded, |ui| {
-                    if ui.add_enabled(!staged.is_empty(), small_btn("Unstage All")).clicked() {
+                collapsible_section(ui, "Staged", staged.len(), staged_expanded, |ui| {
+                    if ui
+                        .add_enabled(!staged.is_empty(), small_btn("Unstage All"))
+                        .clicked()
+                    {
                         do_unstage_all = true;
                     }
                 });
@@ -262,10 +322,24 @@ impl StagingPanel {
                     } else {
                         for f in &staged {
                             let is_sel = selected_file.as_deref() == Some(f.path.as_str());
-                            let resp = file_row(ui, &f.path, f.staged_status.unwrap_or('M'), is_sel, selection, true, |ui| {
-                                let btn = if is_sel { small_btn_accent("Unstage") } else { small_btn("Unstage") };
-                                if ui.add(btn).clicked() { do_unstage_file = Some(f.path.clone()); }
-                            });
+                            let resp = file_row(
+                                ui,
+                                &f.path,
+                                f.staged_status.unwrap_or('M'),
+                                is_sel,
+                                selection,
+                                true,
+                                |ui| {
+                                    let btn = if is_sel {
+                                        small_btn_accent("Unstage")
+                                    } else {
+                                        small_btn("Unstage")
+                                    };
+                                    if ui.add(btn).clicked() {
+                                        do_unstage_file = Some(f.path.clone());
+                                    }
+                                },
+                            );
                             resp.context_menu(|ui| {
                                 if ui.button("Open in Editor").clicked() {
                                     open_file_in_editor(&f.path, &repo_path);
@@ -287,7 +361,13 @@ impl StagingPanel {
 
                 // ── UNTRACKED FILES ──────────────────────────────────────
                 let untracked_expanded = &mut self.untracked_expanded;
-                collapsible_section(ui, "UNTRACKED FILES", untracked.len(), untracked_expanded, |_ui| {});
+                collapsible_section(
+                    ui,
+                    "Untracked",
+                    untracked.len(),
+                    untracked_expanded,
+                    |_ui| {},
+                );
 
                 if self.untracked_expanded {
                     if untracked.is_empty() {
@@ -323,13 +403,14 @@ impl StagingPanel {
                 ui.add_space(10.0);
                 ui.add(egui::Separator::default().spacing(0.0));
                 ui.add_space(8.0);
-
+            });
+        egui::ScrollArea::vertical().id_source("commit_composer").auto_shrink([false; 2]).show(ui, |ui| {
                 // Hint when a sequencing op is in progress but all conflicts resolved
                 if any_seq_in_progress && conflicted.is_empty() {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
                         ui.label(RichText::new("✓ All conflicts resolved — stage remaining changes, then click Continue in the banner above.")
-                            .color(theme::ACCENT_GREEN).size(11.0));
+                            .color(theme::accent_green()).size(12.0));
                     });
                     ui.add_space(6.0);
                 }
@@ -351,20 +432,20 @@ impl StagingPanel {
 
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.label(RichText::new("Commit message").color(theme::text_muted()).size(10.5).strong());
+                    ui.label(RichText::new("Create a commit").color(theme::text_primary()).size(14.0).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
-                        if ui.add(small_btn("📋 Copy")).on_hover_text("Copy assembled commit message").clicked() {
+                        if ui.add(small_btn("Copy")).on_hover_text("Copy assembled commit message").clicked() {
                             let msg = build_message(&self.drafts.current.subject, &self.drafts.current.body, &self.drafts.current.co_authors,
                                 self.drafts.current.signoff_enabled, &repo_path, &git_user);
                             ui.output_mut(|o| o.copied_text = msg);
                         }
                         ui.add_space(4.0);
-                        let amend_color = if self.drafts.current.is_amend { theme::ACCENT_YELLOW } else { theme::text_muted() };
+                        let amend_color = if self.drafts.current.is_amend { theme::accent_yellow() } else { theme::text_muted() };
                         if ui.add(
-                            egui::Button::new(RichText::new("Amend").color(amend_color).size(11.0))
-                                .fill(if self.drafts.current.is_amend { Color32::from_rgb(0x2A, 0x24, 0x10) } else { Color32::TRANSPARENT })
-                                .stroke(egui::Stroke::new(1.0, if self.drafts.current.is_amend { theme::ACCENT_YELLOW } else { theme::border() })),
+                            egui::Button::new(RichText::new("Amend").color(amend_color).size(12.0))
+                                .fill(if self.drafts.current.is_amend { theme::bg_selected() } else { Color32::TRANSPARENT })
+                                .stroke(egui::Stroke::new(1.0, if self.drafts.current.is_amend { theme::accent_yellow() } else { theme::border() })),
                         ).clicked() {
                             self.drafts.current.is_amend = !self.drafts.current.is_amend;
                             if self.drafts.current.is_amend && self.drafts.current.subject.is_empty() {
@@ -383,27 +464,28 @@ impl StagingPanel {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
                     ui.add_sized(
-                        [form_width(ui, 12.0, 240.0), 28.0],
+                        [form_width(ui, 24.0, 480.0), 28.0],
                         egui::TextEdit::singleline(&mut self.drafts.current.subject)
                             .margin(egui::Vec2::new(8.0, 5.0))
-                            .hint_text("Summary (required)")
-                            .font(egui::FontId::proportional(12.5)),
+                            .hint_text("What changed? (required)")
+                            .font(egui::FontId::proportional(13.0)),
                     );
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.add(
+                    ui.add_sized([form_width(ui, 24.0, 480.0), 60.0],
                         egui::TextEdit::multiline(&mut self.drafts.current.body)
-                            .desired_width(form_width(ui, 24.0, 240.0))
+                            .desired_width(form_width(ui, 24.0, 480.0))
                             .desired_rows(3)
                             .hint_text("Description (optional)")
                             .margin(egui::Vec2::new(8.0, 6.0))
-                            .font(egui::FontId::proportional(12.0)),
+                            .font(egui::FontId::proportional(13.0)),
                     );
                     ui.add_space(12.0);
                 });
 
+                let options = egui::CollapsingHeader::new("Commit options").id_source("commit_options").show(ui, |ui| {
                 // ── Co-author trailers ────────────────────────────────────
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -413,7 +495,7 @@ impl StagingPanel {
                         egui::TextEdit::singleline(&mut self.drafts.current.co_author_input)
                             .margin(egui::Vec2::new(8.0, 5.0))
                             .hint_text("Co-author: Name <email>")
-                            .font(egui::FontId::proportional(11.5)),
+                            .font(egui::FontId::proportional(12.0)),
                     );
                     ui.add_space(4.0);
                     if ui.add(small_btn("+ Add")).clicked() && !self.drafts.current.co_author_input.trim().is_empty() {
@@ -426,7 +508,7 @@ impl StagingPanel {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
                         ui.label(RichText::new(format!("Co-Authored-By: {}", author))
-                            .color(theme::text_muted()).size(10.5).monospace());
+                            .color(theme::text_muted()).size(12.0).monospace());
                         if ui.small_button(RichText::new("×").color(theme::text_muted())).clicked() {
                             remove_co_author = Some(i);
                         }
@@ -439,7 +521,7 @@ impl StagingPanel {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
                     ui.checkbox(&mut self.drafts.current.signoff_enabled,
-                        RichText::new("Sign off").color(theme::text_muted()).size(11.0));
+                        RichText::new("Sign off").color(theme::text_muted()).size(12.0));
                     if ui.small_button("Identity / signing").clicked() {
                         self.state.lock().unwrap().pending_commit_settings = true;
                     }
@@ -447,6 +529,8 @@ impl StagingPanel {
 
                 ui.add_space(8.0);
 
+                });
+                self.commit_options_open = options.body_returned.is_some();
                 // ── Branch protection warning ─────────────────────────────
                 let is_protected = ["main", "master", "production", "release"]
                     .iter().any(|p| *p == head_branch.as_str());
@@ -456,7 +540,7 @@ impl StagingPanel {
                         ui.label(RichText::new(format!(
                             "⚠ Committing directly to \"{}\" — make sure this is intentional.",
                             head_branch
-                        )).color(theme::ACCENT_YELLOW).size(11.0));
+                        )).color(theme::accent_yellow()).size(12.0));
                     });
                     ui.add_space(4.0);
                 }
@@ -478,20 +562,22 @@ impl StagingPanel {
                     ui.add_space(12.0);
                     let btn = ui.add_enabled(
                         can_commit,
-                        egui::Button::new(RichText::new(&btn_label).color(Color32::WHITE).size(12.5))
-                            .fill(if can_commit { theme::ACCENT_BLUE } else { theme::bg_elevated() })
-                            .min_size(Vec2::new(form_width(ui, 12.0, 240.0), 28.0)),
+                        egui::Button::new(RichText::new(&btn_label).color(if can_commit { theme::on_primary() } else { theme::text_muted() }).size(14.0).strong())
+                            .fill(if can_commit { theme::primary_fill() } else { theme::bg_elevated() })
+                            .min_size(Vec2::new(form_width(ui, 24.0, 480.0), 38.0)),
                     );
                     if btn.clicked() {
                         if self.drafts.current.is_amend { do_amend = true; } else { do_commit = true; }
                     }
                 });
 
+                ui.add_space(6.0);
+                egui::CollapsingHeader::new("Undo last commit").id_source("reset_last_commit").show(ui, |ui| {
                 // ── Reset last commit ─────────────────────────────────────
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.label(RichText::new("Reset last commit:").color(theme::text_muted()).size(10.5));
+                    ui.label(RichText::new("Reset last commit:").color(theme::text_muted()).size(12.0));
                     ui.add_space(4.0);
                     if ui.add(small_btn("Soft")).on_hover_text("Keep changes staged").clicked() {
                         staging::reset_soft(self.state.clone());
@@ -499,9 +585,10 @@ impl StagingPanel {
                     if ui.add(small_btn("Mixed")).on_hover_text("Keep changes unstaged").clicked() {
                         staging::reset_mixed(self.state.clone());
                     }
-                    if ui.add(small_btn_danger("Hard")).on_hover_text("Discard ALL changes — cannot be undone").clicked() {
+                    if ui.add(small_btn_danger("Hard")).on_hover_text("Reset HEAD and discard tracked working changes; confirmation required").clicked() {
                         self.state.lock().unwrap().pending_discard = Some(PendingDiscard::ResetHard);
                     }
+                });
                 });
                 ui.add_space(16.0);
             });
@@ -709,8 +796,8 @@ fn collapsible_section(
         let toggle = ui.add(
             egui::Button::new(
                 RichText::new(format!("{} {}  ({})", arrow, title, count))
-                    .color(theme::text_muted())
-                    .size(10.5)
+                    .color(theme::text_secondary())
+                    .size(13.0)
                     .strong(),
             )
             .fill(Color32::TRANSPARENT)
@@ -755,29 +842,48 @@ fn file_row(
             let (icon, color) = status_icon(status);
             ui.label(
                 RichText::new(icon)
-                    .font(egui::FontId::monospace(11.0))
+                    .font(egui::FontId::monospace(12.0))
                     .color(color),
             )
             .on_hover_text(status_tooltip(status));
             ui.add_space(4.0);
             let name = path.rsplit('/').next().unwrap_or(path);
-            let label = ui.selectable_label(
-                is_selected,
-                RichText::new(name)
-                    .color(if is_selected {
-                        theme::bg_app()
-                    } else {
-                        theme::text_secondary()
-                    })
-                    .size(12.0),
+            let width = (ui.available_width() - 64.0).max(60.0);
+            let label = ui
+                .add_sized(
+                    [width, 32.0],
+                    egui::Button::new("")
+                        .fill(if is_selected {
+                            theme::bg_selected()
+                        } else {
+                            Color32::TRANSPARENT
+                        })
+                        .stroke(egui::Stroke::NONE),
+                )
+                .on_hover_text(path);
+            let mut job = egui::text::LayoutJob::simple(
+                name.into(),
+                egui::FontId::proportional(13.0),
+                theme::text_primary(),
+                (width - 16.0).max(20.0),
             );
-            let label = label.on_hover_text(path);
-            if ui.available_width() > 150.0 {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(8.0);
-                    add_btns(ui);
-                });
-            }
+            job.wrap.max_rows = 1;
+            job.wrap.break_anywhere = true;
+            let galley = ui.painter().layout_job(job);
+            ui.painter().with_clip_rect(label.rect).galley(
+                egui::pos2(
+                    label.rect.left() + 8.0,
+                    label.rect.center().y - galley.size().y / 2.0,
+                ),
+                galley,
+                theme::text_primary(),
+            );
+            label.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), path)
+            });
+            ui.menu_button(crate::icons::rich(crate::icons::MORE_VERT, 18.0), |ui| {
+                add_btns(ui);
+            });
             label
         })
         .inner;
@@ -786,7 +892,7 @@ fn file_row(
 }
 
 fn small_btn(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(theme::text_muted()).size(10.5))
+    egui::Button::new(RichText::new(label).color(theme::text_muted()).size(12.0))
         .fill(Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(1.0, theme::border()))
         .min_size(egui::Vec2::new(0.0, 22.0))
@@ -795,31 +901,31 @@ fn small_btn(label: &str) -> egui::Button<'_> {
 fn small_btn_accent(label: &str) -> egui::Button<'_> {
     egui::Button::new(
         RichText::new(label)
-            .color(theme::bg_app())
-            .size(10.5)
+            .color(theme::on_primary())
+            .size(12.0)
             .strong(),
     )
-    .fill(theme::ACCENT_TEAL)
-    .stroke(egui::Stroke::new(1.0, theme::ACCENT_TEAL))
+    .fill(theme::primary_fill())
+    .stroke(egui::Stroke::new(1.0, theme::accent_teal()))
     .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
 fn small_btn_danger(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(theme::ACCENT_RED).size(10.5))
+    egui::Button::new(RichText::new(label).color(theme::accent_red()).size(12.0))
         .fill(Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(
             1.0,
-            theme::ACCENT_RED.gamma_multiply(0.5),
+            theme::accent_red().gamma_multiply(0.5),
         ))
         .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
 fn status_icon(status: char) -> (&'static str, Color32) {
     match status {
-        'A' | '?' => ("A", theme::ACCENT_GREEN),
-        'D' => ("D", theme::ACCENT_RED),
-        'R' => ("R", theme::ACCENT_YELLOW),
-        _ => ("M", theme::ACCENT_YELLOW),
+        'A' | '?' => ("A", theme::accent_green()),
+        'D' => ("D", theme::accent_red()),
+        'R' => ("R", theme::accent_yellow()),
+        _ => ("M", theme::accent_yellow()),
     }
 }
 
@@ -844,8 +950,8 @@ fn conflict_file_row(
             ui.add_space(12.0);
             ui.label(
                 RichText::new("C")
-                    .font(egui::FontId::monospace(11.0))
-                    .color(theme::ACCENT_RED)
+                    .font(egui::FontId::monospace(12.0))
+                    .color(theme::accent_red())
                     .strong(),
             )
             .on_hover_text("Conflicted");
@@ -855,11 +961,11 @@ fn conflict_file_row(
                 is_selected,
                 RichText::new(name)
                     .color(if is_selected {
-                        theme::bg_app()
+                        theme::text_primary()
                     } else {
-                        theme::ACCENT_RED.gamma_multiply(0.85)
+                        theme::accent_red().gamma_multiply(0.85)
                     })
-                    .size(12.0),
+                    .size(13.0),
             );
             let label = label.on_hover_text(path);
             if ui.available_width() > 170.0 {
@@ -877,7 +983,7 @@ fn conflict_file_row(
 fn empty_label(ui: &mut Ui, text: &str) {
     ui.horizontal(|ui| {
         ui.add_space(20.0);
-        ui.label(RichText::new(text).color(theme::text_muted()).size(11.0));
+        ui.label(RichText::new(text).color(theme::text_muted()).size(12.0));
     });
     ui.add_space(2.0);
 }

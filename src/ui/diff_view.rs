@@ -6,8 +6,8 @@ use crate::git::staging;
 use crate::state::{DiffContext, FileDiff, PendingDiscard, SharedState};
 use crate::theme;
 
-const ROW_HEIGHT: f32 = 19.0;
-const FONT_SIZE: f32 = 12.0;
+const ROW_HEIGHT: f32 = 22.0;
+const FONT_SIZE: f32 = 13.0;
 const U_GUTTER: f32 = 76.0;
 const BAR_W: f32 = 3.0;
 const S_GUTTER: f32 = 44.0;
@@ -164,7 +164,12 @@ impl DiffView {
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, theme::bg_app());
 
-        let file_list_w = 230.0;
+        ui.set_min_height(ui.available_height());
+        let file_list_w = if ui.available_width() >= 1050.0 {
+            176.0
+        } else {
+            0.0
+        };
         let full_rect = ui.max_rect();
         let list_rect = Rect::from_min_max(
             full_rect.min,
@@ -184,110 +189,50 @@ impl DiffView {
         );
 
         // ── Left file list ────────────────────────────────────────────────
-        ui.allocate_ui_at_rect(list_rect, |ui| {
-            ui.painter()
-                .rect_filled(ui.max_rect(), 0.0, theme::bg_panel());
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
-                    ui.add_space(4.0);
-                    if let Some(ref files) = commit_files {
-                        let oid = selected_commit.clone().unwrap_or_default();
-                        ui.horizontal(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(
-                                egui::RichText::new(format!("Changed files ({})", files.len()))
-                                    .color(theme::text_muted())
-                                    .size(10.5)
-                                    .strong(),
-                            );
-                        });
-                        ui.add_space(2.0);
-                        for f in files {
-                            let is_sel = selected_file.as_deref() == Some(f.path.as_str());
-                            let (icon, col) = status_icon(f.status);
-                            let mut clicked = false;
+        if file_list_w > 0.0 {
+            ui.allocate_ui_at_rect(list_rect, |ui| {
+                ui.painter()
+                    .rect_filled(ui.max_rect(), 0.0, theme::bg_panel());
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        ui.add_space(4.0);
+                        if let Some(ref files) = commit_files {
+                            let oid = selected_commit.clone().unwrap_or_default();
                             ui.horizontal(|ui| {
                                 ui.add_space(8.0);
                                 ui.label(
-                                    egui::RichText::new(icon)
-                                        .color(col)
-                                        .size(11.0)
-                                        .font(FontId::monospace(11.0)),
-                                )
-                                .on_hover_text(status_tooltip(f.status));
-                                ui.add_space(3.0);
-                                let name = f.path.rsplit('/').next().unwrap_or(&f.path);
-                                let r = ui.selectable_label(
-                                    is_sel,
-                                    egui::RichText::new(name)
-                                        .color(if is_sel {
-                                            theme::bg_app()
-                                        } else {
-                                            theme::text_secondary()
-                                        })
-                                        .size(11.5),
-                                );
-                                if r.clicked() {
-                                    clicked = true;
-                                }
-                                if f.path != name {
-                                    r.on_hover_text(&f.path);
-                                }
-                            });
-                            if clicked {
-                                let path = f.path.clone();
-                                let oid2 = oid.clone();
-                                let state = self.state.clone();
-                                {
-                                    let mut s = self.state.lock().unwrap();
-                                    s.selected_file = Some(path.clone());
-                                    s.diff_context = DiffContext::CommitDiff;
-                                }
-                                load_diff(&oid2, &path, state);
-                            }
-                        }
-                    } else {
-                        let has_any = !workdir_files.is_empty();
-                        if has_any {
-                            ui.horizontal(|ui| {
-                                ui.add_space(8.0);
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "Working tree ({})",
-                                        workdir_files.len()
-                                    ))
-                                    .color(theme::text_muted())
-                                    .size(10.5)
-                                    .strong(),
+                                    egui::RichText::new(format!("Changed files ({})", files.len()))
+                                        .color(theme::text_muted())
+                                        .size(12.0)
+                                        .strong(),
                                 );
                             });
                             ui.add_space(2.0);
-                            for f in &workdir_files {
+                            for f in files {
                                 let is_sel = selected_file.as_deref() == Some(f.path.as_str());
-                                let status = f.unstaged_status.or(f.staged_status).unwrap_or('M');
-                                let (icon, col) = status_icon(status);
+                                let (icon, col) = status_icon(f.status);
                                 let mut clicked = false;
                                 ui.horizontal(|ui| {
                                     ui.add_space(8.0);
                                     ui.label(
                                         egui::RichText::new(icon)
                                             .color(col)
-                                            .size(11.0)
-                                            .font(FontId::monospace(11.0)),
+                                            .size(12.0)
+                                            .font(FontId::monospace(12.0)),
                                     )
-                                    .on_hover_text(status_tooltip(status));
+                                    .on_hover_text(status_tooltip(f.status));
                                     ui.add_space(3.0);
                                     let name = f.path.rsplit('/').next().unwrap_or(&f.path);
                                     let r = ui.selectable_label(
                                         is_sel,
                                         egui::RichText::new(name)
                                             .color(if is_sel {
-                                                theme::bg_app()
+                                                theme::text_primary()
                                             } else {
                                                 theme::text_secondary()
                                             })
-                                            .size(11.5),
+                                            .size(12.0),
                                     );
                                     if r.clicked() {
                                         clicked = true;
@@ -298,39 +243,102 @@ impl DiffView {
                                 });
                                 if clicked {
                                     let path = f.path.clone();
-                                    let is_staged_only =
-                                        f.staged_status.is_some() && f.unstaged_status.is_none();
-                                    let ctx = if is_staged_only {
-                                        DiffContext::StagedFile
-                                    } else {
-                                        DiffContext::UnstagedFile
-                                    };
+                                    let oid2 = oid.clone();
                                     let state = self.state.clone();
                                     {
                                         let mut s = self.state.lock().unwrap();
                                         s.selected_file = Some(path.clone());
-                                        s.diff_context = ctx;
+                                        s.diff_context = DiffContext::CommitDiff;
                                     }
-                                    load_workdir_diff(&path, is_staged_only, state);
+                                    load_diff(&oid2, &path, state);
                                 }
                             }
                         } else {
-                            ui.add_space(16.0);
-                            ui.horizontal(|ui| {
-                                ui.add_space(12.0);
-                                ui.label(
-                                    egui::RichText::new("Working tree clean")
+                            let has_any = !workdir_files.is_empty();
+                            if has_any {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "Working tree ({})",
+                                            workdir_files.len()
+                                        ))
                                         .color(theme::text_muted())
-                                        .size(11.5),
-                                );
-                            });
+                                        .size(12.0)
+                                        .strong(),
+                                    );
+                                });
+                                ui.add_space(2.0);
+                                for f in &workdir_files {
+                                    let is_sel = selected_file.as_deref() == Some(f.path.as_str());
+                                    let status =
+                                        f.unstaged_status.or(f.staged_status).unwrap_or('M');
+                                    let (icon, col) = status_icon(status);
+                                    let mut clicked = false;
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(8.0);
+                                        ui.label(
+                                            egui::RichText::new(icon)
+                                                .color(col)
+                                                .size(12.0)
+                                                .font(FontId::monospace(12.0)),
+                                        )
+                                        .on_hover_text(status_tooltip(status));
+                                        ui.add_space(3.0);
+                                        let name = f.path.rsplit('/').next().unwrap_or(&f.path);
+                                        let r = ui.selectable_label(
+                                            is_sel,
+                                            egui::RichText::new(name)
+                                                .color(if is_sel {
+                                                    theme::bg_app()
+                                                } else {
+                                                    theme::text_secondary()
+                                                })
+                                                .size(12.0),
+                                        );
+                                        if r.clicked() {
+                                            clicked = true;
+                                        }
+                                        if f.path != name {
+                                            r.on_hover_text(&f.path);
+                                        }
+                                    });
+                                    if clicked {
+                                        let path = f.path.clone();
+                                        let is_staged_only = f.staged_status.is_some()
+                                            && f.unstaged_status.is_none();
+                                        let ctx = if is_staged_only {
+                                            DiffContext::StagedFile
+                                        } else {
+                                            DiffContext::UnstagedFile
+                                        };
+                                        let state = self.state.clone();
+                                        {
+                                            let mut s = self.state.lock().unwrap();
+                                            s.selected_file = Some(path.clone());
+                                            s.diff_context = ctx;
+                                        }
+                                        load_workdir_diff(&path, is_staged_only, state);
+                                    }
+                                }
+                            } else {
+                                ui.add_space(16.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(12.0);
+                                    ui.label(
+                                        egui::RichText::new("Working tree clean")
+                                            .color(theme::text_muted())
+                                            .size(12.0),
+                                    );
+                                });
+                            }
                         }
-                    }
-                    ui.add_space(4.0);
-                });
-        });
+                        ui.add_space(4.0);
+                    });
+            });
 
-        // ── Diff area ─────────────────────────────────────────────────────
+            // ── Diff area ─────────────────────────────────────────────────────
+        }
         let mut diff_child =
             ui.child_ui(diff_rect, egui::Layout::top_down(egui::Align::LEFT), None);
         let actions = self.show_diff_area(
@@ -453,157 +461,74 @@ impl DiffView {
         {
             self.search_open = true;
         }
-        let header_h = 36.0;
+        let header_h = 80.0;
         let header_rect =
             Rect::from_min_size(ui.min_rect().min, Vec2::new(ui.available_width(), header_h));
         ui.painter()
             .rect_filled(header_rect, 0.0, theme::bg_panel());
         ui.painter().line_segment(
-            [
-                Pos2::new(header_rect.min.x, header_rect.max.y),
-                Pos2::new(header_rect.max.x, header_rect.max.y),
-            ],
+            [header_rect.left_bottom(), header_rect.right_bottom()],
             Stroke::new(1.0, theme::border()),
         );
-
-        ui.allocate_ui_at_rect(header_rect, |ui| {
+        let tabs_rect = Rect::from_min_size(
+            header_rect.min + egui::vec2(8.0, 4.0),
+            egui::vec2(header_rect.width() - 16.0, 32.0),
+        );
+        ui.allocate_ui_at_rect(tabs_rect, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.add_space(12.0);
-                // Tab: File Diff
-                {
-                    let active = !self.show_console && !self.show_blame;
-                    let tc = if active {
-                        theme::text_primary()
-                    } else {
-                        theme::text_muted()
+                for (label, mode) in [("Diff", 0), ("Blame", 1), ("Console", 2)] {
+                    let active = match mode {
+                        1 => self.show_blame,
+                        2 => self.show_console,
+                        _ => !self.show_blame && !self.show_console,
                     };
-                    let btn = ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("File Diff").size(12.5).color(tc),
-                            )
-                            .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::NONE),
-                        )
-                        .on_hover_text("Show the selected file diff");
-                    if btn.clicked() {
-                        self.show_console = false;
-                        self.show_blame = false;
-                        self.state.lock().unwrap().show_blame = false;
-                    }
-                    if active {
-                        let br = btn.rect;
-                        ui.painter().line_segment(
-                            [br.left_bottom(), br.right_bottom()],
-                            Stroke::new(2.0, theme::ACCENT_TEAL),
-                        );
-                    }
-                    ui.add_space(10.0);
-                }
-                // Tab: Blame
-                {
-                    let active = self.show_blame;
-                    let tc = if active {
-                        theme::text_primary()
-                    } else {
-                        theme::text_muted()
-                    };
-                    let btn = ui
-                        .add(
-                            egui::Button::new(egui::RichText::new("Blame").size(12.5).color(tc))
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                        )
-                        .on_hover_text("Show line blame for the selected file");
-                    if btn.clicked() {
-                        self.show_blame = true;
-                        self.show_console = false;
-                        self.state.lock().unwrap().show_blame = true;
-                        if let Some(ref fp) = *selected_file {
-                            crate::git::operations::load_blame(fp, self.state.clone());
+                    if ui.selectable_label(active, label).clicked() {
+                        self.show_blame = mode == 1;
+                        self.show_console = mode == 2;
+                        self.state.lock().unwrap().show_blame = self.show_blame;
+                        if self.show_blame {
+                            if let Some(fp) = selected_file {
+                                crate::git::operations::load_blame(fp, self.state.clone());
+                            }
                         }
                     }
-                    if active {
-                        let br = btn.rect;
-                        ui.painter().line_segment(
-                            [br.left_bottom(), br.right_bottom()],
-                            Stroke::new(2.0, theme::ACCENT_TEAL),
-                        );
-                    }
-                    ui.add_space(10.0);
                 }
-                // Tab: Console
-                {
-                    let active = self.show_console;
-                    let tc = if active {
-                        theme::text_primary()
-                    } else {
-                        theme::text_muted()
-                    };
-                    let btn = ui
-                        .add(
-                            egui::Button::new(egui::RichText::new("Console").size(12.5).color(tc))
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                        )
-                        .on_hover_text("Show Git operation output");
-                    if btn.clicked() {
-                        self.show_console = true;
-                        self.show_blame = false;
-                        self.state.lock().unwrap().show_blame = false;
-                    }
-                    if active {
-                        let br = btn.rect;
-                        ui.painter().line_segment(
-                            [br.left_bottom(), br.right_bottom()],
-                            Stroke::new(2.0, theme::ACCENT_TEAL),
-                        );
-                    }
-                    ui.add_space(10.0);
-                }
-                ui.add(egui::Separator::default().vertical().spacing(3.0));
-                ui.add_space(6.0);
-                if let Some(ref diff) = diff_opt {
-                    let filename = diff.file_path.rsplit('/').next().unwrap_or(&diff.file_path);
-                    ui.label(
-                        egui::RichText::new(filename)
-                            .color(theme::text_primary())
-                            .size(12.5)
-                            .strong(),
-                    );
-                    if diff_context != DiffContext::CommitDiff {
-                        let ctx_label = if diff_context == DiffContext::StagedFile {
-                            "staged"
-                        } else {
-                            "unstaged"
-                        };
-                        ui.label(
-                            egui::RichText::new(ctx_label)
-                                .color(theme::ACCENT_TEAL)
-                                .size(10.5),
-                        );
-                    }
-                }
-                if ui.small_button("Find").clicked() {
-                    self.search_open = !self.search_open;
-                }
-                ui.checkbox(&mut self.show_whitespace, "Whitespace")
-                    .on_hover_text("Show spaces and tabs; patch bytes are unchanged");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(10.0);
-                    if self.show_console && !console_log.is_empty() {
+                    if selected_file.is_some()
+                        && crate::ui::widgets::icon_btn_mat(
+                            ui,
+                            crate::icons::CLOSE,
+                            16.0,
+                            "Close selected diff",
+                        )
+                        .clicked()
+                    {
+                        let mut s = self.state.lock().unwrap();
+                        s.selected_file = None;
+                        s.current_diff = None;
+                    }
+                    ui.menu_button(crate::icons::rich(crate::icons::TUNE, 18.0), |ui| {
+                        ui.label("Diff display");
                         if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Export Log")
-                                        .size(11.5)
-                                        .color(theme::text_secondary()),
-                                )
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                            )
-                            .on_hover_text("Export console log to a text file")
+                            .selectable_value(&mut self.split_view, false, "Unified diff")
                             .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                        if ui
+                            .selectable_value(&mut self.split_view, true, "Split diff")
+                            .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                        ui.checkbox(&mut self.show_whitespace, "Show whitespace");
+                        if ui.button("Find in diff").clicked() {
+                            self.search_open = true;
+                            ui.close_menu();
+                        }
+                        if self.show_console
+                            && !console_log.is_empty()
+                            && ui.button("Export log…").clicked()
                         {
                             if let Some(path) = rfd::FileDialog::new()
                                 .set_file_name("recorde-log.txt")
@@ -612,67 +537,60 @@ impl DiffView {
                             {
                                 let _ = std::fs::write(path, console_log.join("\n"));
                             }
+                            ui.close_menu();
                         }
-                    }
-                    if let Some(ref diff) = diff_opt {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("✕")
-                                        .color(theme::text_muted())
-                                        .size(12.0),
-                                )
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                            )
-                            .on_hover_text("Close selected diff")
-                            .clicked()
-                        {
-                            let mut s = self.state.lock().unwrap();
-                            s.selected_file = None;
-                            s.current_diff = None;
-                        }
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "+{}  −{}",
-                                diff.additions, diff.deletions
-                            ))
-                            .color(theme::text_secondary())
-                            .size(11.5),
-                        );
-                        if !self.show_console {
-                            ui.add_space(8.0);
-                            ui.add(egui::Separator::default().vertical().spacing(3.0));
-                            ui.add_space(6.0);
-                            for (label, is_split) in &[("Unified", false), ("Split", true)] {
-                                let active = *is_split == self.split_view;
-                                let tc = if active {
-                                    theme::ACCENT_TEAL
-                                } else {
-                                    theme::text_muted()
-                                };
-                                let btn = ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new(*label).size(11.5).color(tc),
-                                        )
-                                        .fill(Color32::TRANSPARENT)
-                                        .stroke(Stroke::NONE),
-                                    )
-                                    .on_hover_text(if *is_split {
-                                        "Show split diff"
-                                    } else {
-                                        "Show unified diff"
-                                    });
-                                if btn.clicked() {
-                                    self.split_view = *is_split;
-                                }
-                                ui.add_space(2.0);
-                            }
-                        }
+                    })
+                    .response
+                    .on_hover_text("Diff display options");
+                    if crate::ui::widgets::icon_btn_mat(
+                        ui,
+                        crate::icons::SEARCH,
+                        17.0,
+                        "Find in diff (Ctrl/Cmd+F)",
+                    )
+                    .clicked()
+                    {
+                        self.search_open = !self.search_open;
                     }
                 });
+            });
+        });
+        let file_rect = Rect::from_min_size(
+            header_rect.min + egui::vec2(12.0, 42.0),
+            egui::vec2(header_rect.width() - 24.0, 32.0),
+        );
+        ui.allocate_ui_at_rect(file_rect, |ui| {
+            ui.horizontal_centered(|ui| {
+                let filename = selected_file
+                    .as_deref()
+                    .unwrap_or("Select a file to review its changes");
+                let filename_width =
+                    (ui.available_width() - if diff_opt.is_some() { 130.0 } else { 0.0 }).max(60.0);
+                ui.add_sized(
+                    [filename_width, 28.0],
+                    egui::Label::new(
+                        egui::RichText::new(filename)
+                            .size(13.0)
+                            .color(theme::text_primary()),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(filename);
+                if let Some(diff) = diff_opt {
+                    let context = match diff_context {
+                        DiffContext::StagedFile => "Staged",
+                        DiffContext::UnstagedFile => "Unstaged",
+                        _ => "Commit",
+                    };
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{context}  +{} −{}",
+                            diff.additions, diff.deletions
+                        ))
+                        .size(12.0)
+                        .color(theme::text_muted()),
+                    );
+                }
             });
         });
 
@@ -684,8 +602,8 @@ impl DiffView {
         let mut scroll_to = None;
         if self.search_open && !self.show_console && !self.show_blame {
             let toolbar =
-                Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 28.0));
-            content_rect.min.y += 28.0;
+                Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 36.0));
+            content_rect.min.y += 36.0;
             ui.allocate_ui_at_rect(toolbar, |ui| {
                 ui.horizontal(|ui| {
                     let changed = ui
@@ -749,19 +667,19 @@ impl DiffView {
                 .is_some_and(|d| !d.is_binary && !d.is_rename)
         {
             let toolbar =
-                Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 28.0));
-            content_rect.min.y += 28.0;
+                Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 36.0));
+            content_rect.min.y += 36.0;
             let mut apply = false;
             let mut discard = false;
             ui.allocate_ui_at_rect(toolbar, |ui| {
                 ui.horizontal(|ui| {
-                    let label = if diff_context == DiffContext::StagedFile { "Unstage selection" } else { "Stage selection" };
+                    let label = if diff_context == DiffContext::StagedFile { "Unstage" } else { "Stage" };
                     apply = ui.add_enabled(!self.selected_rows.is_empty(), egui::Button::new(format!("{label} ({})", self.selected_rows.len()))).clicked();
                     if diff_context == DiffContext::UnstagedFile {
-                        discard = ui.add_enabled(!self.selected_rows.is_empty(), egui::Button::new("Discard selection")).clicked();
+                        discard = ui.add_enabled(!self.selected_rows.is_empty(), egui::Button::new("Discard")).clicked();
                     }
                     if ui.button("Clear").clicked() { self.selected_rows.clear(); self.selection_anchor = None; }
-                    ui.small("Click lines; Ctrl/Cmd toggles, Shift selects a range. Gutter applies one line.");
+                    ui.label(crate::icons::rich(crate::icons::INFO, 16.0).color(theme::text_muted())).on_hover_text("Click lines to select. Ctrl/Cmd toggles a line, Shift selects a range. The gutter stages or unstages one line.");
                 });
             });
             if apply || discard {
@@ -799,16 +717,16 @@ impl DiffView {
                                 ui.label(
                                     egui::RichText::new("No git operations yet.")
                                         .color(theme::text_muted())
-                                        .size(12.0),
+                                        .size(13.0),
                                 );
                             });
                         } else {
                             for line in console_log {
                                 let line = crate::auth::redact::text(line);
                                 let color = if line.starts_with("error:") {
-                                    theme::ACCENT_RED
+                                    theme::accent_red()
                                 } else if line.starts_with('$') {
-                                    theme::ACCENT_TEAL
+                                    theme::accent_teal()
                                 } else {
                                     theme::text_secondary()
                                 };
@@ -817,8 +735,8 @@ impl DiffView {
                                     ui.label(
                                         egui::RichText::new(line)
                                             .color(color)
-                                            .size(12.0)
-                                            .font(FontId::monospace(12.0)),
+                                            .size(13.0)
+                                            .font(FontId::monospace(13.0)),
                                     );
                                 });
                             }
@@ -846,7 +764,7 @@ impl DiffView {
                                 ui.label(
                                     egui::RichText::new(message)
                                         .color(theme::text_muted())
-                                        .size(12.0),
+                                        .size(13.0),
                                 );
                             });
                         } else {
@@ -858,7 +776,7 @@ impl DiffView {
                                     ui.add_space(4.0);
                                     // SHA column (show only on first line of a hunk)
                                     let oid_color = if show_oid {
-                                        theme::ACCENT_TEAL
+                                        theme::accent_teal()
                                     } else {
                                         theme::bg_panel()
                                     };
@@ -866,7 +784,7 @@ impl DiffView {
                                         egui::RichText::new(&line.short_oid)
                                             .monospace()
                                             .color(oid_color)
-                                            .size(10.5),
+                                            .size(12.0),
                                     );
                                     ui.add_space(4.0);
                                     // Author column (truncated)
@@ -881,7 +799,7 @@ impl DiffView {
                                         theme::bg_panel()
                                     };
                                     ui.label(
-                                        egui::RichText::new(author).size(10.5).color(author_color),
+                                        egui::RichText::new(author).size(12.0).color(author_color),
                                     );
                                     ui.add_space(4.0);
                                     // Line number
@@ -889,7 +807,7 @@ impl DiffView {
                                         egui::RichText::new(format!("{:>4}", line.lineno))
                                             .monospace()
                                             .color(theme::text_muted())
-                                            .size(10.5),
+                                            .size(12.0),
                                     );
                                     ui.add_space(6.0);
                                     // Content
@@ -897,7 +815,7 @@ impl DiffView {
                                         egui::RichText::new(&line.content)
                                             .monospace()
                                             .color(theme::text_secondary())
-                                            .size(11.5),
+                                            .size(12.0),
                                     );
                                 });
                             }
@@ -955,7 +873,7 @@ impl DiffView {
                     ui.label(
                         egui::RichText::new(msg)
                             .color(theme::text_muted())
-                            .size(12.0),
+                            .size(13.0),
                     );
                 });
             });
@@ -1084,11 +1002,11 @@ fn render_unified(
                             if is_workdir {
                                 let hi = *hunk_index;
                                 let btns: &[(&str, Color32, bool)] = if is_staged {
-                                    &[("Unstage Hunk", theme::ACCENT_TEAL, false)]
+                                    &[("Unstage Hunk", theme::accent_teal(), false)]
                                 } else {
                                     &[
-                                        ("Stage Hunk", theme::ACCENT_TEAL, false),
-                                        ("Discard Hunk", theme::ACCENT_RED, true),
+                                        ("Stage Hunk", theme::accent_teal(), false),
+                                        ("Discard Hunk", theme::accent_red(), true),
                                     ]
                                 };
 
@@ -1117,7 +1035,7 @@ fn render_unified(
                                         btn_rect.center(),
                                         egui::Align2::CENTER_CENTER,
                                         *label,
-                                        FontId::proportional(10.5),
+                                        FontId::proportional(12.0),
                                         *col,
                                     );
 
@@ -1166,7 +1084,7 @@ fn render_unified(
                                 painter.rect_filled(
                                     row_rect,
                                     0.0,
-                                    theme::ACCENT_BLUE.gamma_multiply(0.25),
+                                    theme::accent_blue().gamma_multiply(0.25),
                                 );
                             }
                             let cy = y + ROW_HEIGHT / 2.0;
@@ -1174,14 +1092,14 @@ fn render_unified(
                                 Pos2::new(origin.x + BAR_W + 4.0 + 30.0, cy),
                                 egui::Align2::RIGHT_CENTER,
                                 old_no,
-                                FontId::monospace(10.5),
+                                FontId::monospace(12.0),
                                 theme::text_muted(),
                             );
                             painter.text(
                                 Pos2::new(origin.x + BAR_W + 4.0 + 68.0, cy),
                                 egui::Align2::RIGHT_CENTER,
                                 new_no,
-                                FontId::monospace(10.5),
+                                FontId::monospace(12.0),
                                 theme::text_muted(),
                             );
                             painter.line_segment(
@@ -1258,7 +1176,7 @@ fn render_unified(
                                 Pos2::new(origin.x + 12.0, y + ROW_HEIGHT / 2.0),
                                 egui::Align2::LEFT_CENTER,
                                 "Binary file",
-                                FontId::proportional(12.0),
+                                FontId::proportional(13.0),
                                 theme::text_muted(),
                             );
                         }
@@ -1408,7 +1326,7 @@ fn render_split(
                                     painter.rect_filled(
                                         side_rect,
                                         0.0,
-                                        theme::ACCENT_BLUE.gamma_multiply(0.25),
+                                        theme::accent_blue().gamma_multiply(0.25),
                                     );
                                 }
                                 if context == DiffContext::CommitDiff {
@@ -1477,13 +1395,13 @@ fn render_split_side(
     let (bg, bar_col, text_col) = match side {
         Some(sl) if sl.changed && is_left => (
             theme::bg_diff_del(),
-            theme::ACCENT_RED,
-            Color32::from_rgb(0xF0, 0xA0, 0xA0),
+            theme::accent_red(),
+            theme::text_primary(),
         ),
         Some(sl) if sl.changed && !is_left => (
             theme::bg_diff_add(),
-            theme::ACCENT_GREEN,
-            Color32::from_rgb(0xAB, 0xE0, 0xAB),
+            theme::accent_green(),
+            theme::text_primary(),
         ),
         Some(_) => (
             Color32::TRANSPARENT,
@@ -1514,7 +1432,7 @@ fn render_split_side(
             Pos2::new(x0 + BAR_W + 4.0 + S_GUTTER - 6.0, cy),
             egui::Align2::RIGHT_CENTER,
             &sl.lineno,
-            FontId::monospace(10.5),
+            FontId::monospace(12.0),
             theme::text_muted(),
         );
         painter.line_segment(
@@ -1556,13 +1474,13 @@ fn line_colors(ch: char) -> (Color32, Color32, Color32) {
     match ch {
         '+' => (
             theme::bg_diff_add(),
-            theme::ACCENT_GREEN,
-            Color32::from_rgb(0xAB, 0xE0, 0xAB),
+            theme::accent_green(),
+            theme::text_primary(),
         ),
         '-' => (
             theme::bg_diff_del(),
-            theme::ACCENT_RED,
-            Color32::from_rgb(0xF0, 0xA0, 0xA0),
+            theme::accent_red(),
+            theme::text_primary(),
         ),
         _ => (
             Color32::TRANSPARENT,
@@ -1577,21 +1495,21 @@ fn line_colors(ch: char) -> (Color32, Color32, Color32) {
 fn conflict_marker_colors(content: &str) -> Option<(Color32, Color32, Color32)> {
     if content.starts_with("<<<<<<<") {
         Some((
-            Color32::from_rgb(0x3A, 0x10, 0x08),
-            Color32::from_rgb(0xFF, 0x60, 0x50),
-            Color32::from_rgb(0xFF, 0x90, 0x80),
+            theme::bg_diff_del(),
+            theme::accent_red(),
+            theme::text_primary(),
         ))
     } else if content.starts_with("=======") || content.starts_with("|||||||") {
         Some((
-            Color32::from_rgb(0x2A, 0x22, 0x00),
-            Color32::from_rgb(0xFF, 0xCC, 0x00),
-            Color32::from_rgb(0xFF, 0xE0, 0x60),
+            theme::bg_diff_hunk(),
+            theme::accent_yellow(),
+            theme::text_primary(),
         ))
     } else if content.starts_with(">>>>>>>") {
         Some((
-            Color32::from_rgb(0x08, 0x22, 0x10),
-            Color32::from_rgb(0x40, 0xCC, 0x70),
-            Color32::from_rgb(0x70, 0xFF, 0x90),
+            theme::bg_diff_add(),
+            theme::accent_green(),
+            theme::text_primary(),
         ))
     } else {
         None
@@ -1702,10 +1620,10 @@ fn flatten_split(diff: &FileDiff) -> Vec<SplitRow> {
 
 fn status_icon(status: char) -> (&'static str, egui::Color32) {
     match status {
-        'A' | '?' => ("A", theme::ACCENT_GREEN),
-        'D' => ("D", theme::ACCENT_RED),
-        'R' => ("R", theme::ACCENT_YELLOW),
-        _ => ("M", theme::ACCENT_YELLOW),
+        'A' | '?' => ("A", theme::accent_green()),
+        'D' => ("D", theme::accent_red()),
+        'R' => ("R", theme::accent_yellow()),
+        _ => ("M", theme::accent_yellow()),
     }
 }
 

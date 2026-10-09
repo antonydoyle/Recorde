@@ -42,10 +42,10 @@ pub fn pill(ui: &mut Ui, text: &str, bg: Color32, text_color: Color32) -> Respon
 
 pub fn status_badge_color(ch: char) -> Color32 {
     match ch {
-        'A' | '?' => theme::ACCENT_GREEN,
-        'D' | 'd' => theme::ACCENT_RED,
-        'R' => theme::ACCENT_BLUE,
-        _ => theme::ACCENT_YELLOW, // M and others
+        'A' | '?' => theme::accent_green(),
+        'D' | 'd' => theme::accent_red(),
+        'R' => theme::accent_blue(),
+        _ => theme::accent_yellow(), // M and others
     }
 }
 
@@ -64,7 +64,7 @@ pub fn status_badge(ui: &mut Ui, ch: char) -> Response {
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label_ch.to_string(),
-        FontId::monospace(10.5),
+        FontId::monospace(12.0),
         color,
     );
     resp
@@ -74,11 +74,14 @@ pub fn status_badge(ui: &mut Ui, ch: char) -> Response {
 
 /// Renders a collapsible section header. Returns true if the section is open.
 pub fn section_header(ui: &mut Ui, title: &str, count: usize, open: &mut bool) -> Response {
-    let row_h = 24.0;
+    let row_h = 34.0;
     let (rect, resp) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, theme::bg_hover());
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::CollapsingHeader, ui.is_enabled(), title)
+    });
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_filled(rect, 4.0, theme::bg_hover());
     }
     let chevron = if *open {
         icons::EXPAND_MORE
@@ -101,7 +104,7 @@ pub fn section_header(ui: &mut Ui, title: &str, count: usize, open: &mut bool) -
     );
     if count > 0 {
         let text = count.to_string();
-        let font = FontId::proportional(10.5);
+        let font = FontId::proportional(12.0);
         let galley = ui.painter().layout_no_wrap(text, font, theme::text_muted());
         let pill = Rect::from_min_size(
             Pos2::new(rect.right() - galley.size().x - 22.0, rect.center().y - 8.0),
@@ -157,8 +160,8 @@ pub fn toolbar_btn_icon(ui: &mut Ui, icon: char, label: &str, enabled: bool) -> 
         label,
         col,
         enabled,
-        theme::bg_panel_alt(),
-        theme::border(),
+        Color32::TRANSPARENT,
+        Color32::TRANSPARENT,
     )
 }
 
@@ -171,68 +174,94 @@ pub fn toolbar_btn_icon_colored(
     fill: Color32,
     stroke: Color32,
 ) -> Response {
-    let col = if enabled { color } else { theme::text_muted() };
-    let icon_font = icons::font(15.0);
-    let text_font = egui::FontId::proportional(12.5);
-    let icon_galley = ui
+    let col = if enabled && ui.is_enabled() {
+        color
+    } else {
+        theme::text_muted()
+    };
+    let icon = ui
         .painter()
-        .layout_no_wrap(icon.to_string(), icon_font.clone(), col);
-    let text_galley = ui
+        .layout_no_wrap(icon.to_string(), icons::font(18.0), col);
+    let text = ui
         .painter()
-        .layout_no_wrap(label.to_string(), text_font.clone(), col);
-    let padding = Vec2::new(12.0, 6.0);
-    let gap = 7.0;
-    let size = Vec2::new(
-        icon_galley.size().x + gap + text_galley.size().x + padding.x * 2.0,
-        30.0,
+        .layout_no_wrap(label.to_owned(), FontId::proportional(13.0), col);
+    let gap = 8.0;
+    let padding = 12.0;
+    let content_width = 18.0 + gap + text.size().x;
+    let response = ui.add_enabled(
+        enabled,
+        egui::Button::new("")
+            .fill(fill)
+            .stroke(Stroke::new(1.0, stroke))
+            .rounding(7.0)
+            .min_size(Vec2::new(content_width + padding * 2.0, 34.0)),
     );
-    let sense = if enabled {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
-    };
-    let (rect, resp) = ui.allocate_exact_size(size, sense);
-    let visuals = if enabled && resp.hovered() {
-        &ui.style().visuals.widgets.hovered
-    } else {
-        &ui.style().visuals.widgets.inactive
-    };
-    let fill = if enabled && resp.hovered() {
-        visuals.bg_fill
-    } else {
-        fill
-    };
-    ui.painter().rect_filled(rect, 6.0, fill);
-    ui.painter()
-        .rect_stroke(rect, 6.0, Stroke::new(1.0, stroke));
-
-    let center_y = rect.center().y + 1.5;
-    let icon_pos = Pos2::new(rect.min.x + padding.x - 5.0, center_y - 1.0);
-    ui.painter()
-        .text(icon_pos, egui::Align2::LEFT_CENTER, icon, icon_font, col);
-    let text_pos = Pos2::new(
-        icon_pos.x + icon_galley.size().x + gap - 5.0,
-        center_y - 1.5,
+    // Font line boxes have different ascenders/descenders. Centre the visible
+    // glyphs independently, keeping native button focus, hover and activation.
+    let left = response.rect.center().x - content_width / 2.0;
+    paint_centered_glyphs(
+        ui,
+        &response,
+        icon,
+        Pos2::new(left + 9.0, response.rect.center().y),
+        col,
+    );
+    let text_position = Pos2::new(
+        left + 18.0 + gap,
+        response.rect.center().y - text.mesh_bounds.center().y,
     );
     ui.painter()
-        .text(text_pos, egui::Align2::LEFT_CENTER, label, text_font, col);
-    resp
+        .with_clip_rect(response.rect)
+        .galley(text_position, text, col);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled && ui.is_enabled(), label)
+    });
+    response
 }
 
-/// Icon-only button using Material Icons font.
+fn paint_centered_glyphs(
+    ui: &Ui,
+    response: &Response,
+    galley: std::sync::Arc<egui::Galley>,
+    center: Pos2,
+    color: Color32,
+) {
+    let position = center - galley.mesh_bounds.center().to_vec2();
+    ui.painter()
+        .with_clip_rect(response.rect)
+        .galley(position, galley, color);
+}
+
+/// Icon-only buttons use native egui button focus and keyboard activation.
 pub fn icon_btn_mat(ui: &mut Ui, icon: char, size: f32, tip: &str) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 6.0, theme::bg_hover());
-    }
-    ui.painter().text(
-        Pos2::new(rect.center().x, rect.center().y + 1.5),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        icons::font(size),
-        theme::text_muted(),
+    icon_btn_mat_colored(ui, icon, size, tip, theme::text_secondary())
+}
+
+pub fn icon_btn_mat_colored(
+    ui: &mut Ui,
+    icon: char,
+    size: f32,
+    tip: &str,
+    color: Color32,
+) -> Response {
+    let response = ui.add_sized(
+        [32.0, 32.0],
+        egui::Button::new("")
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::NONE),
     );
-    resp.on_hover_text(tip)
+    let color = if ui.is_enabled() {
+        color
+    } else {
+        theme::text_muted()
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(icon.to_string(), icons::font(size), color);
+    paint_centered_glyphs(ui, &response, galley, response.rect.center(), color);
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tip));
+    response.on_hover_text(tip)
 }
 
 // ── Branch pill (graph labels) ────────────────────────────────────────────────
@@ -245,7 +274,7 @@ pub fn branch_label(
     row_top: f32,
     row_height: f32,
 ) -> f32 {
-    let font = FontId::proportional(10.5);
+    let font = FontId::proportional(12.0);
     let galley = painter.layout_no_wrap(name.to_string(), font, Color32::WHITE);
     let pad_x = 6.0;
     let pad_y = 2.0;
@@ -265,9 +294,9 @@ pub fn branch_label(
         Color32::from_rgb(24, 48, 92)
     };
     let border_col = if name.contains('/') {
-        theme::ACCENT_BLUE.gamma_multiply(0.5)
+        theme::accent_blue().gamma_multiply(0.5)
     } else {
-        theme::ACCENT_TEAL.gamma_multiply(0.6)
+        theme::accent_teal().gamma_multiply(0.6)
     };
 
     painter.rect_filled(rect, rect.height() / 2.0, bg);

@@ -75,8 +75,17 @@ impl Sidebar {
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                ui.add_space(8.0);
-
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(
+                        RichText::new("Repository")
+                            .size(17.0)
+                            .strong()
+                            .color(theme::text_primary()),
+                    );
+                });
+                ui.add_space(12.0);
                 let Some(ref graph) = graph_opt else {
                     ui.add_space(20.0);
                     ui.horizontal(|ui| {
@@ -84,7 +93,7 @@ impl Sidebar {
                         ui.label(
                             RichText::new("Open a repository")
                                 .color(theme::text_muted())
-                                .size(12.0),
+                                .size(13.0),
                         );
                     });
                     return;
@@ -101,7 +110,7 @@ impl Sidebar {
                 // ── LOCAL BRANCHES ────────────────────────────────────
                 {
                     let open = self.open.entry("LOCAL").or_insert(true);
-                    widgets::section_header(ui, "LOCAL BRANCHES", local.len(), open);
+                    widgets::section_header(ui, "Local branches", local.len(), open);
                     if *open {
                         ui.add_space(2.0);
                         for name in &local {
@@ -167,7 +176,8 @@ impl Sidebar {
                                     ui.separator();
                                     if ui
                                         .add(egui::Button::new(
-                                            RichText::new("Force Delete").color(theme::ACCENT_RED),
+                                            RichText::new("Force Delete")
+                                                .color(theme::accent_red()),
                                         ))
                                         .clicked()
                                     {
@@ -178,7 +188,8 @@ impl Sidebar {
                                     }
                                     if ui
                                         .add(egui::Button::new(
-                                            RichText::new("Delete Branch").color(theme::ACCENT_RED),
+                                            RichText::new("Delete Branch")
+                                                .color(theme::accent_red()),
                                         ))
                                         .clicked()
                                     {
@@ -207,7 +218,7 @@ impl Sidebar {
                 // ── REMOTE BRANCHES ───────────────────────────────────
                 {
                     let open = self.open.entry("REMOTE").or_insert(false);
-                    widgets::section_header(ui, "REMOTE BRANCHES", remote.len(), open);
+                    widgets::section_header(ui, "Remotes", remote.len(), open);
                     if *open {
                         ui.add_space(2.0);
                         for name in &remote {
@@ -223,7 +234,7 @@ impl Sidebar {
                 // ── TAGS ──────────────────────────────────────────────
                 {
                     let open = self.open.entry("TAGS").or_insert(false);
-                    widgets::section_header(ui, "TAGS", tags.len(), open);
+                    widgets::section_header(ui, "Tags", tags.len(), open);
                     if *open {
                         ui.add_space(2.0);
                         for name in &tags {
@@ -241,7 +252,7 @@ impl Sidebar {
                                 ui.separator();
                                 if ui
                                     .add(egui::Button::new(
-                                        RichText::new("Delete Tag").color(theme::ACCENT_RED),
+                                        RichText::new("Delete Tag").color(theme::accent_red()),
                                     ))
                                     .clicked()
                                 {
@@ -255,12 +266,12 @@ impl Sidebar {
                             ui.add_space(14.0);
                             let label = if selected_commit.is_some() {
                                 RichText::new("+ Tag Selected Commit")
-                                    .color(theme::ACCENT_TEAL)
-                                    .size(11.5)
+                                    .color(theme::accent_teal())
+                                    .size(12.0)
                             } else {
                                 RichText::new("+ Create Tag at HEAD")
                                     .color(theme::text_muted())
-                                    .size(11.5)
+                                    .size(12.0)
                             };
                             if ui
                                 .add(
@@ -285,7 +296,7 @@ impl Sidebar {
                 // ── STASHES ───────────────────────────────────────────
                 {
                     let open = self.open.entry("STASHES").or_insert(false);
-                    widgets::section_header(ui, "STASHES", stashes.len(), open);
+                    widgets::section_header(ui, "Stashes", stashes.len(), open);
                     if *open {
                         ui.add_space(2.0);
                         for stash in &stashes {
@@ -306,13 +317,13 @@ impl Sidebar {
                                     ui.painter().circle_filled(
                                         dr.center(),
                                         3.5,
-                                        theme::ACCENT_YELLOW,
+                                        theme::accent_yellow(),
                                     );
                                     ui.add_space(6.0);
                                     ui.label(
                                         RichText::new(&display)
                                             .color(theme::text_secondary())
-                                            .size(12.0),
+                                            .size(13.0),
                                     );
                                 })
                                 .response
@@ -339,7 +350,7 @@ impl Sidebar {
                                 ui.separator();
                                 if ui
                                     .add(egui::Button::new(
-                                        RichText::new("Drop").color(theme::ACCENT_RED),
+                                        RichText::new("Drop").color(theme::accent_red()),
                                     ))
                                     .clicked()
                                 {
@@ -360,7 +371,7 @@ impl Sidebar {
                 if worktrees.len() > 1 {
                     let linked: Vec<_> = worktrees.iter().filter(|w| !w.is_main).collect();
                     let open = self.open.entry("WORKTREES").or_insert(true);
-                    widgets::section_header(ui, "WORKTREES", linked.len(), open);
+                    widgets::section_header(ui, "Worktrees", linked.len(), open);
                     if *open {
                         ui.add_space(2.0);
                         for wt in &linked {
@@ -373,14 +384,14 @@ impl Sidebar {
                                 let (dr, _) =
                                     ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
                                 ui.painter()
-                                    .circle_filled(dr.center(), 3.5, theme::ACCENT_TEAL);
+                                    .circle_filled(dr.center(), 3.5, theme::accent_teal());
                                 ui.add_space(6.0);
                                 if ui
                                     .selectable_label(
                                         false,
                                         RichText::new(label)
                                             .color(theme::text_secondary())
-                                            .size(12.0),
+                                            .size(13.0),
                                     )
                                     .on_hover_text(&wt.path)
                                     .clicked()
@@ -408,13 +419,16 @@ impl Sidebar {
                                         Vec2::splat(8.0),
                                         egui::Sense::hover(),
                                     );
-                                    ui.painter()
-                                        .circle_filled(dr.center(), 3.5, theme::ACCENT_RED);
+                                    ui.painter().circle_filled(
+                                        dr.center(),
+                                        3.5,
+                                        theme::accent_red(),
+                                    );
                                     ui.add_space(6.0);
                                     ui.label(
                                         RichText::new(&entry.name)
                                             .color(theme::text_secondary())
-                                            .size(12.0)
+                                            .size(13.0)
                                             .strikethrough(),
                                     );
                                 })
@@ -469,16 +483,16 @@ fn branch_row(
         ui.painter().rect_filled(
             Rect::from_min_size(row_rect.left_top(), Vec2::new(3.0, row_h)),
             2.0,
-            theme::ACCENT_TEAL,
+            theme::accent_teal(),
         );
     }
 
     // Branch icon dot
     let dot_x = row_rect.left() + 16.0;
     let dot_color = if is_head {
-        theme::ACCENT_TEAL
+        theme::accent_teal()
     } else if is_remote {
-        theme::ACCENT_BLUE.gamma_multiply(0.7)
+        theme::accent_blue().gamma_multiply(0.7)
     } else {
         theme::text_muted()
     };
@@ -530,7 +544,7 @@ fn branch_row(
         Pos2::new(text_rect.left() + 4.0, text_rect.center().y),
         egui::Align2::LEFT_CENTER,
         name,
-        egui::FontId::proportional(12.0),
+        egui::FontId::proportional(13.0),
         text_color,
     );
 
@@ -548,7 +562,7 @@ fn branch_row(
             ab_rect.center(),
             egui::Align2::CENTER_CENTER,
             &ab_text,
-            egui::FontId::proportional(10.5),
+            egui::FontId::proportional(12.0),
             ab_color,
         );
     }
@@ -557,7 +571,7 @@ fn branch_row(
 }
 
 fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
-    let row_h = 24.0;
+    let row_h = 30.0;
     let avail = ui.available_width();
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
 
@@ -576,7 +590,7 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
             Pos2::new(cx, cy + s),
             Pos2::new(cx - s, cy),
         ],
-        theme::ACCENT_PURPLE,
+        theme::accent_purple(),
         Stroke::NONE,
     ));
 
@@ -589,7 +603,7 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
             ui.label(
                 RichText::new(name)
                     .color(theme::text_secondary())
-                    .size(12.0),
+                    .size(13.0),
             );
         });
     });
@@ -600,6 +614,6 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
 fn empty_hint(ui: &mut Ui, text: &str) {
     ui.horizontal(|ui| {
         ui.add_space(20.0);
-        ui.label(RichText::new(text).color(theme::text_muted()).size(11.0));
+        ui.label(RichText::new(text).color(theme::text_muted()).size(12.0));
     });
 }

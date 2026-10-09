@@ -50,7 +50,7 @@ impl CommitSigning {
         ui.label("Use Git's existing keys and signing agent. Recorde does not store private keys or passphrases.");
         ui.label("Saves to the current worktree when worktree settings are enabled; otherwise to the shared repository settings.");
         if let Some(message) = &self.message {
-            ui.colored_label(crate::theme::ACCENT_RED, message);
+            ui.colored_label(crate::theme::accent_red(), message);
         }
         let busy = self.pending.is_some();
         if busy {

@@ -57,10 +57,10 @@ pub fn paint(
                 &displayed,
                 0.0,
                 TextFormat {
-                    font_id: FontId::monospace(12.0),
+                    font_id: FontId::monospace(13.0),
                     color,
                     background: if selected {
-                        crate::theme::ACCENT_BLUE.gamma_multiply(0.32)
+                        crate::theme::accent_blue().gamma_multiply(0.32)
                     } else {
                         Color32::TRANSPARENT
                     },
@@ -77,11 +77,11 @@ pub fn paint(
             append(&mut job, cursor..token.start(), color);
             let value = token.as_str();
             let token_color = if value.starts_with(['"', '\'']) {
-                crate::theme::ACCENT_GREEN
+                crate::theme::accent_green()
             } else if value.starts_with("//") || value.starts_with('#') {
                 crate::theme::text_muted()
             } else if value.as_bytes()[0].is_ascii_digit() {
-                crate::theme::ACCENT_YELLOW
+                crate::theme::accent_yellow()
             } else if matches!(
                 value,
                 "fn" | "pub"
@@ -119,7 +119,7 @@ pub fn paint(
                     | "package"
                     | "func"
             ) {
-                crate::theme::ACCENT_BLUE
+                crate::theme::accent_blue()
             } else {
                 color
             };

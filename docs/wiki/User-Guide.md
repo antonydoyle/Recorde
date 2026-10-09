@@ -16,7 +16,11 @@ from the saved configuration.
 
 Use the toolbar to open an existing repository, clone a remote repository, or
 initialize a new repository. Recently opened repositories are persisted and shown
-for quick access.
+for quick access. The chevron beside the repository name opens a scrollable list
+with repository names, parent paths, and a marker for the current repository.
+The same list is available under **File → Recent Repositories**. Hover over a row
+to see its full path. The × button removes an entry from recent history; it does
+not delete any files. Use **Open another repository…** to browse for a folder.
 
 Opening a repository loads:
 
@@ -37,6 +41,17 @@ Recorde is organized around four primary areas:
 - Commit graph: commit history, branch labels, search, file history highlighting,
   and commit context actions.
 - Right and bottom panels: changes, commit details, staging controls, and diffs.
+
+The Changes panel spans the window height, with a separately scrolling file list
+above the commit form. Use the three-dot menu beside a file for staging and discard
+actions, or check files for batch staging. Commit options contains co-authors,
+sign-off and identity/signing controls. Undo actions are under Undo last commit.
+
+The diff occupies the centre column below the graph. Its sliders menu contains
+Unified/Split and whitespace options; the search icon opens Find. Light/dark mode,
+high contrast, UI scale and colourblind graph colours are in Settings > Appearance.
+UI scale 1.0 follows your monitor's native scaling; larger values zoom the interface
+on top of that scale. The bundled UI font requires no installation.
 
 ## Reviewing History
 
