@@ -170,10 +170,12 @@ impl<V: Vault> Store<V> {
             return Err("Multiple accounts match this host. Choose an account for this repository in Settings > Accounts & SSH.".into());
         }
         match candidates.first() {
-            Some(user) => self
-                .vault
-                .get(host, user)
-                .map(|token| token.map(|t| ((*user).into(), t))),
+            Some(user) => {
+                let Some(saved) = self.vault.get(host, user)? else { return Ok(None); };
+                let (access, refreshed) = super::oauth::resolve(&saved, host, user)?;
+                if let Some(refreshed) = refreshed { self.verified_set(host, user, &refreshed)?; }
+                Ok(Some(((*user).into(), access)))
+            }
             None => Ok(None),
         }
     }
@@ -222,6 +224,10 @@ pub fn save(host: &str, username: &str, token: &str) -> Result<(), String> {
     super::redact::remember(token);
     with_store(|store| store.save(host, username, token))
 }
+pub(crate) fn save_oauth(session: &super::oauth::Session) -> Result<(), String> {
+    let envelope = super::oauth::encode(session)?;
+    save(&session.client.host, &session.username, &envelope)
+}
 pub fn remove(host: &str, username: &str) -> Result<(), String> {
     with_store(|store| store.remove(host, username))
 }
@@ -249,7 +255,18 @@ fn lookup(
             .cloned()
     });
     let username = selected_username(endpoint.username.as_deref(), binding.as_deref())?;
-    let result = with_store(|store| store.lookup(&endpoint.host, username))?;
+    let result = with_store(|store| {
+        let result = store.lookup(&endpoint.host, username)?;
+        if for_api { return Ok(result); }
+        match result {
+            Some((user, token)) => {
+                let saved = store.vault.get(&endpoint.host, &user)?.ok_or("Saved account disappeared; reconnect it.")?;
+                let git_user = super::oauth::git_username(&saved)?.map(str::to_string).unwrap_or(user);
+                Ok(Some((git_user, token)))
+            }
+            None => Ok(None),
+        }
+    })?;
     if result.is_none() && binding.is_some() {
         return Err("No token for this repository's selected account. Update it in Settings > Accounts & SSH.".into());
     }

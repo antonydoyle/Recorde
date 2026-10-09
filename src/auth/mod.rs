@@ -1,5 +1,6 @@
 pub mod endpoint;
 pub mod helper;
+pub mod oauth;
 pub mod redact;
 pub mod ssh;
 pub mod store;
