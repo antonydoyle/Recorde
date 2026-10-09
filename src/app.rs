@@ -9,7 +9,7 @@ use crate::git::{
     runner::GitRunner,
     staging,
 };
-use crate::providers::{CiStatus, IssueFilter, PrFilter};
+use crate::providers::{IssueFilter, PrFilter};
 use crate::state::{new_shared_state, ModalKind, PendingDiscard, RebaseEntry, SharedState};
 use crate::theme;
 use crate::ui::{
@@ -2295,17 +2295,7 @@ impl RecordeApp {
             self.repo_ui.last_review_refresh = std::time::Instant::now();
         }
 
-        let (
-            repo_path,
-            branch,
-            pr_list,
-            pr_loaded,
-            pr_loading,
-            pr_error,
-            pr_selected,
-            pr_filter,
-            caps,
-        ) = {
+        let (repo_path, branch, pr_list, pr_loaded, pr_loading, pr_error, pr_selected, pr_filter) = {
             let s = self.state.lock().unwrap();
             (
                 s.repo_path.clone(),
@@ -2316,7 +2306,6 @@ impl RecordeApp {
                 s.pr_error.clone(),
                 s.pr_selected,
                 s.pr_filter,
-                s.capabilities.clone(),
             )
         };
 
@@ -3657,10 +3646,9 @@ impl RecordeApp {
     fn render_compare_modal(&mut self, ctx: &Context, base_oid: String, compare_oid: String) {
         use crate::git::operations::{load_compare_diff, load_compare_files};
 
-        let (repo_path, compare_files, compare_diff, compare_sel) = {
+        let (compare_files, compare_diff, compare_sel) = {
             let s = self.state.lock().unwrap();
             (
-                s.repo_path.clone(),
                 s.compare_files.clone(),
                 s.compare_diff.clone(),
                 s.compare_selected_file.clone(),
@@ -5774,22 +5762,6 @@ fn repo_remotes(path: &std::path::Path) -> Vec<String> {
     remotes
 }
 
-fn ssh_key_status() -> Vec<String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let ssh_dir = std::path::Path::new(&home).join(".ssh");
-    ["id_ed25519", "id_ecdsa", "id_rsa"]
-        .iter()
-        .map(|name| {
-            let path = ssh_dir.join(name);
-            format!(
-                "{} {}",
-                if path.exists() { "Found" } else { "Missing" },
-                path.display()
-            )
-        })
-        .collect()
-}
-
 fn open_repo_in_editor(
     repo_path: Option<std::path::PathBuf>,
     configured_editor: &str,
@@ -5805,41 +5777,6 @@ fn open_repo_in_editor(
     };
 
     crate::external::open_editor(&path, &editor)
-}
-
-fn pull_request_target(repo_path: &std::path::Path, branch: &str) -> Option<(String, String)> {
-    let repo = git2::Repository::open(repo_path).ok()?;
-    let remote = repo.find_remote("origin").ok().or_else(|| {
-        repo.remotes()
-            .ok()?
-            .iter()
-            .flatten()
-            .flatten()
-            .next()
-            .and_then(|name| repo.find_remote(name).ok())
-    })?;
-    let remote_url = remote.url().ok()?.to_string();
-    let base = github_web_url(&remote_url)?;
-    let url = if branch == "HEAD" {
-        format!("{base}/pulls")
-    } else {
-        format!("{base}/compare/{branch}?expand=1")
-    };
-    Some((remote_url, url))
-}
-
-fn github_web_url(remote_url: &str) -> Option<String> {
-    let trimmed = remote_url.trim_end_matches(".git");
-    if let Some(rest) = trimmed.strip_prefix("git@github.com:") {
-        return Some(format!("https://github.com/{rest}"));
-    }
-    if let Some(rest) = trimmed.strip_prefix("ssh://git@github.com/") {
-        return Some(format!("https://github.com/{rest}"));
-    }
-    if trimmed.starts_with("https://github.com/") || trimmed.starts_with("http://github.com/") {
-        return Some(trimmed.replacen("http://", "https://", 1));
-    }
-    None
 }
 
 fn open_url(url: &str) -> Result<(), String> {

@@ -57,7 +57,7 @@ struct OverflowItem {
 }
 
 impl OverflowKind {
-    fn to_action(self, show_all: bool) -> ToolbarAction {
+    fn to_action(self) -> ToolbarAction {
         match self {
             Self::Fetch => ToolbarAction::Fetch,
             Self::Pull => ToolbarAction::Pull,
@@ -168,7 +168,7 @@ impl Toolbar {
                                 }
                                 btn.context_menu(|ui| {
                                     ui.set_min_width(200.0);
-                                    if let Some(ref rp) = repo_path {
+                                    if repo_path.is_some() {
                                         if ui.button("Copy Path").clicked() {
                                             action = Some(ToolbarAction::CopyRepoPath);
                                             ui.close_menu();
@@ -440,8 +440,7 @@ impl Toolbar {
                                                 .inner
                                                 .clicked()
                                             {
-                                                overflow_action =
-                                                    Some(item.kind.to_action(show_all_branches));
+                                                overflow_action = Some(item.kind.to_action());
                                                 ui.ctx().memory_mut(|m| m.close_popup());
                                             }
                                         }

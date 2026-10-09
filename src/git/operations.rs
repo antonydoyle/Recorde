@@ -1412,7 +1412,6 @@ pub fn load_issues(state: crate::state::SharedState) {
         return;
     };
     use crate::git::capabilities::ProviderType;
-    use crate::providers::IssueFilter;
 
     let filter = state.lock().unwrap().issue_filter;
     std::thread::spawn(move || {

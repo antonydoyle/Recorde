@@ -5,7 +5,7 @@ use crate::git::{
     operations::{load_blame, load_file_history, load_workdir_diff},
     staging,
 };
-use crate::state::{ConflictedFile, DiffContext, PendingDiscard, SharedState, WorkingDirFile};
+use crate::state::{DiffContext, PendingDiscard, SharedState, WorkingDirFile};
 use crate::theme;
 
 pub struct StagingPanel {
@@ -47,15 +47,7 @@ impl StagingPanel {
             );
         }
 
-        let (
-            files,
-            conflicted,
-            head_branch,
-            selected_file,
-            repo_path,
-            any_seq_in_progress,
-            git_user,
-        ) = {
+        let (files, conflicted, head_branch, selected_file, repo_path, any_seq_in_progress) = {
             let s = self.state.lock().unwrap();
             let in_progress = s.capabilities.as_ref().map_or(false, |c| {
                 c.merge_in_progress || c.cherry_pick_in_progress || c.revert_in_progress
@@ -67,7 +59,6 @@ impl StagingPanel {
                 s.selected_file.clone(),
                 s.repo_path.clone(),
                 in_progress,
-                s.git_user_initials.clone(),
             )
         };
 
@@ -437,7 +428,7 @@ impl StagingPanel {
                         ui.add_space(12.0);
                         if ui.add(small_btn("Copy")).on_hover_text("Copy assembled commit message").clicked() {
                             let msg = build_message(&self.drafts.current.subject, &self.drafts.current.body, &self.drafts.current.co_authors,
-                                self.drafts.current.signoff_enabled, &repo_path, &git_user);
+                                self.drafts.current.signoff_enabled, &repo_path);
                             ui.output_mut(|o| o.copied_text = msg);
                         }
                         ui.add_space(4.0);
@@ -642,7 +633,6 @@ impl StagingPanel {
                 &self.drafts.current.co_authors,
                 self.drafts.current.signoff_enabled,
                 &repo_path,
-                &git_user,
             );
             let completion = if do_commit {
                 staging::create_commit(
@@ -684,7 +674,6 @@ fn build_message(
     co_authors: &[String],
     signoff: bool,
     repo_path: &Option<std::path::PathBuf>,
-    git_user_initials: &str,
 ) -> String {
     let mut msg = subject.trim().to_string();
     if !body.trim().is_empty() {
