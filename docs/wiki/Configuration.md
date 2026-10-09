@@ -129,3 +129,8 @@ Checkout recovery refuses a moved original branch or one checked out elsewhere.
 Continue/Abort/Skip finalize only a checkpoint matching native sequencer files and
 HEAD; external sequencer changes leave a snapshot for manual recovery. Selected
 range discard captures the confirmed diff and refuses changes before execution.
+
+
+### Keyboard shortcut overrides
+
+`shortcuts` stores overrides keyed by command identity. Each value contains `key`, `shift`, and `alt`; the platform command modifier is always required (Control on Windows/Linux, Command on macOS). An absent entry uses the command default, and an empty key disables it. Settings > Keyboard validates conflicts and restores defaults. Unknown command identities are retained for compatibility but never dispatched; conflicting bindings in a hand-edited file do not execute either command.

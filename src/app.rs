@@ -1,5 +1,5 @@
 use crate::ui::button::Button;
-use egui::{Color32, Context, Key, Modifiers, RichText, Stroke};
+use egui::{Color32, Context, Key, RichText, Stroke};
 
 use crate::auth::{ProviderKind, StoredAccount};
 use crate::config::{Config, PullStrategy};
@@ -43,6 +43,7 @@ enum SettingsTab {
     App,
     Ui,
     Accounts,
+    Shortcuts,
     Repository,
     About,
 }
@@ -179,6 +180,10 @@ pub struct RecordeApp {
     // New modals
     command_palette_open: bool,
     command_palette_query: String,
+    palette_selected: usize,
+    palette_focus: bool,
+    shortcut_capture: Option<crate::commands::Command>,
+    shortcut_error: Option<String>,
     branch_switcher_open: bool,
     branch_switcher_query: String,
     settings_open: bool,
@@ -298,6 +303,10 @@ impl RecordeApp {
             state,
             command_palette_open: false,
             command_palette_query: String::new(),
+            palette_selected: 0,
+            palette_focus: true,
+            shortcut_capture: None,
+            shortcut_error: None,
             branch_switcher_open: false,
             branch_switcher_query: String::new(),
             settings_open: false,
@@ -404,7 +413,8 @@ impl RecordeApp {
                 }
             }
             ToolbarAction::OpenCommandPalette => {
-                self.command_palette_open = !self.command_palette_open
+                self.command_palette_open = !self.command_palette_open;
+                self.palette_focus = true;
             }
             ToolbarAction::OpenBranchSwitcher => self.branch_switcher_open = true,
             ToolbarAction::OpenUserMenu => self.open_settings(SettingsTab::Accounts),
@@ -787,144 +797,260 @@ impl RecordeApp {
         }
     }
 
-    fn render_command_palette(&mut self, ctx: &Context) {
-        let actions: &[(&str, &str)] = &[
-            ("↓  Fetch", "Ctrl+Shift+F"),
-            ("⇅  Pull", "Ctrl+Shift+P"),
-            ("↑  Push", "Ctrl+Shift+U"),
-            ("⎇  New Branch", ""),
-            ("⎇  Switch Branch…", "Ctrl+B"),
-            ("⚑  Stash Changes", ""),
-            ("⌕  Search Commits", "Ctrl+F"),
-            ("⊞  Open Repository", ""),
-            ("☀  Toggle Theme", ""),
-        ];
+    fn dispatch_command(&mut self, ctx: &Context, command: crate::commands::Command) {
+        use crate::commands::Command as C;
+        if !command.available(&self.state.lock().unwrap()) {
+            return;
+        }
+        let toolbar = match command {
+            C::Palette => Some(ToolbarAction::OpenCommandPalette),
+            C::Open => {
+                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    self.handle_toolbar(ctx, ToolbarAction::OpenRepo(path));
+                }
+                None
+            }
+            C::Clone => Some(ToolbarAction::CloneRepo),
+            C::Init => Some(ToolbarAction::InitRepo),
+            C::Settings => {
+                self.open_settings(SettingsTab::App);
+                None
+            }
+            C::Shortcuts => {
+                self.open_settings(SettingsTab::Shortcuts);
+                None
+            }
+            C::Accounts => Some(ToolbarAction::OpenUserMenu),
+            C::Theme => Some(ToolbarAction::ToggleTheme),
+            C::Fetch => Some(ToolbarAction::Fetch),
+            C::Pull => Some(ToolbarAction::Pull),
+            C::PullRebase => Some(ToolbarAction::PullWithRebase),
+            C::PullFf => Some(ToolbarAction::PullFfOnly),
+            C::Push => Some(ToolbarAction::Push),
+            C::PushLease => Some(ToolbarAction::PushWithLease),
+            C::PushUpstream => Some(ToolbarAction::PushSetUpstream),
+            C::Branch => Some(ToolbarAction::CreateBranch),
+            C::SwitchBranch => Some(ToolbarAction::OpenBranchSwitcher),
+            C::Merge => Some(ToolbarAction::MergeBranch),
+            C::Rebase => Some(ToolbarAction::RebaseOnto),
+            C::Stash => Some(ToolbarAction::Stash),
+            C::Search => Some(ToolbarAction::ToggleSearch),
+            C::DiffSearch => {
+                self.focus_pane(4);
+                self.diff_view.open_search();
+                None
+            }
+            C::AllBranches => Some(ToolbarAction::ToggleAllBranches),
+            C::Reflog => Some(ToolbarAction::OpenReflog),
+            C::Bisect => Some(ToolbarAction::OpenBisect),
+            C::Provider => Some(ToolbarAction::OpenProvider),
+            C::Terminal => Some(ToolbarAction::OpenTerminal),
+            C::Reveal => Some(ToolbarAction::RevealInFolder),
+            C::CopyPath => Some(ToolbarAction::CopyRepoPath),
+            C::Refresh => {
+                crate::git::operations::refresh_repo(self.state.clone());
+                None
+            }
+            C::Sidebar => {
+                self.focus_pane(1);
+                None
+            }
+            C::Graph => {
+                self.focus_pane(2);
+                None
+            }
+            C::Changes => {
+                self.repo_ui.right_tab = RightTab::Changes;
+                self.focus_pane(3);
+                None
+            }
+            C::Diff => {
+                self.focus_pane(4);
+                None
+            }
+            C::NewTag => {
+                let mut s = self.state.lock().unwrap();
+                s.modal = ModalKind::CreateTag {
+                    from_oid: s.selected_commit.clone(),
+                };
+                None
+            }
+            C::CopyCommit => {
+                if let Some(oid) = self.state.lock().unwrap().selected_commit.clone() {
+                    ctx.output_mut(|o| o.copied_text = oid);
+                }
+                None
+            }
+            C::InteractiveRebase => {
+                let mut s = self.state.lock().unwrap();
+                s.pending_open_rebase = s.selected_commit.clone();
+                None
+            }
+        };
+        if let Some(action) = toolbar {
+            self.handle_toolbar(ctx, action);
+        }
+    }
 
-        egui::Window::new("Command Palette")
+    fn render_command_palette(&mut self, ctx: &Context) {
+        use crate::commands::Command;
+        let mut chosen = None;
+        let mut close = false;
+        egui::Window::new("Command palette")
             .collapsible(false)
             .resizable(false)
-            .title_bar(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
-            .frame(
-                egui::Frame::none()
-                    .fill(theme::bg_panel())
-                    .stroke(Stroke::new(1.0, theme::border_strong()))
-                    .rounding(10.0)
-                    .inner_margin(egui::Margin::same(0.0)),
-            )
             .show(ctx, |ui| {
-                ui.set_min_width(480.0);
-
-                // Search input
-                let input_bg = egui::Frame::none()
-                    .fill(theme::bg_panel_alt())
-                    .inner_margin(egui::Margin::symmetric(12.0, 10.0));
-                input_bg.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("⌘").color(theme::text_muted()).size(15.0));
-                        ui.add_space(6.0);
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut self.command_palette_query)
-                                .desired_width(f32::INFINITY)
-                                .margin(egui::Vec2::new(8.0, 5.0))
-                                .hint_text("Type a command…")
-                                .font(egui::FontId::proportional(14.0)),
-                        );
-                        r.request_focus();
-                    });
-                });
-
-                ui.add(egui::Separator::default().spacing(0.0));
-
-                let q = self.command_palette_query.to_lowercase();
-                let mut selected: Option<usize> = None;
-
-                for (i, (label, shortcut)) in actions.iter().enumerate() {
-                    let lq = label.to_lowercase();
-                    if !q.is_empty() && !lq.contains(&q) {
-                        continue;
+                ui.set_min_width(500.0);
+                let input = ui.add(
+                    egui::TextEdit::singleline(&mut self.command_palette_query)
+                        .hint_text("Search commands (Up/Down, Enter, Escape)")
+                        .desired_width(f32::INFINITY),
+                );
+                if self.palette_focus {
+                    input.request_focus();
+                    self.palette_focus = false;
+                }
+                if input.changed() {
+                    self.palette_selected = 0;
+                }
+                let query = self.command_palette_query.to_lowercase();
+                let actions: Vec<_> = Command::ALL
+                    .iter()
+                    .copied()
+                    .filter(|c| *c != Command::Palette && c.label().to_lowercase().contains(&query))
+                    .collect();
+                self.palette_selected = self.palette_selected.min(actions.len().saturating_sub(1));
+                let down = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowDown));
+                let up = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowUp));
+                if !actions.is_empty() {
+                    if down {
+                        self.palette_selected = (self.palette_selected + 1) % actions.len();
                     }
-
-                    let row = ui
-                        .horizontal(|ui| {
-                            ui.add_space(14.0);
-                            ui.label(
-                                RichText::new(*label)
-                                    .color(theme::text_primary())
-                                    .size(14.0),
+                    if up {
+                        self.palette_selected =
+                            (self.palette_selected + actions.len() - 1) % actions.len();
+                    }
+                    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter)) {
+                        chosen = Some(actions[self.palette_selected]);
+                    }
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .show(ui, |ui| {
+                        for (index, command) in actions.iter().enumerate() {
+                            let reason = command.disabled_reason(&self.state.lock().unwrap());
+                            let shortcut = self
+                                .config
+                                .shortcuts
+                                .get(*command)
+                                .map(|b| b.label())
+                                .unwrap_or_default();
+                            let label = format!("{}    {}", command.label(), shortcut);
+                            let response = ui.add_enabled(
+                                reason.is_none(),
+                                egui::SelectableLabel::new(index == self.palette_selected, label),
                             );
-                            if !shortcut.is_empty() {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.add_space(14.0);
-                                        ui.label(
-                                            RichText::new(*shortcut)
-                                                .color(theme::text_muted())
-                                                .size(12.0)
-                                                .monospace(),
-                                        );
-                                    },
-                                );
+                            if (up || down) && index == self.palette_selected {
+                                response.scroll_to_me(Some(egui::Align::Center));
                             }
-                        })
-                        .response;
-
-                    let row_resp = row.interact(egui::Sense::click());
-                    if row_resp.hovered() {
-                        ui.painter()
-                            .rect_filled(row_resp.rect, 0.0, theme::bg_hover());
-                    }
-                    if row_resp.clicked() {
-                        selected = Some(i);
-                    }
-                }
-
-                ui.add_space(6.0);
-
-                if ui.input(|i| i.key_pressed(Key::Escape))
-                    || ctx.input(|i| i.key_pressed(Key::Escape))
-                {
-                    self.command_palette_open = false;
-                    self.command_palette_query.clear();
-                }
-
-                if let Some(i) = selected {
-                    self.command_palette_open = false;
-                    self.command_palette_query.clear();
-                    match i {
-                        0 => remote::fetch_all(&mut self.runner, &self.state),
-                        1 => remote::pull_branch(&mut self.runner, &self.state),
-                        2 => remote::push_branch(&mut self.runner, &self.state),
-                        3 => {
-                            self.state.lock().unwrap().modal =
-                                ModalKind::CreateBranch { from_oid: None }
-                        }
-                        4 => self.branch_switcher_open = true,
-                        5 => {
-                            self.repo_ui.stash_message_input = "WIP".into();
-                            self.state.lock().unwrap().modal = ModalKind::StashWithMessage;
-                        }
-                        6 => {
-                            let mut s = self.state.lock().unwrap();
-                            s.search_active = true;
-                        }
-                        7 => {
-                            if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                                self.config.add_recent(p.clone());
-                                load_repo(p, self.state.clone());
+                            if response.clicked() {
+                                chosen = Some(*command);
+                            }
+                            if let Some(reason) = reason {
+                                response.on_hover_text(reason);
+                                if index == self.palette_selected {
+                                    ui.label(RichText::new(reason).color(theme::text_muted()));
+                                }
                             }
                         }
-                        8 => {
-                            self.dark_theme = !self.dark_theme;
-                            self.config.dark_theme = self.dark_theme;
-                            self.save_config();
-                            theme::apply(ctx, self.dark_theme, self.high_contrast);
+                        if actions.is_empty() {
+                            ui.label("No matching commands");
                         }
-                        _ => {}
-                    }
-                }
+                    });
+                close = ui.button("Close (Escape)").clicked()
+                    || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
             });
+        if let Some(command) = chosen {
+            if command.available(&self.state.lock().unwrap()) {
+                close = true;
+            } else {
+                chosen = None;
+            }
+        }
+        if close {
+            self.command_palette_open = false;
+            self.command_palette_query.clear();
+            self.palette_focus = true;
+        }
+        if let Some(command) = chosen {
+            self.dispatch_command(ctx, command);
+        }
+    }
+
+    fn render_shortcut_settings(&mut self, ui: &mut egui::Ui) {
+        ui.label("Choose Change, then press a key with Ctrl (Command on macOS). Escape cancels recording. Shortcuts pause while editing text or using a dialog.");
+        if ui.button("Reset all shortcuts to defaults").clicked() {
+            self.config.shortcuts = Default::default();
+            self.shortcut_capture = None;
+            self.shortcut_error = None;
+            self.save_config();
+        }
+        if let Some(command) = self.shortcut_capture {
+            ui.label(format!("Recording shortcut for {}", command.label()));
+            let events = ui.input(|i| i.events.clone());
+            for event in events {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if key == Key::Escape {
+                        self.shortcut_capture = None;
+                    } else if let Some(binding) =
+                        crate::commands::Shortcut::from_event(key, modifiers)
+                    {
+                        match self.config.shortcuts.set(command, Some(binding)) {
+                            Ok(()) => {
+                                self.shortcut_capture = None;
+                                self.shortcut_error = None;
+                                self.save_config();
+                            }
+                            Err(error) => self.shortcut_error = Some(error),
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(error) = &self.shortcut_error {
+            ui.colored_label(theme::accent_red(), error);
+        }
+        for &command in crate::commands::Command::ALL {
+            ui.push_id(command.id(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(command.label());
+                    ui.label(
+                        self.config
+                            .shortcuts
+                            .get(command)
+                            .map(|b| b.label())
+                            .unwrap_or_else(|| "Unassigned".into()),
+                    );
+                    if ui.button("Change").clicked() {
+                        self.shortcut_capture = Some(command);
+                        self.shortcut_error = None;
+                    }
+                    if ui.button("Clear").clicked() {
+                        let _ = self.config.shortcuts.set(command, None);
+                        self.shortcut_capture = None;
+                        self.save_config();
+                    }
+                });
+            });
+        }
     }
 
     fn render_branch_switcher(&mut self, ctx: &Context) {
@@ -1057,6 +1183,12 @@ impl RecordeApp {
                     settings_tab_button(
                         ui,
                         &mut self.settings_tab,
+                        SettingsTab::Shortcuts,
+                        "Keyboard",
+                    );
+                    settings_tab_button(
+                        ui,
+                        &mut self.settings_tab,
                         SettingsTab::Accounts,
                         "Accounts & SSH",
                     );
@@ -1077,6 +1209,7 @@ impl RecordeApp {
                     .show(ui, |ui| match self.settings_tab {
                         SettingsTab::App => self.render_app_settings(ui),
                         SettingsTab::Ui => self.render_ui_settings(ctx, ui),
+                        SettingsTab::Shortcuts => self.render_shortcut_settings(ui),
                         SettingsTab::Accounts => self.render_accounts_tab(ui),
                         SettingsTab::Repository => self.render_repo_settings(ui),
                         SettingsTab::About => self.render_about(ui),
@@ -2241,7 +2374,7 @@ impl RecordeApp {
                 .italics(),
         );
         ui.add_space(8.0);
-        ui.label(styled_muted("Keyboard: Ctrl+K command palette, Ctrl+B branch switcher, Ctrl+F search, Ctrl+Shift+F fetch, Ctrl+Shift+P pull, Ctrl+Shift+U push, Ctrl+1 sidebar, Ctrl+2 commit graph, Ctrl+3 changes, Ctrl+4 diff."));
+        ui.label(styled_muted("Keyboard shortcuts are listed in the command palette and configurable in Settings > Keyboard. Ctrl on Windows/Linux is Command on macOS."));
         ui.add_space(16.0);
         ui.collapsing("Third-party font licenses", |ui| {
             for (name, license) in [
@@ -2656,53 +2789,33 @@ impl eframe::App for RecordeApp {
         ctx.options_mut(|o| o.warn_on_id_clash = false);
 
         let shortcuts = !ctx.wants_keyboard_input()
+            && !self.settings_open
+            && !self.command_palette_open
+            && !self.branch_switcher_open
+            && !self.add_account_open
+            && !self.commit_graph_view.has_pending_action()
             && matches!(self.state.lock().unwrap().modal, ModalKind::None)
             && self.repo_ui.rebase_modal.is_none()
             && self.repo_ui.conflict_editor.is_none()
             && self.repo_ui.provider_editor.is_none();
-        // ── Global keyboard shortcuts ─────────────────────────────────────
-        if shortcuts && ctx.input(|i| i.modifiers == Modifiers::COMMAND && i.key_pressed(Key::K)) {
-            self.command_palette_open = !self.command_palette_open;
-        }
-        if shortcuts && ctx.input(|i| i.modifiers == Modifiers::COMMAND && i.key_pressed(Key::B)) {
-            self.branch_switcher_open = !self.branch_switcher_open;
-        }
-        if shortcuts
-            && ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(Key::F))
-        {
-            remote::fetch_all(&mut self.runner, &self.state);
-        }
-        if shortcuts
-            && ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(Key::P))
-        {
-            remote::pull_branch(&mut self.runner, &self.state);
-        }
-        if shortcuts
-            && ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(Key::U))
-        {
-            remote::push_branch(&mut self.runner, &self.state);
-        }
-        // Ctrl+1/2/3/4: focus sidebar / graph / changes / diff
-        if shortcuts
-            && ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(Key::Num1))
-        {
-            self.focus_pane(1);
-        }
-        if shortcuts
-            && ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(Key::Num2))
-        {
-            self.focus_pane(2);
-        }
-        if shortcuts
-            && ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(Key::Num3))
-        {
-            self.repo_ui.right_tab = RightTab::Changes;
-            self.focus_pane(3);
-        }
-        if shortcuts
-            && ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(Key::Num4))
-        {
-            self.focus_pane(4);
+        self.commit_graph_view.set_interactions_enabled(
+            !self.settings_open
+                && !self.command_palette_open
+                && !self.branch_switcher_open
+                && !self.add_account_open
+                && !self.commit_graph_view.has_pending_action()
+                && self.repo_ui.rebase_modal.is_none()
+                && self.repo_ui.conflict_editor.is_none()
+                && self.repo_ui.provider_editor.is_none()
+                && {
+                    let s = self.state.lock().unwrap();
+                    matches!(s.modal, ModalKind::None)
+                        && s.pending_discard.is_none()
+                        && s.repo_load_path.is_none()
+                },
+        );
+        if let Some(command) = self.config.shortcuts.take_command(ctx, !shortcuts) {
+            self.dispatch_command(ctx, command);
         }
 
         // ── Detect external repo changes (tags, commits from other tools) ──
@@ -2822,6 +2935,8 @@ impl eframe::App for RecordeApp {
         };
         if !has_workspace {
             self.show_welcome(ctx);
+            self.commit_graph_view
+                .show_action_confirmation(ctx, &self.config.protected_branches);
             self.show_operation_overlays(ctx);
             return;
         }
@@ -3025,6 +3140,8 @@ impl eframe::App for RecordeApp {
                 }
             });
 
+        self.commit_graph_view
+            .show_action_confirmation(ctx, &self.config.protected_branches);
         self.show_operation_overlays(ctx);
     }
 }
@@ -4133,6 +4250,9 @@ impl RecordeApp {
         }
         let active = self.state.lock().unwrap().repo_path.clone();
         if active != self.observed_repo {
+            self.command_palette_open = false;
+            self.branch_switcher_open = false;
+            self.commit_graph_view.cancel_action();
             let previous = std::mem::take(&mut self.repo_ui);
             if let Some(path) = &self.observed_repo {
                 self.repo_sessions.insert(path.clone(), previous);

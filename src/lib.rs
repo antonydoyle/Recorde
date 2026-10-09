@@ -10,3 +10,5 @@ pub mod theme;
 pub mod ui;
 
 pub mod external;
+
+pub mod commands;

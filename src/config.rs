@@ -159,6 +159,8 @@ impl PullStrategy {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    pub shortcuts: crate::commands::Shortcuts,
+    #[serde(default)]
     pub favorites: Vec<PathBuf>,
     #[serde(default)]
     pub workspaces: std::collections::BTreeMap<String, Vec<PathBuf>>,

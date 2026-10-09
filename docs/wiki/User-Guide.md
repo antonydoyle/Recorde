@@ -134,3 +134,18 @@ Recorde can open a terminal, reveal the repository in the file manager, and open
 configured diff or merge tools. Tool commands are stored in the application
 configuration.
 
+
+
+## Graph operations with a preview
+
+Drag a commit row onto the checked-out branch's HEAD row to preview cherry-picking it. Drag a branch label onto HEAD to preview a merge. Drag the checked-out branch label onto another commit or branch label to preview rebasing the current branch onto that target. The confirmation shows the repository, both endpoints, the expected HEAD, and the direction of the change. Dropping alone never changes Git state; use Confirm to queue the operation or Escape to cancel.
+
+The current branch is the only branch these gestures modify. A changed repository, branch tip, or HEAD invalidates the operation, including changes while dragging or waiting in the queue. Rebasing a configured protected branch is disabled. Recovery snapshots preserve staged, unstaged, and untracked work; Git may refuse the operation when local changes would be overwritten. Conflicts use the normal Continue and Abort controls.
+
+Branch labels are focusable: activate one to open a merge preview into HEAD. The command palette also provides Merge branch, Rebase current branch, and Interactive rebase from selected commit for keyboard access. Existing context menus remain available.
+
+## Commands and keyboard preferences
+
+Open the command palette with Ctrl+K (Command+K on macOS). Search the available commands, use Up/Down to select a result, Enter to execute, or Escape to close. Unavailable commands explain the missing repository, selection, or operation prerequisite. The palette includes repository lifecycle, fetch/pull/push variants, branch/history actions, settings, provider views, searches, and pane navigation.
+
+Settings > Keyboard lists every registered command and its effective binding. Choose Change and press a combination with Ctrl (Command on macOS), Clear to disable a binding, or Reset all shortcuts to defaults. Conflicts are rejected without replacing the old binding. Escape cancels recording. Window-closing and system combinations cannot be recorded. Custom bindings persist across restarts. Global shortcuts pause while editing text or using another dialog. Search commits and Find in diff are separate configurable commands.

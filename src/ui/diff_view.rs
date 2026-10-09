@@ -88,6 +88,10 @@ pub struct DiffView {
 }
 
 impl DiffView {
+    pub fn open_search(&mut self) {
+        self.search_open = true;
+    }
+
     pub fn preferences(&self) -> crate::config::DiffPreferences {
         crate::config::DiffPreferences {
             whitespace: self.show_whitespace,
@@ -457,11 +461,6 @@ impl DiffView {
         }
 
         // ── Header ────────────────────────────────────────────────────────
-        if self.state.lock().unwrap().focused_pane == 4
-            && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F))
-        {
-            self.search_open = true;
-        }
         let header_h = 80.0;
         let header_rect =
             Rect::from_min_size(ui.min_rect().min, Vec2::new(ui.available_width(), header_h));

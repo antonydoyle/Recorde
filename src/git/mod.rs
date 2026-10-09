@@ -34,3 +34,5 @@ pub mod binary_preview;
 
 mod history_cursor;
 pub(crate) mod safe_path;
+
+pub mod graph_action;
