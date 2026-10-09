@@ -56,12 +56,20 @@
           </Component>
 
           <Directory Id='FontLicensesFolder' Name='licenses'>
-            <Component Id='FontLicenses' Guid='*'>
+            <Component Id='InterFontLicense' Guid='*'>
               <File Id='InterLicense' Source='assets\fonts\Inter-LICENSE.txt' KeyPath='yes'/>
-              <File Id='MaterialLicense' Source='assets\fonts\MaterialIcons-LICENSE.txt'/>
-              <File Id='NotoEmojiLicense' Source='assets\fonts\NotoEmoji-OFL.txt'/>
-              <File Id='NotoSymbolsLicense' Source='assets\fonts\NotoSansSymbols-OFL.txt'/>
-              <File Id='NotoSymbols2License' Source='assets\fonts\NotoSansSymbols2-OFL.txt'/>
+            </Component>
+            <Component Id='MaterialFontLicense' Guid='*'>
+              <File Id='MaterialLicense' Source='assets\fonts\MaterialIcons-LICENSE.txt' KeyPath='yes'/>
+            </Component>
+            <Component Id='NotoEmojiFontLicense' Guid='*'>
+              <File Id='NotoEmojiLicense' Source='assets\fonts\NotoEmoji-OFL.txt' KeyPath='yes'/>
+            </Component>
+            <Component Id='NotoSymbolsFontLicense' Guid='*'>
+              <File Id='NotoSymbolsLicense' Source='assets\fonts\NotoSansSymbols-OFL.txt' KeyPath='yes'/>
+            </Component>
+            <Component Id='NotoSymbols2FontLicense' Guid='*'>
+              <File Id='NotoSymbols2License' Source='assets\fonts\NotoSansSymbols2-OFL.txt' KeyPath='yes'/>
             </Component>
           </Directory>
 
@@ -103,7 +111,11 @@
              Absent='disallow'>
       <ComponentRef Id='binary0'/>
       <ComponentRef Id='License'/>
-      <ComponentRef Id='FontLicenses'/>
+      <ComponentRef Id='InterFontLicense'/>
+      <ComponentRef Id='MaterialFontLicense'/>
+      <ComponentRef Id='NotoEmojiFontLicense'/>
+      <ComponentRef Id='NotoSymbolsFontLicense'/>
+      <ComponentRef Id='NotoSymbols2FontLicense'/>
     </Feature>
 
     <Feature Id='Shortcuts'
