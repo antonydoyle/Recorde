@@ -39,6 +39,21 @@ fn classify(path: &Path, git_dirs: &[PathBuf]) -> u8 {
     1
 }
 
+fn classify_event(event: &notify::Event, git_dirs: &[PathBuf]) -> u8 {
+    // Coalesced/dropped events can omit individual paths. A full refresh also
+    // reloads working changes, so it is the safe response to a rescan request.
+    if event.need_rescan() {
+        2
+    } else if matches!(event.kind, notify::EventKind::Access(_)) {
+        0
+    } else {
+        event
+            .paths
+            .iter()
+            .fold(0, |flags, path| flags | classify(path, git_dirs))
+    }
+}
+
 impl RepoWatch {
     pub(crate) fn new(path: PathBuf) -> Self {
         let flags = Arc::new(AtomicU8::new(0));
@@ -56,11 +71,7 @@ impl RepoWatch {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let flags = match event {
-                    Ok(event) if matches!(event.kind, notify::EventKind::Access(_)) => 0,
-                    Ok(event) => event
-                        .paths
-                        .iter()
-                        .fold(0, |flags, path| flags | classify(path, &callback_dirs)),
+                    Ok(event) => classify_event(&event, &callback_dirs),
                     Err(_) => 2,
                 };
                 signal.fetch_or(flags, Ordering::Relaxed);
@@ -133,6 +144,9 @@ mod tests {
         assert_eq!(classify(Path::new("repo/.git/index"), &dirs), 1);
         assert_eq!(classify(Path::new("repo/.git/objects/a/b"), &dirs), 0);
         assert_eq!(classify(Path::new("repo/new-file"), &dirs), 1);
+        let rescan =
+            notify::Event::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan);
+        assert_eq!(classify_event(&rescan, &dirs), 2);
         let dir = tempfile::tempdir().unwrap();
         let mut watcher = RepoWatch::new(dir.path().into());
         watcher.flags.store(1, Ordering::Relaxed);
@@ -152,11 +166,13 @@ mod tests {
         repo.commit("file.txt", b"base\n");
         let mut watcher = RepoWatch::new(repo.path().to_path_buf());
         assert!(watcher._watcher.is_some());
-        let await_refresh = |watcher: &mut RepoWatch| {
+        let await_refresh = |watcher: &mut RepoWatch, expected: Option<Refresh>| {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 if let Some(refresh) = watcher.poll(false, false) {
-                    break refresh;
+                    if expected.is_none() || expected == Some(refresh) {
+                        break refresh;
+                    }
                 }
                 assert!(
                     Instant::now() < deadline,
@@ -166,8 +182,15 @@ mod tests {
             }
         };
         repo.write("file.txt", b"external save\n");
-        assert!(matches!(await_refresh(&mut watcher), Refresh::Worktree));
+        // FSEvents may coalesce setup/metadata events with the file write. Both
+        // refresh kinds reload the worktree; precise classification is tested above.
+        let expected = if cfg!(target_os = "macos") {
+            None
+        } else {
+            Some(Refresh::Worktree)
+        };
+        await_refresh(&mut watcher, expected);
         repo.git_ok(&["branch", "nested/topic"]);
-        assert!(matches!(await_refresh(&mut watcher), Refresh::History));
+        await_refresh(&mut watcher, Some(Refresh::History));
     }
 }
