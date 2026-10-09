@@ -224,41 +224,10 @@ impl RecordeApp {
         let diff_tool = config.diff_tool.clone();
         let merge_tool = config.merge_tool.clone();
 
-        // Load Noto Symbols as egui fallback font for full Unicode symbol coverage.
-        // This fixes missing-glyph squares for ⎇ ⚑ ⊞ ⇅ ☀ ⌘ and similar.
-        let mut fonts = egui::FontDefinitions::default();
-        const NOTO_SYMBOLS2: &str = "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf";
-        if let Ok(bytes) = std::fs::read(NOTO_SYMBOLS2) {
-            fonts
-                .font_data
-                .insert("noto_symbols2".into(), egui::FontData::from_owned(bytes));
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .push("noto_symbols2".into());
-            fonts
-                .families
-                .entry(egui::FontFamily::Monospace)
-                .or_default()
-                .push("noto_symbols2".into());
-        }
-        // Material Icons — embedded at compile time so the installed binary
-        // doesn't need assets/ alongside it (fixes the deb/AppImage install crash).
-        fonts.font_data.insert(
-            "material-icons".into(),
-            egui::FontData::from_static(include_bytes!("../assets/MaterialIcons.ttf")),
-        );
-        fonts.families.insert(
-            egui::FontFamily::Name("material-icons".into()),
-            vec!["material-icons".into()],
-        );
-        cc.egui_ctx.set_fonts(fonts);
+        cc.egui_ctx.set_fonts(crate::icons::font_definitions());
 
         theme::apply(&cc.egui_ctx, dark_theme, high_contrast);
-        if config.font_scale > 0.0 && config.font_scale != 1.0 {
-            cc.egui_ctx.set_pixels_per_point(config.font_scale);
-        }
+        theme::apply_ui_scale(&cc.egui_ctx, config.font_scale);
 
         // Pre-load the app icon as a texture so the title bar can render it.
         let app_icon_texture = {
@@ -646,7 +615,7 @@ impl RecordeApp {
                     ui.label(
                         RichText::new(format!("Delete \"{}\"?", branch_name))
                             .color(theme::text_primary())
-                            .size(13.0),
+                            .size(14.0),
                     );
                     ui.label(styled_muted("Unmerged commits will be lost."));
                     ui.add_space(16.0);
@@ -698,7 +667,7 @@ impl RecordeApp {
                     &mut self.repo_ui.push_tag_after_create,
                     RichText::new("Push to remote after creating")
                         .color(theme::text_secondary())
-                        .size(12.0),
+                        .size(13.0),
                 );
                 ui.add_space(8.0);
                 let can = !self.repo_ui.create_tag_name.trim().is_empty();
@@ -739,7 +708,7 @@ impl RecordeApp {
                 ui.label(
                     RichText::new(format!("Delete tag \"{}\"?", tag_name))
                         .color(theme::text_primary())
-                        .size(13.0),
+                        .size(14.0),
                 );
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
@@ -881,7 +850,7 @@ impl RecordeApp {
                             ui.label(
                                 RichText::new(*label)
                                     .color(theme::text_primary())
-                                    .size(13.0),
+                                    .size(14.0),
                             );
                             if !shortcut.is_empty() {
                                 ui.with_layout(
@@ -891,7 +860,7 @@ impl RecordeApp {
                                         ui.label(
                                             RichText::new(*shortcut)
                                                 .color(theme::text_muted())
-                                                .size(11.0)
+                                                .size(12.0)
                                                 .monospace(),
                                         );
                                     },
@@ -1016,7 +985,7 @@ impl RecordeApp {
                                 false,
                                 RichText::new(name)
                                     .color(theme::text_secondary())
-                                    .size(12.5),
+                                    .size(13.0),
                             );
                             if r.clicked() {
                                 checkout = Some(name.clone());
@@ -1068,8 +1037,9 @@ impl RecordeApp {
         egui::Window::new("Settings")
             .collapsible(false)
             .resizable(true)
+            .default_width(680.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(20.0)))
             .show(ctx, |ui| {
                 ui.set_min_size(egui::vec2(520.0, 360.0));
                 ui.label(
@@ -1082,7 +1052,7 @@ impl RecordeApp {
 
                 ui.horizontal(|ui| {
                     settings_tab_button(ui, &mut self.settings_tab, SettingsTab::App, "App");
-                    settings_tab_button(ui, &mut self.settings_tab, SettingsTab::Ui, "UI");
+                    settings_tab_button(ui, &mut self.settings_tab, SettingsTab::Ui, "Appearance");
                     settings_tab_button(
                         ui,
                         &mut self.settings_tab,
@@ -1102,7 +1072,7 @@ impl RecordeApp {
 
                 egui::ScrollArea::vertical()
                     .id_source(("settings_content", self.settings_tab as u8))
-                    .max_height((ctx.screen_rect().height() - 190.0).max(160.0))
+                    .max_height((ctx.screen_rect().height() - 300.0).max(120.0))
                     .show(ui, |ui| match self.settings_tab {
                         SettingsTab::App => self.render_app_settings(ui),
                         SettingsTab::Ui => self.render_ui_settings(ctx, ui),
@@ -1149,7 +1119,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("UI scale")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -1160,18 +1130,20 @@ impl RecordeApp {
                     .text(""),
             );
             if ui.add(secondary_btn("Apply")).clicked() {
-                ctx.set_pixels_per_point(self.config.font_scale);
+                theme::apply_ui_scale(ctx, self.config.font_scale);
                 self.save_config();
             }
         });
-        ui.label(styled_muted("1.0 = default. Restart not required."));
+        ui.label(styled_muted(
+            "1.0 = your display’s native scale. Changes apply immediately.",
+        ));
 
         // ── Accessibility ────────────────────────────────────────────────────
         ui.add_space(12.0);
         ui.label(
             RichText::new("Accessibility")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -1198,7 +1170,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("Default editor")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -1229,7 +1201,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("Default pull strategy")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -1309,7 +1281,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("External tools")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -1361,7 +1333,7 @@ impl RecordeApp {
             ui.disable();
         }
         if let Some(error) = &self.add_account_error {
-            ui.label(RichText::new(error).color(theme::ACCENT_RED).size(11.5));
+            ui.label(RichText::new(error).color(theme::accent_red()).size(12.0));
             if self.account_task.is_none() && ui.button("Retry credential migration").clicked() {
                 self.account_task = Some(account_task(|| {
                     crate::auth::store::migrate()?;
@@ -1376,7 +1348,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("Provider Accounts")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -1389,7 +1361,7 @@ impl RecordeApp {
                     ProviderKind::GitHubCom | ProviderKind::GitHubEnterprise => {
                         theme::text_primary()
                     }
-                    ProviderKind::GitLabCom | ProviderKind::GitLabSelf => theme::ACCENT_RED,
+                    ProviderKind::GitLabCom | ProviderKind::GitLabSelf => theme::accent_red(),
                 };
                 let (dot_rect, _) =
                     ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
@@ -1399,7 +1371,7 @@ impl RecordeApp {
                 ui.label(
                     RichText::new(acc.label())
                         .color(theme::text_secondary())
-                        .size(12.0),
+                        .size(13.0),
                 );
                 ui.label(styled_muted(&acc.host));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1407,7 +1379,9 @@ impl RecordeApp {
                         .add_enabled(
                             self.account_task.is_none(),
                             egui::Button::new(
-                                RichText::new("Remove").color(theme::ACCENT_RED).size(11.5),
+                                RichText::new("Remove")
+                                    .color(theme::accent_red())
+                                    .size(12.0),
                             )
                             .fill(Color32::TRANSPARENT),
                         )
@@ -1471,7 +1445,7 @@ impl RecordeApp {
             ui.label(
                 RichText::new("Add Account")
                     .color(theme::text_secondary())
-                    .size(12.5)
+                    .size(13.0)
                     .strong(),
             );
             ui.add_space(4.0);
@@ -1487,13 +1461,13 @@ impl RecordeApp {
                 ] {
                     let active = self.add_account_provider == p;
                     let color = if active {
-                        theme::ACCENT_TEAL
+                        theme::accent_teal()
                     } else {
                         theme::text_muted()
                     };
                     if ui
                         .add(
-                            egui::Button::new(RichText::new(p.label()).size(11.5).color(color))
+                            egui::Button::new(RichText::new(p.label()).size(12.0).color(color))
                                 .fill(Color32::TRANSPARENT),
                         )
                         .clicked()
@@ -1520,7 +1494,7 @@ impl RecordeApp {
                     RichText::new(format!("{:<12}", "Token (PAT)"))
                         .monospace()
                         .color(theme::text_muted())
-                        .size(11.5),
+                        .size(12.0),
                 );
                 ui.add_sized(
                     [260.0, 28.0],
@@ -1531,7 +1505,7 @@ impl RecordeApp {
                 );
             });
             if let Some(ref err) = self.add_account_error.clone() {
-                ui.label(RichText::new(err).color(theme::ACCENT_RED).size(11.5));
+                ui.label(RichText::new(err).color(theme::accent_red()).size(12.0));
             }
             ui.add_space(6.0);
             let eff_host = if self.add_account_provider.needs_host() {
@@ -1584,7 +1558,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("SSH Keys")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -1596,7 +1570,7 @@ impl RecordeApp {
                     } else {
                         "running"
                     },
-                    theme::ACCENT_TEAL,
+                    theme::accent_teal(),
                 )
             } else {
                 ("not running / SSH_AUTH_SOCK unset", theme::text_muted())
@@ -1607,7 +1581,7 @@ impl RecordeApp {
                     RichText::new(format!("  {}", key))
                         .monospace()
                         .color(theme::text_muted())
-                        .size(10.5),
+                        .size(12.0),
                 );
             }
             for (name, exists) in &diag.key_files {
@@ -1628,7 +1602,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("Global Git identity")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.add_space(6.0);
@@ -1684,7 +1658,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("Repository")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.label(styled_muted(&path.display().to_string()));
@@ -1858,7 +1832,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("Repository Health")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -1899,13 +1873,13 @@ impl RecordeApp {
                     ui.label(
                         RichText::new(format!("{:<14}", "LFS"))
                             .color(theme::text_muted())
-                            .size(11.5)
+                            .size(12.0)
                             .monospace(),
                     );
                     ui.label(
                         RichText::new("not installed")
                             .color(theme::text_muted())
-                            .size(11.5),
+                            .size(12.0),
                     );
                 });
             } else if !caps.lfs_active {
@@ -1915,15 +1889,19 @@ impl RecordeApp {
                     ui.label(
                         RichText::new(format!("{:<14}", "LFS"))
                             .color(theme::text_muted())
-                            .size(11.5)
+                            .size(12.0)
                             .monospace(),
                     );
-                    ui.label(RichText::new("active").color(theme::ACCENT_TEAL).size(11.5));
+                    ui.label(
+                        RichText::new("active")
+                            .color(theme::accent_teal())
+                            .size(12.0),
+                    );
                     if !caps.lfs_patterns.is_empty() {
                         ui.label(
                             RichText::new(format!("({})", caps.lfs_patterns.join(", ")))
                                 .color(theme::text_secondary())
-                                .size(11.5),
+                                .size(12.0),
                         );
                     }
                 });
@@ -1933,16 +1911,16 @@ impl RecordeApp {
                 ui.label(
                     RichText::new(format!("{:<14}", "Submodules"))
                         .color(theme::text_muted())
-                        .size(11.5)
+                        .size(12.0)
                         .monospace(),
                 );
                 if submodules.is_empty() {
-                    ui.label(RichText::new("none").color(theme::text_muted()).size(11.5));
+                    ui.label(RichText::new("none").color(theme::text_muted()).size(12.0));
                 } else {
                     let count_label = ui.label(
                         RichText::new(format!("{}", submodules.len()))
-                            .color(theme::ACCENT_TEAL)
-                            .size(11.5),
+                            .color(theme::accent_teal())
+                            .size(12.0),
                     );
                     let tooltip: String = submodules
                         .iter()
@@ -1964,20 +1942,20 @@ impl RecordeApp {
                 ui.label(
                     RichText::new(format!("{:<14}", "Worktrees"))
                         .color(theme::text_muted())
-                        .size(11.5)
+                        .size(12.0)
                         .monospace(),
                 );
                 if worktrees.len() <= 1 {
                     ui.label(
                         RichText::new("1 (main only)")
                             .color(theme::text_muted())
-                            .size(11.5),
+                            .size(12.0),
                     );
                 } else {
                     let count_label = ui.label(
                         RichText::new(format!("{}", worktrees.len()))
-                            .color(theme::ACCENT_TEAL)
-                            .size(11.5),
+                            .color(theme::accent_teal())
+                            .size(12.0),
                     );
                     let tooltip: String = worktrees
                         .iter()
@@ -2094,7 +2072,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("Repository Git identity")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         settings_text_field(ui, "Name", &mut self.repo_ui.repo_git_name_input);
@@ -2115,7 +2093,7 @@ impl RecordeApp {
         ui.label(
             RichText::new("Remotes")
                 .color(theme::text_secondary())
-                .size(12.5)
+                .size(13.0)
                 .strong(),
         );
         if let Ok(repo) = git2::Repository::open(&path) {
@@ -2258,11 +2236,40 @@ impl RecordeApp {
         ui.label(
             RichText::new("Robert Recorde (c. 1510 – 1558) was a Welsh physician and mathematician. He invented the equals sign (=) and also introduced the pre-existing plus (+) and minus (−) signs to English speakers in 1557.")
                 .color(theme::text_muted())
-                .size(12.0)
+                .size(13.0)
                 .italics(),
         );
         ui.add_space(8.0);
         ui.label(styled_muted("Keyboard: Ctrl+K command palette, Ctrl+B branch switcher, Ctrl+F search, Ctrl+Shift+F fetch, Ctrl+Shift+P pull, Ctrl+Shift+U push, Ctrl+1 sidebar, Ctrl+2 commit graph, Ctrl+3 changes, Ctrl+4 diff."));
+        ui.add_space(16.0);
+        ui.collapsing("Third-party font licenses", |ui| {
+            for (name, license) in [
+                (
+                    "Inter 4.1",
+                    include_str!("../assets/fonts/Inter-LICENSE.txt"),
+                ),
+                (
+                    "Material Icons",
+                    include_str!("../assets/fonts/MaterialIcons-LICENSE.txt"),
+                ),
+                (
+                    "Noto Sans Symbols",
+                    include_str!("../assets/fonts/NotoSansSymbols-OFL.txt"),
+                ),
+                (
+                    "Noto Sans Symbols 2",
+                    include_str!("../assets/fonts/NotoSansSymbols2-OFL.txt"),
+                ),
+                (
+                    "Noto Emoji",
+                    include_str!("../assets/fonts/NotoEmoji-OFL.txt"),
+                ),
+            ] {
+                ui.collapsing(name, |ui| {
+                    ui.small(license);
+                });
+            }
+        });
     }
 
     fn render_pull_requests(&mut self, ctx: &Context) {
@@ -2332,10 +2339,10 @@ impl RecordeApp {
                     ui.add_space(8.0);
                     for f in [PrFilter::Open, PrFilter::Closed, PrFilter::All] {
                         let active = pr_filter == f;
-                        let color = if active { theme::ACCENT_TEAL } else { theme::text_muted() };
-                        let btn = ui.add(egui::Button::new(RichText::new(f.label()).size(12.0).color(color))
+                        let color = if active { theme::accent_teal() } else { theme::text_muted() };
+                        let btn = ui.add(egui::Button::new(RichText::new(f.label()).size(13.0).color(color))
                             .fill(Color32::TRANSPARENT));
-                        if active { ui.painter().line_segment([btn.rect.left_bottom(), btn.rect.right_bottom()], egui::Stroke::new(2.0, theme::ACCENT_TEAL)); }
+                        if active { ui.painter().line_segment([btn.rect.left_bottom(), btn.rect.right_bottom()], egui::Stroke::new(2.0, theme::accent_teal())); }
                         if btn.clicked() && !active { new_filter = Some(f); }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2362,14 +2369,14 @@ impl RecordeApp {
 
                 if pr_loading {
                     ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new("Loading…").color(theme::text_muted()).size(13.0));
+                        ui.label(RichText::new("Loading…").color(theme::text_muted()).size(14.0));
                     });
                     return;
                 }
 
                 if let Some(ref err) = pr_error {
                     ui.add_space(8.0);
-                    ui.label(RichText::new(err).color(theme::ACCENT_RED).size(12.0));
+                    ui.label(RichText::new(err).color(theme::accent_red()).size(13.0));
                     ui.add_space(4.0);
                     ui.label(styled_muted("Add a token in Settings > Accounts & SSH to enable in-app PR listing."));
                     return;
@@ -2383,7 +2390,7 @@ impl RecordeApp {
                     // ── Left: PR list ─────────────────────────────────────
                     egui::ScrollArea::vertical().id_source("pr_list").show(&mut cols[0], |ui| {
                         if visible.is_empty() {
-                            ui.label(RichText::new("No pull requests.").color(theme::text_muted()).size(12.0));
+                            ui.label(RichText::new("No pull requests.").color(theme::text_muted()).size(13.0));
                         }
                         for (i, pr) in &visible {
                             let is_sel = pr_selected == Some(*i);
@@ -2395,25 +2402,25 @@ impl RecordeApp {
                                     ui.add_space(8.0);
                                     // State dot
                                     let dot_color = match pr.state {
-                                        PrState::Open   => theme::ACCENT_GREEN,
+                                        PrState::Open   => theme::accent_green(),
                                         PrState::Draft  => theme::text_muted(),
-                                        PrState::Merged => theme::ACCENT_PURPLE,
-                                        PrState::Closed => theme::ACCENT_RED,
+                                        PrState::Merged => theme::accent_purple(),
+                                        PrState::Closed => theme::accent_red(),
                                     };
                                     let (dr, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                                     ui.painter().circle_filled(dr.center(), 4.0, dot_color);
                                     ui.add_space(4.0);
                                     ui.vertical(|ui| {
-                                        ui.label(RichText::new(format!("#{} {}", pr.number, &pr.title)).color(theme::text_primary()).size(12.5));
-                                        ui.label(RichText::new(format!("{} → {}  by @{}", pr.head_ref, pr.base_ref, pr.author)).color(theme::text_muted()).size(11.0));
+                                        ui.label(RichText::new(format!("#{} {}", pr.number, &pr.title)).color(theme::text_primary()).size(13.0));
+                                        ui.label(RichText::new(format!("{} → {}  by @{}", pr.head_ref, pr.base_ref, pr.author)).color(theme::text_muted()).size(12.0));
                                         // Check state badge
                                         if let Some(ref cs) = pr.check_state {
                                             let (cs_text, cs_color) = match cs {
-                                                CheckState::Success => ("✓ checks passed", theme::ACCENT_GREEN),
-                                                CheckState::Failure => ("✗ checks failed", theme::ACCENT_RED),
-                                                CheckState::Pending => ("… checks pending", theme::ACCENT_YELLOW),
+                                                CheckState::Success => ("✓ checks passed", theme::accent_green()),
+                                                CheckState::Failure => ("✗ checks failed", theme::accent_red()),
+                                                CheckState::Pending => ("… checks pending", theme::accent_yellow()),
                                             };
-                                            ui.label(RichText::new(cs_text).size(10.5).color(cs_color));
+                                            ui.label(RichText::new(cs_text).size(12.0).color(cs_color));
                                         }
                                     });
                                 });
@@ -2432,24 +2439,24 @@ impl RecordeApp {
                         if let Some(pr) = pr_list.get(idx) {
                             cols[1].add_space(4.0);
                             cols[1].horizontal(|ui| {
-                                ui.label(RichText::new(format!("#{}", pr.number)).color(theme::text_muted()).size(12.0));
+                                ui.label(RichText::new(format!("#{}", pr.number)).color(theme::text_muted()).size(13.0));
                                 ui.add_space(6.0);
-                                ui.label(RichText::new(&pr.title).color(theme::text_primary()).size(13.0).strong());
+                                ui.label(RichText::new(&pr.title).color(theme::text_primary()).size(14.0).strong());
                             });
                             cols[1].add_space(4.0);
                             cols[1].horizontal(|ui| {
-                                ui.label(RichText::new(format!("{} → {}", pr.head_ref, pr.base_ref)).color(theme::text_muted()).size(11.5));
+                                ui.label(RichText::new(format!("{} → {}", pr.head_ref, pr.base_ref)).color(theme::text_muted()).size(12.0));
                                 ui.add_space(8.0);
-                                ui.label(RichText::new(format!("by @{}", pr.author)).color(theme::text_secondary()).size(11.5));
+                                ui.label(RichText::new(format!("by @{}", pr.author)).color(theme::text_secondary()).size(12.0));
                                 ui.add_space(8.0);
-                                ui.label(RichText::new(format!("updated {}", crate::theme::relative_time(pr.updated_ts))).color(theme::text_muted()).size(11.0));
+                                ui.label(RichText::new(format!("updated {}", crate::theme::relative_time(pr.updated_ts))).color(theme::text_muted()).size(12.0));
                             });
                             if !pr.label_names.is_empty() {
                                 cols[1].add_space(2.0);
                                 cols[1].horizontal(|ui| {
                                     for label in &pr.label_names {
-                                        ui.label(RichText::new(label).size(10.5).color(theme::ACCENT_BLUE)
-                                            .background_color(theme::ACCENT_BLUE.gamma_multiply(0.15)));
+                                        ui.label(RichText::new(label).size(12.0).color(theme::accent_blue())
+                                            .background_color(theme::accent_blue().gamma_multiply(0.15)));
                                         ui.add_space(4.0);
                                     }
                                 });
@@ -2463,10 +2470,10 @@ impl RecordeApp {
                             cols[1].separator();
                             cols[1].add_space(4.0);
                             if pr.body.trim().is_empty() {
-                                cols[1].label(RichText::new("No description.").color(theme::text_muted()).size(12.0));
+                                cols[1].label(RichText::new("No description.").color(theme::text_muted()).size(13.0));
                             } else {
                                 egui::ScrollArea::vertical().id_source("pr_body").max_height(200.0).show(&mut cols[1], |ui| {
-                                    ui.label(RichText::new(pr.body.trim()).color(theme::text_secondary()).size(12.0));
+                                    ui.label(RichText::new(pr.body.trim()).color(theme::text_secondary()).size(13.0));
                                 });
                             }
                             cols[1].add_space(8.0);
@@ -2495,7 +2502,7 @@ impl RecordeApp {
                         }
                     } else {
                         cols[1].centered_and_justified(|ui| {
-                            ui.label(RichText::new("Select a pull request to view details.").color(theme::text_muted()).size(12.0));
+                            ui.label(RichText::new("Select a pull request to view details.").color(theme::text_muted()).size(13.0));
                         });
                     }
                 });
@@ -2769,7 +2776,7 @@ impl eframe::App for RecordeApp {
 
         // Title bar
         egui::TopBottomPanel::top("title_bar")
-            .exact_height(36.0)
+            .exact_height(40.0)
             .frame(
                 egui::Frame::none()
                     .fill(theme::bg_titlebar())
@@ -2782,7 +2789,11 @@ impl eframe::App for RecordeApp {
                     Stroke::new(1.0, theme::border()),
                 );
                 ui.horizontal_centered(|ui| {
-                    self.show_menu_contents(ctx, ui);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(480.0, 32.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| self.show_menu_contents(ctx, ui),
+                    );
 
                     ui.add_space(14.0);
                     let mut layout_changed = false;
@@ -2815,6 +2826,16 @@ impl eframe::App for RecordeApp {
 
         self.render_repo_tabs(ctx);
 
+        let has_workspace = {
+            let state = self.state.lock().unwrap();
+            state.repo_path.is_some() || state.repo_load_path.is_some()
+        };
+        if !has_workspace {
+            self.show_welcome(ctx);
+            self.show_operation_overlays(ctx);
+            return;
+        }
+
         // Toolbar
         let (search_active, show_all_branches) = {
             let s = self.state.lock().unwrap();
@@ -2829,6 +2850,150 @@ impl eframe::App for RecordeApp {
         );
         if let Some(a) = toolbar_action {
             self.handle_toolbar(ctx, a);
+        }
+
+        if self.config.show_sidebar {
+            let sidebar_response =
+                egui::SidePanel::left(egui::Id::new(("sidebar", &self.observed_repo)))
+                    .resizable(true)
+                    .default_width(self.config.sidebar_width.unwrap_or(216.0))
+                    .width_range(180.0..=360.0)
+                    .frame(egui::Frame::none())
+                    .show(ctx, |ui| {
+                        let a = self.sidebar.show(ui);
+                        if let Some(sa) = a {
+                            self.handle_sidebar(sa);
+                        }
+                        if self.state.lock().unwrap().focused_pane == 1 {
+                            focus_ring(ui);
+                        }
+                    });
+            let w = sidebar_response.response.rect.width();
+            if self
+                .config
+                .sidebar_width
+                .map_or(true, |old| (old - w).abs() > 1.0)
+            {
+                self.config.sidebar_width = Some(w);
+                self.save_config();
+            }
+        }
+
+        if self.config.show_right_panel {
+            let right_response =
+                egui::SidePanel::right(egui::Id::new(("right_panel_v2", &self.observed_repo)))
+                    .resizable(true)
+                    .default_width(self.config.right_panel_width.unwrap_or(344.0))
+                    .width_range(300.0..=520.0)
+                    .frame(egui::Frame::none())
+                    .show(ctx, |ui| {
+                        let selected_commit = self.state.lock().unwrap().selected_commit.clone();
+                        let has_commit = selected_commit.is_some();
+                        let has_dirty = self.state.lock().unwrap().dirty_count > 0;
+                        if let Some(ref oid) = selected_commit {
+                            if self.repo_ui.last_auto_detail_commit.as_deref() != Some(oid) {
+                                self.repo_ui.right_tab = RightTab::Details;
+                                self.repo_ui.last_auto_detail_commit = Some(oid.clone());
+                            }
+                        } else {
+                            self.repo_ui.last_auto_detail_commit = None;
+                            if self.state.lock().unwrap().focused_pane == 3 {
+                                self.repo_ui.right_tab = RightTab::Changes;
+                            }
+                        }
+
+                        // Tab bar
+                        let tab_h = 48.0;
+                        let tab_rect = egui::Rect::from_min_size(
+                            ui.min_rect().min,
+                            egui::Vec2::new(ui.available_width(), tab_h),
+                        );
+                        ui.painter().rect_filled(tab_rect, 0.0, theme::bg_panel());
+                        ui.painter().line_segment(
+                            [tab_rect.left_bottom(), tab_rect.right_bottom()],
+                            Stroke::new(1.0, theme::border()),
+                        );
+
+                        ui.allocate_ui_at_rect(tab_rect, |ui| {
+                            ui.horizontal_centered(|ui| {
+                                ui.add_space(12.0);
+                                for (tab, lbl) in &[
+                                    (RightTab::Changes, "Changes"),
+                                    (RightTab::Details, "Details"),
+                                ] {
+                                    let sel = self.repo_ui.right_tab == *tab;
+                                    let text_col = if sel {
+                                        theme::text_primary()
+                                    } else {
+                                        theme::text_muted()
+                                    };
+                                    let btn = ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new(*lbl).size(14.0).color(text_col),
+                                            )
+                                            .fill(Color32::TRANSPARENT)
+                                            .stroke(Stroke::NONE),
+                                        )
+                                        .on_hover_text(match *tab {
+                                            RightTab::Changes => {
+                                                "Show working tree changes and commit form"
+                                            }
+                                            RightTab::Details => "Show selected commit details",
+                                        });
+                                    // Teal underline for active tab (matches mockup)
+                                    if sel {
+                                        let br = btn.rect;
+                                        ui.painter().line_segment(
+                                            [br.left_bottom(), br.right_bottom()],
+                                            Stroke::new(2.0, theme::accent_teal()),
+                                        );
+                                    }
+                                    if btn.clicked() {
+                                        if *tab == RightTab::Changes && has_commit && !has_dirty {
+                                            let mut s = self.state.lock().unwrap();
+                                            s.selected_commit = None;
+                                            s.selected_commit_detail = None;
+                                            s.selected_file = None;
+                                            s.current_diff = None;
+                                            self.repo_ui.last_auto_detail_commit = None;
+                                        }
+                                        self.repo_ui.right_tab = *tab;
+                                    }
+                                    ui.add_space(16.0);
+                                }
+                            });
+                        });
+
+                        let content_rect = egui::Rect::from_min_max(
+                            egui::Pos2::new(ui.min_rect().min.x, ui.min_rect().min.y + tab_h),
+                            ui.max_rect().max,
+                        );
+                        // Manual panel content keeps long labels from enlarging the resizable sidebar.
+                        let mut content = ui.child_ui(
+                            content_rect,
+                            egui::Layout::top_down(egui::Align::Min),
+                            None,
+                        );
+                        content.set_clip_rect(content_rect);
+                        match self.repo_ui.right_tab {
+                            RightTab::Changes => self.staging_panel.show(&mut content),
+                            RightTab::Details => self.detail_panel.show(&mut content),
+                        }
+                        ui.set_min_size(ui.available_size());
+                        if self.state.lock().unwrap().focused_pane == 3 {
+                            focus_ring(ui);
+                        }
+                    });
+            let w = right_response.response.rect.width();
+            if self
+                .config
+                .right_panel_width
+                .map_or(true, |old| (old - w).abs() > 1.0)
+            {
+                self.config.right_panel_width = Some(w);
+                self.save_config();
+            }
         }
 
         if self.config.show_diff_panel {
@@ -2856,145 +3021,6 @@ impl eframe::App for RecordeApp {
                 .map_or(true, |old| (old - h).abs() > 1.0)
             {
                 self.config.diff_panel_height = Some(h);
-                self.save_config();
-            }
-        }
-
-        if self.config.show_sidebar {
-            let sidebar_response =
-                egui::SidePanel::left(egui::Id::new(("sidebar", &self.observed_repo)))
-                    .resizable(true)
-                    .default_width(self.config.sidebar_width.unwrap_or(250.0))
-                    .width_range(180.0..=360.0)
-                    .frame(egui::Frame::none())
-                    .show(ctx, |ui| {
-                        let a = self.sidebar.show(ui);
-                        if let Some(sa) = a {
-                            self.handle_sidebar(sa);
-                        }
-                        if self.state.lock().unwrap().focused_pane == 1 {
-                            focus_ring(ui);
-                        }
-                    });
-            let w = sidebar_response.response.rect.width();
-            if self
-                .config
-                .sidebar_width
-                .map_or(true, |old| (old - w).abs() > 1.0)
-            {
-                self.config.sidebar_width = Some(w);
-                self.save_config();
-            }
-        }
-
-        if self.config.show_right_panel {
-            let right_response =
-                egui::SidePanel::right(egui::Id::new(("right_panel_v2", &self.observed_repo)))
-                    .resizable(true)
-                    .default_width(self.config.right_panel_width.unwrap_or(240.0))
-                    .width_range(160.0..=560.0)
-                    .frame(egui::Frame::none())
-                    .show(ctx, |ui| {
-                        let selected_commit = self.state.lock().unwrap().selected_commit.clone();
-                        let has_commit = selected_commit.is_some();
-                        let has_dirty = self.state.lock().unwrap().dirty_count > 0;
-                        if let Some(ref oid) = selected_commit {
-                            if self.repo_ui.last_auto_detail_commit.as_deref() != Some(oid) {
-                                self.repo_ui.right_tab = RightTab::Details;
-                                self.repo_ui.last_auto_detail_commit = Some(oid.clone());
-                            }
-                        } else {
-                            self.repo_ui.last_auto_detail_commit = None;
-                            if self.state.lock().unwrap().focused_pane == 3 {
-                                self.repo_ui.right_tab = RightTab::Changes;
-                            }
-                        }
-
-                        // Tab bar
-                        let tab_h = 38.0;
-                        let tab_rect = egui::Rect::from_min_size(
-                            ui.min_rect().min,
-                            egui::Vec2::new(ui.available_width(), tab_h),
-                        );
-                        ui.painter().rect_filled(tab_rect, 0.0, theme::bg_panel());
-                        ui.painter().line_segment(
-                            [tab_rect.left_bottom(), tab_rect.right_bottom()],
-                            Stroke::new(1.0, theme::border()),
-                        );
-
-                        ui.allocate_ui_at_rect(tab_rect, |ui| {
-                            ui.horizontal_centered(|ui| {
-                                ui.add_space(12.0);
-                                for (tab, lbl) in &[
-                                    (
-                                        RightTab::Changes,
-                                        if has_dirty { "Changes  ●" } else { "Changes" },
-                                    ),
-                                    (RightTab::Details, "Details"),
-                                ] {
-                                    let sel = self.repo_ui.right_tab == *tab;
-                                    let text_col = if sel {
-                                        theme::text_primary()
-                                    } else {
-                                        theme::text_muted()
-                                    };
-                                    let btn = ui
-                                        .add(
-                                            egui::Button::new(
-                                                RichText::new(*lbl).size(13.0).color(text_col),
-                                            )
-                                            .fill(Color32::TRANSPARENT)
-                                            .stroke(Stroke::NONE),
-                                        )
-                                        .on_hover_text(match *tab {
-                                            RightTab::Changes => {
-                                                "Show working tree changes and commit form"
-                                            }
-                                            RightTab::Details => "Show selected commit details",
-                                        });
-                                    // Teal underline for active tab (matches mockup)
-                                    if sel {
-                                        let br = btn.rect;
-                                        ui.painter().line_segment(
-                                            [br.left_bottom(), br.right_bottom()],
-                                            Stroke::new(2.0, theme::ACCENT_TEAL),
-                                        );
-                                    }
-                                    if btn.clicked() {
-                                        if *tab == RightTab::Changes && has_commit && !has_dirty {
-                                            let mut s = self.state.lock().unwrap();
-                                            s.selected_commit = None;
-                                            s.selected_commit_detail = None;
-                                            s.selected_file = None;
-                                            s.current_diff = None;
-                                            self.repo_ui.last_auto_detail_commit = None;
-                                        }
-                                        self.repo_ui.right_tab = *tab;
-                                    }
-                                    ui.add_space(16.0);
-                                }
-                            });
-                        });
-
-                        let content_rect = egui::Rect::from_min_max(
-                            egui::Pos2::new(ui.min_rect().min.x, ui.min_rect().min.y + tab_h),
-                            ui.max_rect().max,
-                        );
-                        ui.allocate_ui_at_rect(content_rect, |ui| match self.repo_ui.right_tab {
-                            RightTab::Changes => self.staging_panel.show(ui),
-                            RightTab::Details => self.detail_panel.show(ui),
-                        });
-                        if self.state.lock().unwrap().focused_pane == 3 {
-                            focus_ring(ui);
-                        }
-                    });
-            let w = right_response.response.rect.width();
-            if self
-                .config
-                .right_panel_width
-                .map_or(true, |old| (old - w).abs() > 1.0)
-            {
-                self.config.right_panel_width = Some(w);
                 self.save_config();
             }
         }
@@ -3067,7 +3093,7 @@ impl RecordeApp {
             ui.label(
                 RichText::new(format!("Checkout commit {}?", short))
                     .color(theme::text_primary())
-                    .size(13.0),
+                    .size(14.0),
             );
             ui.add_space(6.0);
             ui.label(styled_muted("This will put you in detached HEAD state."));
@@ -3209,7 +3235,7 @@ impl RecordeApp {
                 ui.label(
                     RichText::new(dest_str)
                         .color(theme::text_secondary())
-                        .size(12.0),
+                        .size(13.0),
                 );
                 if ui.add(secondary_btn("Browse")).clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
@@ -3298,7 +3324,7 @@ impl RecordeApp {
                 ui.label(
                     RichText::new(path_str)
                         .color(theme::text_secondary())
-                        .size(12.0),
+                        .size(13.0),
                 );
                 if ui.add(secondary_btn("Browse")).clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
@@ -3389,20 +3415,20 @@ impl RecordeApp {
                                 ui.label(
                                     RichText::new(&entry.short_oid)
                                         .monospace()
-                                        .color(theme::ACCENT_TEAL)
-                                        .size(11.5),
+                                        .color(theme::accent_teal())
+                                        .size(12.0),
                                 );
                                 ui.add_space(6.0);
                                 ui.label(
                                     RichText::new(&entry.refname)
                                         .color(theme::text_muted())
-                                        .size(11.0),
+                                        .size(12.0),
                                 );
                                 ui.add_space(6.0);
                                 ui.label(
                                     RichText::new(&entry.message)
                                         .color(theme::text_secondary())
-                                        .size(11.5),
+                                        .size(12.0),
                                 );
                             })
                             .response
@@ -3424,7 +3450,7 @@ impl RecordeApp {
                             ui.label(
                                 RichText::new("No reflog entries.")
                                     .color(theme::text_muted())
-                                    .size(12.0),
+                                    .size(13.0),
                             );
                         }
                     });
@@ -3435,7 +3461,7 @@ impl RecordeApp {
                     ui.label(
                         RichText::new("Branch name for recovery:")
                             .color(theme::text_secondary())
-                            .size(12.0),
+                            .size(13.0),
                     );
                     ui.add_space(4.0);
                     ui.add(
@@ -3507,10 +3533,10 @@ impl RecordeApp {
                 ui.label(
                     RichText::new("Start a bisect session to find which commit introduced a bug.")
                         .color(theme::text_secondary())
-                        .size(12.0),
+                        .size(13.0),
                 );
                 ui.add_space(8.0);
-                ui.label(RichText::new("Select the known-bad commit in the graph, then mark it bad. Select a known-good commit and mark it good.").color(theme::text_muted()).size(11.5));
+                ui.label(RichText::new("Select the known-bad commit in the graph, then mark it bad. Select a known-good commit and mark it good.").color(theme::text_muted()).size(12.0));
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.add(primary_btn("Start Bisect")).clicked() {
@@ -3523,8 +3549,8 @@ impl RecordeApp {
             } else {
                 ui.label(
                     RichText::new("Bisect in progress")
-                        .color(theme::ACCENT_TEAL)
-                        .size(12.5)
+                        .color(theme::accent_teal())
+                        .size(13.0)
                         .strong(),
                 );
                 ui.add_space(6.0);
@@ -3534,13 +3560,13 @@ impl RecordeApp {
                         ui.label(
                             RichText::new("Testing:")
                                 .color(theme::text_muted())
-                                .size(12.0),
+                                .size(13.0),
                         );
                         ui.label(
                             RichText::new(&oid[..7.min(oid.len())])
                                 .monospace()
-                                .color(theme::ACCENT_TEAL)
-                                .size(12.0),
+                                .color(theme::accent_teal())
+                                .size(13.0),
                         );
                     });
                     ui.add_space(4.0);
@@ -3552,13 +3578,13 @@ impl RecordeApp {
                     ui.label(
                         RichText::new("Select a commit in the graph, then mark it good or bad.")
                             .color(theme::text_muted())
-                            .size(11.5),
+                            .size(12.0),
                     );
                 } else {
                     ui.label(
                         RichText::new(format!("Selected: {}", short))
                             .color(theme::text_secondary())
-                            .size(12.0),
+                            .size(13.0),
                     );
                 }
                 ui.add_space(10.0);
@@ -3569,7 +3595,7 @@ impl RecordeApp {
                         .add_enabled(
                             has_sel,
                             egui::Button::new(RichText::new("Mark Good").color(Color32::WHITE))
-                                .fill(theme::ACCENT_GREEN)
+                                .fill(theme::accent_green())
                                 .min_size([110.0, 26.0].into()),
                         )
                         .clicked()
@@ -3581,7 +3607,7 @@ impl RecordeApp {
                         .add_enabled(
                             has_sel,
                             egui::Button::new(RichText::new("Mark Bad").color(Color32::WHITE))
-                                .fill(theme::ACCENT_RED)
+                                .fill(theme::accent_red())
                                 .min_size([110.0, 26.0].into()),
                         )
                         .clicked()
@@ -3656,24 +3682,24 @@ impl RecordeApp {
             .default_size([800.0, 560.0])
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Base:").color(theme::text_muted()).size(11.5));
+                    ui.label(RichText::new("Base:").color(theme::text_muted()).size(12.0));
                     ui.label(
                         RichText::new(&base_oid[..7.min(base_oid.len())])
                             .monospace()
-                            .color(theme::ACCENT_TEAL)
-                            .size(11.5),
+                            .color(theme::accent_teal())
+                            .size(12.0),
                     );
                     ui.add_space(12.0);
                     ui.label(
                         RichText::new("Compare:")
                             .color(theme::text_muted())
-                            .size(11.5),
+                            .size(12.0),
                     );
                     ui.label(
                         RichText::new(&compare_oid[..7.min(compare_oid.len())])
                             .monospace()
-                            .color(theme::ACCENT_TEAL)
-                            .size(11.5),
+                            .color(theme::accent_teal())
+                            .size(12.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
@@ -3691,7 +3717,7 @@ impl RecordeApp {
                     cols[0].label(
                         RichText::new(format!("Changed files ({})", compare_files.len()))
                             .color(theme::text_muted())
-                            .size(11.0)
+                            .size(12.0)
                             .strong(),
                     );
                     cols[0].add_space(4.0);
@@ -3702,7 +3728,7 @@ impl RecordeApp {
                             for file in &compare_files {
                                 let is_sel = compare_sel.as_deref() == Some(&file.path);
                                 let color = if is_sel {
-                                    theme::bg_app()
+                                    theme::text_primary()
                                 } else {
                                     theme::text_secondary()
                                 };
@@ -3713,7 +3739,7 @@ impl RecordeApp {
                                             file.path.rsplit('/').next().unwrap_or(&file.path),
                                         )
                                         .color(color)
-                                        .size(12.0),
+                                        .size(13.0),
                                     )
                                     .on_hover_text(&file.path);
                                 if resp.clicked() {
@@ -3724,7 +3750,7 @@ impl RecordeApp {
                                 ui.label(
                                     RichText::new("Loading…")
                                         .color(theme::text_muted())
-                                        .size(12.0),
+                                        .size(13.0),
                                 );
                             }
                         });
@@ -3734,7 +3760,7 @@ impl RecordeApp {
                         cols[1].label(
                             RichText::new(format!("+{}  −{}", diff.additions, diff.deletions))
                                 .color(theme::text_muted())
-                                .size(11.0),
+                                .size(12.0),
                         );
                         cols[1].add_space(4.0);
                         egui::ScrollArea::vertical()
@@ -3745,14 +3771,14 @@ impl RecordeApp {
                                     ui.label(
                                         RichText::new(&hunk.header)
                                             .monospace()
-                                            .color(theme::ACCENT_PURPLE)
-                                            .size(11.0)
+                                            .color(theme::accent_purple())
+                                            .size(12.0)
                                             .background_color(theme::bg_diff_hunk()),
                                     );
                                     for line in &hunk.lines {
                                         let (color, bg) = match line.origin {
-                                            '+' => (theme::ACCENT_GREEN, theme::bg_diff_add()),
-                                            '-' => (theme::ACCENT_RED, theme::bg_diff_del()),
+                                            '+' => (theme::accent_green(), theme::bg_diff_add()),
+                                            '-' => (theme::accent_red(), theme::bg_diff_del()),
                                             _ => (theme::text_secondary(), Color32::TRANSPARENT),
                                         };
                                         let text = format!(
@@ -3763,7 +3789,7 @@ impl RecordeApp {
                                         let label = egui::RichText::new(&text)
                                             .monospace()
                                             .color(color)
-                                            .size(11.5);
+                                            .size(12.0);
                                         if bg != Color32::TRANSPARENT {
                                             ui.label(label.background_color(bg));
                                         } else {
@@ -3776,13 +3802,13 @@ impl RecordeApp {
                         cols[1].label(
                             RichText::new("Loading diff…")
                                 .color(theme::text_muted())
-                                .size(12.0),
+                                .size(13.0),
                         );
                     } else {
                         cols[1].label(
                             RichText::new("Select a file to view its diff.")
                                 .color(theme::text_muted())
-                                .size(12.0),
+                                .size(13.0),
                         );
                     }
                 });
@@ -3861,7 +3887,7 @@ impl RecordeApp {
                                     false,
                                     RichText::new(name)
                                         .color(theme::text_secondary())
-                                        .size(12.5),
+                                        .size(13.0),
                                 )
                                 .clicked()
                             {
@@ -3918,12 +3944,12 @@ impl RecordeApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("⟳").color(theme::ACCENT_YELLOW).size(14.0));
+                    ui.label(RichText::new("⟳").color(theme::accent_yellow()).size(14.0));
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(label)
-                            .color(theme::ACCENT_YELLOW)
-                            .size(12.5)
+                            .color(theme::accent_yellow())
+                            .size(13.0)
                             .strong(),
                     );
                     ui.add_space(16.0);
@@ -3932,9 +3958,9 @@ impl RecordeApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("Continue").color(Color32::WHITE).size(12.0),
+                                RichText::new("Continue").color(Color32::WHITE).size(13.0),
                             )
-                            .fill(theme::ACCENT_TEAL)
+                            .fill(theme::accent_teal())
                             .rounding(5.0)
                             .min_size(egui::Vec2::new(72.0, 24.0)),
                         )
@@ -3949,7 +3975,7 @@ impl RecordeApp {
                                 egui::Button::new(
                                     RichText::new("Skip")
                                         .color(theme::text_secondary())
-                                        .size(12.0),
+                                        .size(13.0),
                                 )
                                 .fill(Color32::TRANSPARENT)
                                 .stroke(Stroke::new(1.0, theme::border()))
@@ -3965,10 +3991,10 @@ impl RecordeApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("Abort").color(theme::ACCENT_RED).size(12.0),
+                                RichText::new("Abort").color(theme::accent_red()).size(13.0),
                             )
                             .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::new(1.0, theme::ACCENT_RED.gamma_multiply(0.5)))
+                            .stroke(Stroke::new(1.0, theme::accent_red().gamma_multiply(0.5)))
                             .rounding(5.0)
                             .min_size(egui::Vec2::new(52.0, 24.0)),
                         )
@@ -4180,100 +4206,108 @@ impl RecordeApp {
         let mut open = None;
         let mut close = None;
         let mut workspace = None;
-        egui::TopBottomPanel::top("repository_tabs").show(ctx, |ui| {
-            egui::ScrollArea::horizontal().show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(path) = &active {
-                        let favorite = self.config.favorites.contains(path);
-                        if ui
-                            .small_button(if favorite { "Unfavorite" } else { "Favorite" })
-                            .clicked()
-                        {
-                            if favorite {
-                                self.config.favorites.retain(|p| p != path);
-                            } else {
-                                self.config.favorites.push(path.clone());
-                            }
-                            self.save_config();
-                        }
-                    }
-                    egui::ComboBox::from_id_source("repo_workspaces")
-                        .selected_text("Workspaces")
-                        .show_ui(ui, |ui| {
-                            ui.strong("Favorites");
-                            for path in &self.config.favorites {
-                                if ui.button(path.display().to_string()).clicked() {
-                                    open = Some(path.clone());
-                                }
-                            }
-                            ui.separator();
-                            ui.strong("Saved workspaces");
-                            for (name, paths) in &self.config.workspaces {
-                                if ui.button(name).clicked() {
-                                    workspace = Some(paths.clone());
-                                }
-                            }
-                            ui.separator();
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.workspace_name)
-                                    .hint_text("Workspace name"),
-                            );
+        egui::TopBottomPanel::top("repository_tabs")
+            .exact_height(44.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::bg_titlebar())
+                    .inner_margin(egui::Margin::symmetric(16.0, 6.0)),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if let Some(path) = &active {
+                            let favorite = self.config.favorites.contains(path);
                             if ui
-                                .add_enabled(
-                                    !self.workspace_name.trim().is_empty()
-                                        && !self.config.open_repos.is_empty(),
-                                    egui::Button::new("Save open tabs as workspace"),
-                                )
+                                .small_button(if favorite { "★" } else { "☆" })
+                                .on_hover_text("Toggle repository favorite")
                                 .clicked()
                             {
-                                self.config.workspaces.insert(
-                                    self.workspace_name.trim().to_string(),
-                                    self.config.open_repos.clone(),
+                                if favorite {
+                                    self.config.favorites.retain(|p| p != path);
+                                } else {
+                                    self.config.favorites.push(path.clone());
+                                }
+                                self.save_config();
+                            }
+                        }
+                        egui::ComboBox::from_id_source("repo_workspaces")
+                            .selected_text("Workspaces")
+                            .show_ui(ui, |ui| {
+                                ui.strong("Favorites");
+                                for path in &self.config.favorites {
+                                    if ui.button(path.display().to_string()).clicked() {
+                                        open = Some(path.clone());
+                                    }
+                                }
+                                ui.separator();
+                                ui.strong("Saved workspaces");
+                                for (name, paths) in &self.config.workspaces {
+                                    if ui.button(name).clicked() {
+                                        workspace = Some(paths.clone());
+                                    }
+                                }
+                                ui.separator();
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.workspace_name)
+                                        .hint_text("Workspace name"),
                                 );
-                                self.save_config();
-                            }
-                            if self
-                                .config
-                                .workspaces
-                                .contains_key(self.workspace_name.trim())
-                                && ui.button("Remove saved workspace").clicked()
+                                if ui
+                                    .add_enabled(
+                                        !self.workspace_name.trim().is_empty()
+                                            && !self.config.open_repos.is_empty(),
+                                        egui::Button::new("Save open tabs as workspace"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.config.workspaces.insert(
+                                        self.workspace_name.trim().to_string(),
+                                        self.config.open_repos.clone(),
+                                    );
+                                    self.save_config();
+                                }
+                                if self
+                                    .config
+                                    .workspaces
+                                    .contains_key(self.workspace_name.trim())
+                                    && ui.button("Remove saved workspace").clicked()
+                                {
+                                    self.config.workspaces.remove(self.workspace_name.trim());
+                                    self.save_config();
+                                }
+                            });
+                        for path in &self.config.open_repos {
+                            let label = path
+                                .file_name()
+                                .unwrap_or(path.as_os_str())
+                                .to_string_lossy();
+                            if ui
+                                .selectable_label(active.as_ref() == Some(path), label.as_ref())
+                                .on_hover_text(path.display().to_string())
+                                .clicked()
                             {
-                                self.config.workspaces.remove(self.workspace_name.trim());
-                                self.save_config();
+                                open = Some(path.clone());
                             }
-                        });
-                    for path in &self.config.open_repos {
-                        let label = path
-                            .file_name()
-                            .unwrap_or(path.as_os_str())
-                            .to_string_lossy();
+                            if self.config.open_repos.len() > 1
+                                && ui
+                                    .small_button("×")
+                                    .on_hover_text("Close repository tab")
+                                    .clicked()
+                            {
+                                close = Some(path.clone());
+                            }
+                            ui.separator();
+                        }
                         if ui
-                            .selectable_label(active.as_ref() == Some(path), label.as_ref())
-                            .on_hover_text(path.display().to_string())
+                            .small_button("+")
+                            .on_hover_text("Open repository")
                             .clicked()
                         {
-                            open = Some(path.clone());
+                            open = rfd::FileDialog::new().pick_folder();
                         }
-                        if self.config.open_repos.len() > 1
-                            && ui
-                                .small_button("×")
-                                .on_hover_text("Close repository tab")
-                                .clicked()
-                        {
-                            close = Some(path.clone());
-                        }
-                        ui.separator();
-                    }
-                    if ui
-                        .small_button("+")
-                        .on_hover_text("Open repository")
-                        .clicked()
-                    {
-                        open = rfd::FileDialog::new().pick_folder();
-                    }
+                    });
                 });
             });
-        });
         if let Some(paths) = workspace {
             if let Some(first) = paths.first() {
                 open = Some(first.clone());
@@ -4338,17 +4372,17 @@ impl RecordeApp {
                 .show(ctx, |ui| {
                     egui::Frame::none()
                         .fill(theme::bg_elevated())
-                        .stroke(Stroke::new(1.0, theme::ACCENT_TEAL))
+                        .stroke(Stroke::new(1.0, theme::accent_teal()))
                         .rounding(8.0)
                         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
                         .show(ui, |ui| {
                             ui.horizontal_centered(|ui| {
                                 ui.spinner();
                                 ui.add_space(8.0);
-                                ui.label(RichText::new(msg.as_str()).color(theme::text_primary()).size(13.0).strong());
+                                ui.label(RichText::new(msg.as_str()).color(theme::text_primary()).size(14.0).strong());
                                 if let Some(p) = pct {
                                     ui.add_space(6.0);
-                                    ui.label(RichText::new(format!("{}%", p)).color(theme::text_muted()).size(12.0));
+                                    ui.label(RichText::new(format!("{}%", p)).color(theme::text_muted()).size(13.0));
                                 }
                                 ui.add_space(10.0);
                                 if ui.add(secondary_btn("Cancel")).on_hover_text("Stops queued work or running Git commands. Completed changes remain; short file operations finish before cancellation takes effect.").clicked() {
@@ -4370,7 +4404,7 @@ impl RecordeApp {
                 .show(ctx, |ui| {
                     egui::Frame::none()
                         .fill(theme::bg_elevated())
-                        .stroke(Stroke::new(1.0, theme::ACCENT_TEAL))
+                        .stroke(Stroke::new(1.0, theme::accent_teal()))
                         .rounding(8.0)
                         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
                         .show(ui, |ui| {
@@ -4380,7 +4414,7 @@ impl RecordeApp {
                                 ui.label(
                                     RichText::new(op)
                                         .color(theme::text_primary())
-                                        .size(13.0)
+                                        .size(14.0)
                                         .strong(),
                                 );
                             });
@@ -4406,13 +4440,13 @@ impl RecordeApp {
                 .show(ctx, |ui| {
                     egui::Frame::none()
                         .fill(Color32::from_rgb(74, 24, 28))
-                        .stroke(Stroke::new(1.5, theme::ACCENT_RED))
+                        .stroke(Stroke::new(1.5, theme::accent_red()))
                         .rounding(8.0)
                         .inner_margin(egui::Margin::symmetric(16.0, 12.0))
                         .show(ui, |ui| {
                             ui.set_max_width(640.0);
                             ui.horizontal_centered(|ui| {
-                                ui.label(RichText::new(&desc).color(Color32::WHITE).size(12.5));
+                                ui.label(RichText::new(&desc).color(Color32::WHITE).size(13.0));
                                 ui.add_space(12.0);
                                 if ui.add(danger_btn("Discard")).clicked() {
                                     confirm = true;
@@ -4448,7 +4482,7 @@ impl RecordeApp {
                 .show(ctx, |ui| {
                     egui::Frame::none()
                         .fill(Color32::from_rgb(74, 24, 28))
-                        .stroke(Stroke::new(1.5, theme::ACCENT_RED))
+                        .stroke(Stroke::new(1.5, theme::accent_red()))
                         .rounding(8.0)
                         .inner_margin(egui::Margin::symmetric(16.0, 12.0))
                         .show(ui, |ui| {
@@ -4461,7 +4495,7 @@ impl RecordeApp {
                                         .strong(),
                                 );
                                 ui.add_space(10.0);
-                                ui.label(RichText::new(error).color(Color32::WHITE).size(12.5));
+                                ui.label(RichText::new(error).color(Color32::WHITE).size(13.0));
                                 ui.add_space(10.0);
                                 if ui.add(secondary_btn("Dismiss")).clicked() {
                                     self.state.lock().unwrap().error = None;
@@ -4469,6 +4503,97 @@ impl RecordeApp {
                             });
                         });
                 });
+        }
+    }
+
+    fn show_welcome(&mut self, ctx: &Context) {
+        let mut action = None;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(theme::bg_app()))
+            .show(ctx, |ui| {
+                let width = 620.0_f32.min(ui.available_width() - 48.0);
+                let left = ui.max_rect().center().x - width / 2.0;
+                let top = ui.max_rect().top() + (ui.available_height() * 0.12).max(24.0);
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(left, top),
+                    egui::vec2(width, ui.available_height() - 40.0),
+                );
+                ui.allocate_ui_at_rect(rect, |ui| {
+                    ui.label(
+                        crate::icons::rich(crate::icons::SOURCE, 40.0).color(theme::accent_teal()),
+                    );
+                    ui.add_space(16.0);
+                    ui.label(
+                        RichText::new("Your next commit starts here.")
+                            .size(30.0)
+                            .strong()
+                            .color(theme::text_primary()),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(
+                            "Explore your history. Review your changes. Ship with confidence.",
+                        )
+                        .size(14.0)
+                        .color(theme::text_secondary()),
+                    );
+                    ui.add_space(24.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add(primary_btn("Open repository…")).clicked() {
+                            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                action = Some(ToolbarAction::OpenRepo(path));
+                            }
+                        }
+                        if ui.add(secondary_btn("Clone repository…")).clicked() {
+                            action = Some(ToolbarAction::CloneRepo);
+                        }
+                        if ui.add(secondary_btn("Create repository…")).clicked() {
+                            action = Some(ToolbarAction::InitRepo);
+                        }
+                    });
+                    ui.add_space(32.0);
+                    if !self.config.recent_repos.is_empty() {
+                        ui.label(
+                            RichText::new("Pick up where you left off")
+                                .size(15.0)
+                                .strong(),
+                        );
+                        ui.add_space(12.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                for path in self.config.recent_repos.iter().take(8) {
+                                    let name =
+                                        path.file_name().unwrap_or_default().to_string_lossy();
+                                    if ui
+                                        .add_sized(
+                                            [width, 38.0],
+                                            egui::Button::new(format!(
+                                                "{name}    {}",
+                                                path.display()
+                                            ))
+                                            .truncate()
+                                            .fill(theme::bg_panel())
+                                            .stroke(Stroke::new(1.0, theme::border())),
+                                        )
+                                        .on_hover_text(path.display().to_string())
+                                        .clicked()
+                                    {
+                                        action = Some(ToolbarAction::OpenRepo(path.clone()));
+                                    }
+                                }
+                            });
+                    }
+                    ui.add_space(24.0);
+                    ui.label(
+                        RichText::new("Ctrl/Cmd+K  Command palette     Ctrl/Cmd+B  Switch branch")
+                            .size(12.0)
+                            .color(theme::text_muted()),
+                    );
+                });
+            });
+        if let Some(action) = action {
+            self.handle_toolbar(ctx, action);
         }
     }
 
@@ -4481,6 +4606,13 @@ impl RecordeApp {
                 [20.0, 20.0],
             )));
             ui.add_space(6.0);
+            ui.label(
+                RichText::new("Recorde")
+                    .size(16.0)
+                    .strong()
+                    .color(theme::text_primary()),
+            );
+            ui.add_space(20.0);
             ui.menu_button("File", |ui| {
                 if ui.button("Open Repository…").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
@@ -4497,19 +4629,19 @@ impl RecordeApp {
                     self.state.lock().unwrap().modal = ModalKind::InitRepo;
                     ui.close_menu();
                 }
-                if !self.config.recent_repos.is_empty() {
-                    ui.menu_button("Recent Repositories", |ui| {
-                        for path in &self.config.recent_repos {
-                            let label = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| path.display().to_string());
-                            if ui.button(label).clicked() {
-                                load_repo(path.clone(), self.state.clone());
-                                ui.close_menu();
-                            }
-                        }
-                    });
+                let current_repo = self.state.lock().unwrap().repo_path.clone();
+                let selected = ui
+                    .menu_button("Recent Repositories", |ui| {
+                        crate::ui::toolbar::recent_repositories_menu(
+                            ui,
+                            &self.config.recent_repos,
+                            current_repo.as_deref(),
+                        )
+                    })
+                    .inner
+                    .flatten();
+                if let Some(action) = selected {
+                    self.handle_toolbar(ctx, action);
                 }
                 ui.separator();
                 if ui.button("Settings").clicked() {
@@ -4797,19 +4929,19 @@ fn focus_ring(ui: &egui::Ui) {
     ui.painter().rect_stroke(
         ui.max_rect().shrink(1.0),
         0.0,
-        egui::Stroke::new(1.5, theme::ACCENT_TEAL.gamma_multiply(0.5)),
+        egui::Stroke::new(1.5, theme::accent_teal().gamma_multiply(0.5)),
     );
 }
 
 fn panel_toggle(ui: &mut egui::Ui, visible: &mut bool, label: &str, tip: &str) -> bool {
     let color = if *visible {
-        theme::ACCENT_TEAL
+        theme::accent_teal()
     } else {
         theme::text_muted()
     };
     let resp = ui
         .add(
-            egui::Button::new(RichText::new(label).color(color).size(11.0))
+            egui::Button::new(RichText::new(label).color(color).size(12.0))
                 .fill(if *visible {
                     theme::bg_panel_alt()
                 } else {
@@ -4818,7 +4950,7 @@ fn panel_toggle(ui: &mut egui::Ui, visible: &mut bool, label: &str, tip: &str) -
                 .stroke(Stroke::new(
                     1.0,
                     if *visible {
-                        theme::ACCENT_TEAL.gamma_multiply(0.45)
+                        theme::accent_teal().gamma_multiply(0.45)
                     } else {
                         theme::border()
                     },
@@ -4909,7 +5041,7 @@ impl RecordeApp {
                         };
                         let btn = ui
                             .add(
-                                egui::Button::new(RichText::new(label).size(12.5).color(color))
+                                egui::Button::new(RichText::new(label).size(13.0).color(color))
                                     .fill(Color32::TRANSPARENT),
                             )
                             .on_hover_text(match tab {
@@ -4922,7 +5054,7 @@ impl RecordeApp {
                         if active {
                             ui.painter().line_segment(
                                 [btn.rect.left_bottom(), btn.rect.right_bottom()],
-                                egui::Stroke::new(2.0, theme::ACCENT_TEAL),
+                                egui::Stroke::new(2.0, theme::accent_teal()),
                             );
                         }
                         if btn.clicked() {
@@ -4949,20 +5081,20 @@ impl RecordeApp {
                             for f in [IssueFilter::Open, IssueFilter::Closed, IssueFilter::All] {
                                 let active = issue_filter == f;
                                 let color = if active {
-                                    theme::ACCENT_TEAL
+                                    theme::accent_teal()
                                 } else {
                                     theme::text_muted()
                                 };
                                 let btn = ui.add(
                                     egui::Button::new(
-                                        RichText::new(f.label()).size(11.5).color(color),
+                                        RichText::new(f.label()).size(12.0).color(color),
                                     )
                                     .fill(Color32::TRANSPARENT),
                                 );
                                 if active {
                                     ui.painter().line_segment(
                                         [btn.rect.left_bottom(), btn.rect.right_bottom()],
-                                        egui::Stroke::new(2.0, theme::ACCENT_TEAL),
+                                        egui::Stroke::new(2.0, theme::accent_teal()),
                                     );
                                 }
                                 if btn.clicked() && !active {
@@ -4991,7 +5123,7 @@ impl RecordeApp {
                             return;
                         }
                         if let Some(ref err) = issue_error {
-                            ui.label(RichText::new(err).color(theme::ACCENT_RED).size(12.0));
+                            ui.label(RichText::new(err).color(theme::accent_red()).size(13.0));
                             return;
                         }
 
@@ -5009,7 +5141,7 @@ impl RecordeApp {
                                         ui.label(
                                             RichText::new("No issues.")
                                                 .color(theme::text_muted())
-                                                .size(12.0),
+                                                .size(13.0),
                                         );
                                     }
                                     for (i, issue) in &visible {
@@ -5030,9 +5162,9 @@ impl RecordeApp {
                                                 let dot_color = if issue.state
                                                     == crate::providers::IssueState::Open
                                                 {
-                                                    theme::ACCENT_GREEN
+                                                    theme::accent_green()
                                                 } else {
-                                                    theme::ACCENT_RED
+                                                    theme::accent_red()
                                                 };
                                                 let (dr, _) = ui.allocate_exact_size(
                                                     egui::vec2(8.0, 8.0),
@@ -5051,7 +5183,7 @@ impl RecordeApp {
                                                             issue.number, &issue.title
                                                         ))
                                                         .color(theme::text_primary())
-                                                        .size(12.5),
+                                                        .size(13.0),
                                                     );
                                                     ui.label(
                                                         RichText::new(format!(
@@ -5062,7 +5194,7 @@ impl RecordeApp {
                                                             )
                                                         ))
                                                         .color(theme::text_muted())
-                                                        .size(10.5),
+                                                        .size(12.0),
                                                     );
                                                 });
                                             });
@@ -5094,7 +5226,7 @@ impl RecordeApp {
                                             issue.number, &issue.title
                                         ))
                                         .color(theme::text_primary())
-                                        .size(13.0)
+                                        .size(14.0)
                                         .strong(),
                                     );
                                     cols[1].add_space(4.0);
@@ -5106,7 +5238,7 @@ impl RecordeApp {
                                                 crate::theme::relative_time(issue.updated_ts)
                                             ))
                                             .color(theme::text_muted())
-                                            .size(11.0),
+                                            .size(12.0),
                                         );
                                     });
                                     if !issue.label_names.is_empty() {
@@ -5114,10 +5246,11 @@ impl RecordeApp {
                                             for l in &issue.label_names {
                                                 ui.label(
                                                     RichText::new(l)
-                                                        .size(10.5)
-                                                        .color(theme::ACCENT_BLUE)
+                                                        .size(12.0)
+                                                        .color(theme::accent_blue())
                                                         .background_color(
-                                                            theme::ACCENT_BLUE.gamma_multiply(0.15),
+                                                            theme::accent_blue()
+                                                                .gamma_multiply(0.15),
                                                         ),
                                                 );
                                                 ui.add_space(4.0);
@@ -5138,7 +5271,7 @@ impl RecordeApp {
                                             ui.label(
                                                 RichText::new(body)
                                                     .color(theme::text_secondary())
-                                                    .size(12.0),
+                                                    .size(13.0),
                                             );
                                         });
                                     cols[1].add_space(8.0);
@@ -5159,7 +5292,7 @@ impl RecordeApp {
                                     ui.label(
                                         RichText::new("Select an issue to view details.")
                                             .color(theme::text_muted())
-                                            .size(12.0),
+                                            .size(13.0),
                                     );
                                 });
                             }
@@ -5171,7 +5304,7 @@ impl RecordeApp {
                             ui.label(
                                 RichText::new("CI runs for current branch")
                                     .color(theme::text_muted())
-                                    .size(11.5),
+                                    .size(12.0),
                             );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -5195,7 +5328,7 @@ impl RecordeApp {
                             return;
                         }
                         if let Some(ref err) = ci_error {
-                            ui.label(RichText::new(err).color(theme::ACCENT_RED).size(12.0));
+                            ui.label(RichText::new(err).color(theme::accent_red()).size(13.0));
                             return;
                         }
 
@@ -5204,14 +5337,14 @@ impl RecordeApp {
                                 ui.label(
                                     RichText::new("No CI runs found for this branch.")
                                         .color(theme::text_muted())
-                                        .size(12.0),
+                                        .size(13.0),
                                 );
                             }
                             for run in &ci_runs {
                                 let (status_color, status_icon) = match run.status {
-                                    CS::Success => (theme::ACCENT_GREEN, "✓"),
-                                    CS::Failure => (theme::ACCENT_RED, "✗"),
-                                    CS::Running => (theme::ACCENT_YELLOW, "…"),
+                                    CS::Success => (theme::accent_green(), "✓"),
+                                    CS::Failure => (theme::accent_red(), "✗"),
+                                    CS::Running => (theme::accent_yellow(), "…"),
                                     CS::Pending => (theme::text_muted(), "·"),
                                     CS::Cancelled => (theme::text_muted(), "—"),
                                 };
@@ -5228,13 +5361,13 @@ impl RecordeApp {
                                             ui.label(
                                                 RichText::new(&run.name)
                                                     .color(theme::text_primary())
-                                                    .size(12.5),
+                                                    .size(13.0),
                                             );
                                             ui.horizontal(|ui| {
                                                 ui.label(
                                                     RichText::new(run.status.label())
                                                         .color(status_color)
-                                                        .size(11.0),
+                                                        .size(12.0),
                                                 );
                                                 ui.label(
                                                     RichText::new(format!(
@@ -5242,7 +5375,7 @@ impl RecordeApp {
                                                         crate::theme::relative_time(run.updated_ts)
                                                     ))
                                                     .color(theme::text_muted())
-                                                    .size(11.0),
+                                                    .size(12.0),
                                                 );
                                             });
                                         });
@@ -5253,8 +5386,8 @@ impl RecordeApp {
                                                     .add(
                                                         egui::Button::new(
                                                             RichText::new("Open")
-                                                                .size(11.5)
-                                                                .color(theme::ACCENT_TEAL),
+                                                                .size(12.0)
+                                                                .color(theme::accent_teal()),
                                                         )
                                                         .fill(Color32::TRANSPARENT),
                                                     )
@@ -5280,7 +5413,7 @@ impl RecordeApp {
                             ui.label(
                                 RichText::new("Releases")
                                     .color(theme::text_muted())
-                                    .size(11.5),
+                                    .size(12.0),
                             );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -5304,7 +5437,7 @@ impl RecordeApp {
                             return;
                         }
                         if let Some(ref err) = rel_error {
-                            ui.label(RichText::new(err).color(theme::ACCENT_RED).size(12.0));
+                            ui.label(RichText::new(err).color(theme::accent_red()).size(13.0));
                             return;
                         }
 
@@ -5313,7 +5446,7 @@ impl RecordeApp {
                                 ui.label(
                                     RichText::new("No releases found.")
                                         .color(theme::text_muted())
-                                        .size(12.0),
+                                        .size(13.0),
                                 );
                             }
                             for rel in &releases {
@@ -5321,29 +5454,29 @@ impl RecordeApp {
                                     .horizontal(|ui| {
                                         ui.add_space(8.0);
                                         let tag_color = if rel.prerelease {
-                                            theme::ACCENT_YELLOW
+                                            theme::accent_yellow()
                                         } else {
-                                            theme::ACCENT_TEAL
+                                            theme::accent_teal()
                                         };
                                         ui.label(
                                             RichText::new(&rel.tag_name)
                                                 .color(tag_color)
-                                                .size(12.5)
+                                                .size(13.0)
                                                 .strong(),
                                         );
                                         ui.add_space(6.0);
                                         ui.label(
                                             RichText::new(&rel.name)
                                                 .color(theme::text_secondary())
-                                                .size(12.0),
+                                                .size(13.0),
                                         );
                                         if rel.prerelease {
                                             ui.label(
                                                 RichText::new("pre-release")
-                                                    .size(10.5)
-                                                    .color(theme::ACCENT_YELLOW)
+                                                    .size(12.0)
+                                                    .color(theme::accent_yellow())
                                                     .background_color(
-                                                        theme::ACCENT_YELLOW.gamma_multiply(0.15),
+                                                        theme::accent_yellow().gamma_multiply(0.15),
                                                     ),
                                             );
                                         }
@@ -5355,15 +5488,15 @@ impl RecordeApp {
                                                         rel.published_ts,
                                                     ))
                                                     .color(theme::text_muted())
-                                                    .size(11.0),
+                                                    .size(12.0),
                                                 );
                                                 ui.add_space(8.0);
                                                 if ui
                                                     .add(
                                                         egui::Button::new(
                                                             RichText::new("Open")
-                                                                .size(11.5)
-                                                                .color(theme::ACCENT_TEAL),
+                                                                .size(12.0)
+                                                                .color(theme::accent_teal()),
                                                         )
                                                         .fill(Color32::TRANSPARENT),
                                                     )
@@ -5468,15 +5601,15 @@ fn slugify(s: &str) -> String {
 }
 
 fn primary_btn(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(Color32::WHITE).size(13.0))
-        .fill(theme::ACCENT_BLUE)
-        .rounding(6.0)
+    egui::Button::new(RichText::new(label).color(Color32::WHITE).size(14.0))
+        .fill(theme::primary_fill())
+        .rounding(7.0)
         .min_size(egui::Vec2::new(120.0, 28.0))
 }
 
 fn danger_btn(label: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(label).color(Color32::WHITE))
-        .fill(theme::ACCENT_RED)
+        .fill(theme::accent_red())
         .rounding(6.0)
         .min_size(egui::Vec2::new(0.0, 28.0))
 }
@@ -5498,21 +5631,21 @@ fn health_row_color(ui: &mut egui::Ui, label: &str, value: &str, color: egui::Co
         ui.label(
             RichText::new(format!("{:<14}", label))
                 .color(theme::text_muted())
-                .size(11.5)
+                .size(12.0)
                 .monospace(),
         );
-        ui.label(RichText::new(value).color(color).size(11.5));
+        ui.label(RichText::new(value).color(color).size(12.0));
     });
 }
 
 fn styled_label(text: &str) -> RichText {
     RichText::new(text)
         .color(theme::text_secondary())
-        .size(12.0)
+        .size(13.0)
 }
 
 fn styled_muted(text: &str) -> RichText {
-    RichText::new(text).color(theme::text_muted()).size(11.5)
+    RichText::new(text).color(theme::text_muted()).size(12.0)
 }
 
 fn settings_tab_button(ui: &mut egui::Ui, tab: &mut SettingsTab, value: SettingsTab, label: &str) {
@@ -5524,7 +5657,7 @@ fn settings_tab_button(ui: &mut egui::Ui, tab: &mut SettingsTab, value: Settings
     };
     if ui
         .add(
-            egui::Button::new(RichText::new(label).color(color).size(12.0))
+            egui::Button::new(RichText::new(label).color(color).size(13.0))
                 .fill(if selected {
                     theme::bg_selected()
                 } else {
@@ -5553,7 +5686,7 @@ fn settings_text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
         ui.label(
             RichText::new(label)
                 .color(theme::text_muted())
-                .font(egui::FontId::monospace(11.0)),
+                .font(egui::FontId::monospace(12.0)),
         );
         ui.add_space(8.0);
         ui.add_sized(

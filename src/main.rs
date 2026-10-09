@@ -21,8 +21,8 @@ fn main() -> eframe::Result<()> {
             .with_title("Recorde")
             .with_app_id("recorde")
             .with_icon(icon)
-            .with_inner_size([1240.0, 760.0])
-            .with_min_inner_size([900.0, 600.0])
+            .with_inner_size([1440.0, 900.0])
+            .with_min_inner_size([980.0, 680.0])
             .with_decorations(true),
         ..Default::default()
     };

@@ -3,6 +3,8 @@
 /debug/
 **/*.rs.bk
 *.pdb
+__pycache__/
+*.pyc
 
 # Cargo.lock is committed for binaries (reproducible builds)
 

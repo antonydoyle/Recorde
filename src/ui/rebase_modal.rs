@@ -46,7 +46,7 @@ impl RebaseModal {
                 &self.upstream_oid[..7.min(self.upstream_oid.len())],
                 self.upstream_summary,
             ))
-            .size(11.5)
+            .size(12.0)
             .color(theme::text_muted()),
         );
 
@@ -61,20 +61,20 @@ impl RebaseModal {
             ui.label(
                 RichText::new("Action")
                     .color(theme::text_muted())
-                    .size(10.5)
+                    .size(12.0)
                     .strong(),
             );
             ui.add_space(72.0);
             ui.label(
                 RichText::new("SHA    ")
                     .color(theme::text_muted())
-                    .size(10.5)
+                    .size(12.0)
                     .strong(),
             );
             ui.label(
                 RichText::new("Summary")
                     .color(theme::text_muted())
-                    .size(10.5)
+                    .size(12.0)
                     .strong(),
             );
         });
@@ -116,7 +116,7 @@ impl RebaseModal {
                                 .selected_text(
                                     RichText::new(cur_action.label())
                                         .color(cur_color)
-                                        .size(11.5)
+                                        .size(12.0)
                                         .monospace(),
                                 )
                                 .width(92.0)
@@ -152,11 +152,11 @@ impl RebaseModal {
                             // SHA
                             ui.label(
                                 RichText::new(&short_sha)
-                                    .font(FontId::monospace(11.5))
+                                    .font(FontId::monospace(12.0))
                                     .color(if is_drop {
                                         theme::text_muted()
                                     } else {
-                                        theme::ACCENT_BLUE
+                                        theme::accent_blue()
                                     }),
                             );
 
@@ -166,7 +166,7 @@ impl RebaseModal {
                             } else {
                                 theme::text_secondary()
                             };
-                            ui.label(RichText::new(&summary).size(12.5).color(text_col));
+                            ui.label(RichText::new(&summary).size(13.0).color(text_col));
                         });
                     });
                     let _ = item;
@@ -236,9 +236,9 @@ impl RebaseModal {
                     RichText::new(a.label())
                         .color(action_color(*a))
                         .monospace()
-                        .size(10.5),
+                        .size(12.0),
                 );
-                ui.label(RichText::new(*desc).color(theme::text_muted()).size(10.5));
+                ui.label(RichText::new(*desc).color(theme::text_muted()).size(12.0));
             }
         });
 
@@ -247,7 +247,7 @@ impl RebaseModal {
         // ── Buttons ───────────────────────────────────────────────────────────
         let validation = crate::git::rebase::validate_entries(&self.entries);
         if let Err(error) = &validation {
-            ui.colored_label(theme::ACCENT_RED, error);
+            ui.colored_label(theme::accent_red(), error);
         }
         let mut result = None;
         ui.horizontal(|ui| {
@@ -257,9 +257,9 @@ impl RebaseModal {
                     egui::Button::new(
                         RichText::new("Start Rebase")
                             .color(Color32::WHITE)
-                            .size(13.0),
+                            .size(14.0),
                     )
-                    .fill(theme::ACCENT_BLUE)
+                    .fill(theme::accent_blue())
                     .min_size(egui::Vec2::new(130.0, 28.0)),
                 )
                 .clicked()
@@ -289,10 +289,10 @@ impl RebaseModal {
 
 fn action_color(action: RebaseAction) -> Color32 {
     match action {
-        RebaseAction::Pick | RebaseAction::Reword => theme::ACCENT_BLUE,
-        RebaseAction::Squash => theme::ACCENT_YELLOW,
+        RebaseAction::Pick | RebaseAction::Reword => theme::accent_blue(),
+        RebaseAction::Squash => theme::accent_yellow(),
         RebaseAction::Fixup => Color32::from_rgb(0xE5, 0x97, 0x20),
-        RebaseAction::Drop => theme::ACCENT_RED,
+        RebaseAction::Drop => theme::accent_red(),
     }
 }
 
@@ -314,7 +314,7 @@ fn receive_drop(
                     ui.allocate_exact_size(egui::Vec2::new(w, 4.0), egui::Sense::hover());
                 let hovered = inner_is_hovered(ui, rect);
                 let color = if hovered {
-                    theme::ACCENT_BLUE
+                    theme::accent_blue()
                 } else {
                     theme::border()
                 };

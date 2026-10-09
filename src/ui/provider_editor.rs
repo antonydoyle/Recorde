@@ -125,8 +125,8 @@ impl ProviderEditor {
         let mut submit = false;
         egui::Window::new(title).id(egui::Id::new("provider_write_form")).open(&mut open).default_width(560.0).collapsible(false).show(ctx, |ui| {
             ui.label(self.path.display().to_string());
-            if let Some(error) = &self.error { ui.colored_label(crate::theme::ACCENT_RED, error); }
-            if let Some(error) = &self.draft_error { ui.colored_label(crate::theme::ACCENT_RED, error); }
+            if let Some(error) = &self.error { ui.colored_label(crate::theme::accent_red(), error); }
+            if let Some(error) = &self.draft_error { ui.colored_label(crate::theme::accent_red(), error); }
             if let Some(message) = &self.success { ui.label(message); return; }
             if self.preparing.is_some() { ui.spinner(); ui.label("Loading provider account..."); return; }
             let Some(context) = &self.context else { return };
