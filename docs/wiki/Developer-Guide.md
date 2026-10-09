@@ -1,5 +1,90 @@
 # Developer Guide
 
+## Current local validation
+
+macOS implementation and native acceptance are parked by request. Windows and
+Linux remain the local validation targets; existing hosted macOS definitions
+remain available. Executable signing is separately deferred.
+
+Initial local checks and CI use `CARGO_BUILD_JOBS=1` and `RUST_TEST_THREADS=1`.
+Windows validation exposed two console-launch bugs: `command-group` replaces
+`Command` creation flags, and the GUI subsystem attribute also applied to binary
+test harnesses. Set `CREATE_NO_WINDOW` on the group builder and exclude tests
+from the subsystem attribute. Regression fixtures check the actual console
+handle, test executable header, and grandchild termination.
+
+### Windows process safety
+
+Run Windows builds and tests through the bounded task wrapper. Start with the
+source guard, cleanup fixture, compilation, then the process fixtures. Do not
+repeat a full suite after a timeout or unexpected console window.
+
+```powershell
+$env:CARGO_BUILD_JOBS = '1'
+$env:RUST_TEST_THREADS = '1'
+python scripts/check_process_safety.py
+./scripts/windows_task_selftest.ps1 -Artifacts "$env:TEMP/recorde-process-safety"
+./scripts/windows_task.ps1 -Executable cargo -Arguments @('check', '--locked', '--all-targets') -Purpose 'Compile safety changes' -Artifacts "$env:TEMP/recorde-process-safety" -TimeoutSeconds 180
+./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--lib', 'git::process::tests', '--', '--test-threads=1') -Purpose 'Process regression fixtures' -Artifacts "$env:TEMP/recorde-process-safety" -TimeoutSeconds 180
+./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--bin', 'recorde') -Purpose 'Test executable subsystem' -Artifacts "$env:TEMP/recorde-process-safety" -TimeoutSeconds 180
+```
+
+Use an installed Python interpreter (or `python3` in WSL), not the Windows Store
+alias. A cold build may need a longer explicit deadline after reviewing its log.
+The wrapper creates a private Windows job before releasing the worker, limits it
+to 32 processes and 4 GiB by default, captures output, and stops the owned job on
+success, failure, timeout or console detection. Closing the wrapper also closes
+the job. Each run records its purpose, PIDs, parent/command-line ownership and
+listening ports in an external artifact directory. `result.json` reports cleanup;
+`stdout.log` and `stderr.log` hold command output. Arguments and command lines are
+recorded: never pass credentials in arguments.
+
+New Git/tool window titles stop the task for investigation. Titles alone do not
+establish ownership, so the wrapper reports such windows without terminating a
+shared Windows Terminal host. Preserve unrelated services. CI retains the ledgers.
+The timeout fixture verifies an owned grandchild's TCP listener is released.
+
+Local Windows verification (2026-10-09): the timeout/listener fixture, source
+guard, `cargo check --locked --all-targets`, and all seven binary process-safety
+tests passed. Cleanup reported zero task workers, task listeners and new tool
+windows. The full suite was not rerun during this safety change; earlier aborted
+Windows suites are not successful acceptance runs.
+
+All unattended Git/SSH probes and test helpers use `background_command` and the
+supervised runner with a deadline. Credential-helper input stays in pipes;
+process logs omit arguments and input. Settings diagnostics run once per opening
+on a background worker and cache their results. User-opened editors and terminals
+remain user-owned.
+
+### Linux process safety
+
+Use `python3 scripts/linux_task.py --purpose 'Tests' --artifacts /tmp/recorde-checks
+--timeout 300 -- cargo test --locked --all-targets` (on one line). This runner
+uses Linux child adoption to track orphaned descendants, including tools that
+start a separate session. Cleanup checks PID identity before signalling and
+records owned processes and TCP/UDP listeners. Restricted `/proc` inspection is
+reported explicitly. It never stops a process based on its name alone.
+
+`python3 scripts/linux_task_selftest.py /tmp/recorde-runner-tests` verifies deadline
+cleanup, early parent exit, and protected child processes. Each fixture starts
+its own ephemeral TCP listener and confirms that cleanup releases it. Logs are
+external to the repo. Linux CI uses this runner for validation and GUI fixtures.
+
+Additional opt-in fixtures:
+
+```bash
+cargo test --locked --lib ssh_signed_commit_verifies_with_disposable_key -- --ignored
+RECORDE_PERF_COMMIT_GRAPH=1 RECORDE_PERF_COMMITS=1000000 cargo test --locked --lib benchmark_large_history_first_page -- --ignored --nocapture
+python3 scripts/gui_smoke.py target/debug/recorde /tmp/recorde-settings-artifacts --repository-settings
+```
+
+Signing uses a newly generated temporary SSH key and verifies both the commit and
+amend. It requires `ssh-keygen` and never uses personal keys. The indexed history
+fixture reports index-build time separately, then checks native paging, cached
+metadata and paging across the 4,096-ID response boundary. Settings mode captures
+the repository menu, top of Settings and scrolled signing controls for visual
+inspection; it does not modify signing configuration.
+
 ## Prerequisites
 
 - Rust toolchain with Cargo.
@@ -22,6 +107,13 @@ cargo build --release
 ```
 
 The binary target is named `recorde`.
+
+Local test handoff: build `cargo build --locked --bin recorde` through the platform
+runner, copy the executable and `LICENSE` to an ignored `dist/` package, and smoke
+test that copy with an isolated repository/configuration. Include the source
+commit, build profile, platform requirements and SHA-256 checksums. Debug builds
+are for functionality testing; release-performance measurements require a release
+build. Do not describe a portable test build as installer or upgrade acceptance.
 
 ## Run
 
@@ -54,10 +146,12 @@ tests cover linked worktrees, ordered staging/commit and cancellation of a queue
 push against a disposable bare remote. Native vaults require separate desktop
 smoke tests on each supported platform.
 
-`.github/workflows/ci.yml` runs `cargo check`, Clippy and tests with `--locked
---all-targets` on Linux, Windows and macOS. Release publication depends on that
-workflow. Clippy warnings are currently reported rather than denied; a global
-formatting gate is pending cleanup of the existing formatting baseline.
+`.github/workflows/ci.yml` runs `cargo check`, Clippy and tests with `--locked`
+on Linux, Windows and macOS. Release publication depends on that workflow.
+The executable imports the library; it no longer declares a second copy of the
+application modules or duplicates their tests. Windows also checks the executable
+test harness subsystem. CI enforces `cargo fmt --all --check`. Clippy warnings
+are reported rather than denied; existing style and vendored warnings remain.
 
 ## Dependency Notes
 
@@ -174,7 +268,8 @@ and the image snapshot fixture. Recovery fixtures now cover unborn HEAD,
 untracked files, renames, ignored collisions, retention, and deleted branches
 across Git garbage collection. Sparse fixtures use native Git status semantics.
 
-Native Windows validation: `scripts/windows_smoke.ps1 -Binary <exe> -Artifacts <directory>`.
+Native Windows validation: invoke `scripts/windows_smoke.ps1 -Binary <exe> -Artifacts <directory>`
+through `windows_task.ps1` with PowerShell as its executable, as CI does.
 This creates a disposable repo, isolates Git and application configuration, starts
 the app hidden, checks a native window exists, retains logs, and stops only its
 own process. CI runs this, LFS and the isolated Windows vault round trip. This

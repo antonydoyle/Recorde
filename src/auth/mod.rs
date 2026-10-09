@@ -1,8 +1,8 @@
+pub mod endpoint;
+pub mod helper;
+pub mod redact;
 pub mod ssh;
 pub mod store;
-pub mod endpoint;
-pub mod redact;
-pub mod helper;
 
 use serde::{Deserialize, Serialize};
 
@@ -18,19 +18,19 @@ pub enum ProviderKind {
 impl ProviderKind {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::GitHubCom        => "GitHub.com",
+            Self::GitHubCom => "GitHub.com",
             Self::GitHubEnterprise => "GitHub Enterprise",
-            Self::GitLabCom        => "GitLab.com",
-            Self::GitLabSelf       => "GitLab (self-hosted)",
+            Self::GitLabCom => "GitLab.com",
+            Self::GitLabSelf => "GitLab (self-hosted)",
         }
     }
 
     pub fn default_host(&self) -> &'static str {
         match self {
-            Self::GitHubCom        => "github.com",
+            Self::GitHubCom => "github.com",
             Self::GitHubEnterprise => "",
-            Self::GitLabCom        => "gitlab.com",
-            Self::GitLabSelf       => "",
+            Self::GitLabCom => "gitlab.com",
+            Self::GitLabSelf => "",
         }
     }
 
@@ -41,7 +41,11 @@ impl ProviderKind {
 
     /// Return the effective host: provided value or the default.
     pub fn effective_host<'a>(&'a self, custom: &'a str) -> &'a str {
-        if self.needs_host() { custom } else { self.default_host() }
+        if self.needs_host() {
+            custom
+        } else {
+            self.default_host()
+        }
     }
 }
 

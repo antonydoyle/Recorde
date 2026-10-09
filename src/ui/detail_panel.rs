@@ -40,7 +40,11 @@ impl DetailPanel {
 
         let Some(detail) = detail else {
             ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("Loading…").color(theme::text_muted()).size(12.0));
+                ui.label(
+                    RichText::new("Loading…")
+                        .color(theme::text_muted())
+                        .size(12.0),
+                );
             });
             return;
         };
@@ -64,9 +68,7 @@ impl DetailPanel {
                     );
                     ui.add_space(6.0);
                     if ui
-                        .small_button(
-                            RichText::new("Copy").color(theme::text_muted()).size(10.5),
-                        )
+                        .small_button(RichText::new("Copy").color(theme::text_muted()).size(10.5))
                         .clicked()
                     {
                         ui.output_mut(|o| o.copied_text = detail.oid.clone());
@@ -94,25 +96,25 @@ impl DetailPanel {
                 egui::Frame::none()
                     .inner_margin(egui::Margin::symmetric(12.0, 0.0))
                     .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(first_line)
-                            .color(theme::text_primary())
-                            .size(13.0)
-                            .strong(),
-                    );
-                });
+                        ui.label(
+                            RichText::new(first_line)
+                                .color(theme::text_primary())
+                                .size(13.0)
+                                .strong(),
+                        );
+                    });
 
                 if !rest.is_empty() {
                     ui.add_space(6.0);
                     egui::Frame::none()
                         .inner_margin(egui::Margin::symmetric(12.0, 0.0))
                         .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(rest)
-                                .color(theme::text_secondary())
-                                .size(12.0),
-                        );
-                    });
+                            ui.label(
+                                RichText::new(rest)
+                                    .color(theme::text_secondary())
+                                    .size(12.0),
+                            );
+                        });
                 }
 
                 ui.add_space(10.0);
@@ -236,6 +238,11 @@ fn meta_row(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
                 .font(FontId::monospace(11.0)),
         );
         ui.add_space(4.0);
-        ui.label(RichText::new(value).color(theme::text_secondary()).size(12.0))
-    }).response
+        ui.label(
+            RichText::new(value)
+                .color(theme::text_secondary())
+                .size(12.0),
+        )
+    })
+    .response
 }

@@ -1,11 +1,8 @@
 use std::path::Path;
 
 fn run(repo_path: &Path, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .arg("-C").arg(repo_path)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = super::process::git(repo_path, args, &std::sync::atomic::AtomicBool::new(false))
+        .map_err(|e| e.user_message())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {

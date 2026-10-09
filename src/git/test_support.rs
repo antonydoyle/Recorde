@@ -73,7 +73,8 @@ impl TestRepo {
     }
 
     pub fn git(&self, args: &[&str]) -> Output {
-        std::process::Command::new("git")
+        let mut command = super::process::background_command("git");
+        command
             .arg("-C")
             .arg(self.path())
             .args(args)
@@ -83,9 +84,13 @@ impl TestRepo {
                 self.path().join("absent-global-config"),
             )
             .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_EDITOR", "true")
-            .output()
-            .unwrap()
+            .env("GIT_EDITOR", "true");
+        super::process::run(
+            &mut command,
+            &std::sync::atomic::AtomicBool::new(false),
+            std::time::Duration::from_secs(30),
+        )
+        .unwrap()
     }
 
     pub fn git_ok(&self, args: &[&str]) {

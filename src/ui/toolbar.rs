@@ -59,24 +59,24 @@ struct OverflowItem {
 impl OverflowKind {
     fn to_action(self, show_all: bool) -> ToolbarAction {
         match self {
-            Self::Fetch       => ToolbarAction::Fetch,
-            Self::Pull        => ToolbarAction::Pull,
-            Self::Push        => ToolbarAction::Push,
-            Self::NewBranch   => ToolbarAction::CreateBranch,
-            Self::Stash       => ToolbarAction::Stash,
+            Self::Fetch => ToolbarAction::Fetch,
+            Self::Pull => ToolbarAction::Pull,
+            Self::Push => ToolbarAction::Push,
+            Self::NewBranch => ToolbarAction::CreateBranch,
+            Self::Stash => ToolbarAction::Stash,
             Self::BranchFilter => ToolbarAction::ToggleAllBranches,
         }
     }
 }
 
 // Approximate rendered widths of each left-section group (buttons + spacers)
-const REPO_PILL_MIN_W:  f32 = 110.0; // repo name capped at this
-const SYNC_GROUP_W:     f32 = 248.0; // Fetch + Pull + Push
-const BRANCH_OPS_W:     f32 = 220.0; // New Branch + Stash
-const FILTER_W:         f32 = 148.0; // All Branches toggle
-const OVERFLOW_BTN_W:   f32 = 46.0;  // the ⋯ button
-// Minimum width we keep on the right before overflow kicks in
-const RIGHT_MIN_W:      f32 = 340.0;
+const REPO_PILL_MIN_W: f32 = 110.0; // repo name capped at this
+const SYNC_GROUP_W: f32 = 248.0; // Fetch + Pull + Push
+const BRANCH_OPS_W: f32 = 220.0; // New Branch + Stash
+const FILTER_W: f32 = 148.0; // All Branches toggle
+const OVERFLOW_BTN_W: f32 = 46.0; // the ⋯ button
+                                  // Minimum width we keep on the right before overflow kicks in
+const RIGHT_MIN_W: f32 = 340.0;
 
 pub struct Toolbar {
     state: SharedState,
@@ -120,7 +120,11 @@ impl Toolbar {
                 ui.horizontal_centered(|ui| {
                     let (has_repo, dirty, op_label) = {
                         let s = self.state.lock().unwrap();
-                        (s.repo_path.is_some(), s.dirty_count > 0, s.remote_op.clone())
+                        (
+                            s.repo_path.is_some(),
+                            s.dirty_count > 0,
+                            s.remote_op.clone(),
+                        )
                     };
                     let busy = op_label.is_some();
 
@@ -136,7 +140,8 @@ impl Toolbar {
                                 let (repo_path, name) = {
                                     let s = self.state.lock().unwrap();
                                     let rp = s.repo_path.clone();
-                                    let n = rp.as_ref()
+                                    let n = rp
+                                        .as_ref()
                                         .and_then(|p| p.file_name())
                                         .map(|n| n.to_string_lossy().into_owned())
                                         .unwrap_or_else(|| "No repo".into());
@@ -149,8 +154,13 @@ impl Toolbar {
                                     name
                                 };
 
-                                let btn = widgets::toolbar_btn_icon(ui, icons::FOLDER_OPEN, &display, true)
-                                    .on_hover_text("Open repository");
+                                let btn = widgets::toolbar_btn_icon(
+                                    ui,
+                                    icons::FOLDER_OPEN,
+                                    &display,
+                                    true,
+                                )
+                                .on_hover_text("Open repository");
                                 if btn.clicked() {
                                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                                         action = Some(ToolbarAction::OpenRepo(path));
@@ -187,38 +197,71 @@ impl Toolbar {
                                     let recent = ui.menu_button(
                                         RichText::new("▾").color(theme::text_muted()).size(12.0),
                                         |ui| {
-                                        ui.set_min_width(280.0);
-                                        ui.label(RichText::new("Recent").color(theme::text_muted()).size(10.5));
-                                        ui.separator();
-                                        let mut remove: Option<PathBuf> = None;
-                                        for p in recent_repos {
-                                            let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                                            ui.horizontal(|ui| {
-                                                if ui.add(
-                                                    egui::Button::new(RichText::new(&n).size(12.5))
-                                                        .fill(egui::Color32::TRANSPARENT)
-                                                        .stroke(egui::Stroke::NONE)
-                                                        .min_size(egui::Vec2::new(220.0, 0.0)),
-                                                ).on_hover_text(p.display().to_string()).clicked() {
-                                                    action = Some(ToolbarAction::OpenRepo(p.clone()));
-                                                    ui.close_menu();
-                                                }
-                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                    if ui.add(
-                                                        egui::Button::new(RichText::new("×").color(theme::text_muted()).size(12.0))
+                                            ui.set_min_width(280.0);
+                                            ui.label(
+                                                RichText::new("Recent")
+                                                    .color(theme::text_muted())
+                                                    .size(10.5),
+                                            );
+                                            ui.separator();
+                                            let mut remove: Option<PathBuf> = None;
+                                            for p in recent_repos {
+                                                let n = p
+                                                    .file_name()
+                                                    .map(|n| n.to_string_lossy().into_owned())
+                                                    .unwrap_or_default();
+                                                ui.horizontal(|ui| {
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::new(
+                                                                RichText::new(&n).size(12.5),
+                                                            )
                                                             .fill(egui::Color32::TRANSPARENT)
-                                                            .stroke(egui::Stroke::NONE),
-                                                    ).on_hover_text("Remove from list").clicked() {
-                                                        remove = Some(p.clone());
+                                                            .stroke(egui::Stroke::NONE)
+                                                            .min_size(egui::Vec2::new(220.0, 0.0)),
+                                                        )
+                                                        .on_hover_text(p.display().to_string())
+                                                        .clicked()
+                                                    {
+                                                        action = Some(ToolbarAction::OpenRepo(
+                                                            p.clone(),
+                                                        ));
                                                         ui.close_menu();
                                                     }
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            if ui
+                                                                .add(
+                                                                    egui::Button::new(
+                                                                        RichText::new("×")
+                                                                            .color(
+                                                                                theme::text_muted(),
+                                                                            )
+                                                                            .size(12.0),
+                                                                    )
+                                                                    .fill(
+                                                                        egui::Color32::TRANSPARENT,
+                                                                    )
+                                                                    .stroke(egui::Stroke::NONE),
+                                                                )
+                                                                .on_hover_text("Remove from list")
+                                                                .clicked()
+                                                            {
+                                                                remove = Some(p.clone());
+                                                                ui.close_menu();
+                                                            }
+                                                        },
+                                                    );
                                                 });
-                                            });
-                                        }
-                                        if let Some(p) = remove {
-                                            action = Some(ToolbarAction::RemoveFromRecent(p));
-                                        }
-                                    });
+                                            }
+                                            if let Some(p) = remove {
+                                                action = Some(ToolbarAction::RemoveFromRecent(p));
+                                            }
+                                        },
+                                    );
                                     recent.response.on_hover_text("Open recent repositories");
                                 }
                             }
@@ -231,72 +274,167 @@ impl Toolbar {
                             //    Hide into overflow if it won't fit alongside the overflow btn
                             let avail = ui.available_width();
                             if avail >= SYNC_GROUP_W + OVERFLOW_BTN_W {
-                                if widgets::toolbar_btn_icon(ui, icons::DOWNLOAD, "Fetch", has_repo && !busy)
-                                    .on_hover_text("Fetch all remotes  (Ctrl+Shift+F)").clicked()
-                                { action = Some(ToolbarAction::Fetch); }
+                                if widgets::toolbar_btn_icon(
+                                    ui,
+                                    icons::DOWNLOAD,
+                                    "Fetch",
+                                    has_repo && !busy,
+                                )
+                                .on_hover_text("Fetch all remotes  (Ctrl+Shift+F)")
+                                .clicked()
+                                {
+                                    action = Some(ToolbarAction::Fetch);
+                                }
 
                                 ui.add_space(3.0);
 
-                                let pull_btn = widgets::toolbar_btn_icon(ui, icons::SWAP_VERT, "Pull", has_repo && !busy)
-                                    .on_hover_text("Fetch + fast-forward  (Ctrl+Shift+P)");
-                                if pull_btn.clicked() { action = Some(ToolbarAction::Pull); }
+                                let pull_btn = widgets::toolbar_btn_icon(
+                                    ui,
+                                    icons::SWAP_VERT,
+                                    "Pull",
+                                    has_repo && !busy,
+                                )
+                                .on_hover_text("Fetch + fast-forward  (Ctrl+Shift+P)");
+                                if pull_btn.clicked() {
+                                    action = Some(ToolbarAction::Pull);
+                                }
                                 pull_btn.context_menu(|ui| {
                                     ui.set_min_width(190.0);
-                                    if ui.button("Pull (fast-forward)").clicked() { action = Some(ToolbarAction::Pull); ui.close_menu(); }
-                                    if ui.button("Pull with Rebase").clicked() { action = Some(ToolbarAction::PullWithRebase); ui.close_menu(); }
-                                    if ui.button("Pull (ff-only)").clicked() { action = Some(ToolbarAction::PullFfOnly); ui.close_menu(); }
+                                    if ui.button("Pull (fast-forward)").clicked() {
+                                        action = Some(ToolbarAction::Pull);
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Pull with Rebase").clicked() {
+                                        action = Some(ToolbarAction::PullWithRebase);
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Pull (ff-only)").clicked() {
+                                        action = Some(ToolbarAction::PullFfOnly);
+                                        ui.close_menu();
+                                    }
                                     ui.separator();
-                                    if ui.button("Merge Branch…").clicked() { action = Some(ToolbarAction::MergeBranch); ui.close_menu(); }
-                                    if ui.button("Rebase Onto…").clicked() { action = Some(ToolbarAction::RebaseOnto); ui.close_menu(); }
+                                    if ui.button("Merge Branch…").clicked() {
+                                        action = Some(ToolbarAction::MergeBranch);
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Rebase Onto…").clicked() {
+                                        action = Some(ToolbarAction::RebaseOnto);
+                                        ui.close_menu();
+                                    }
                                 });
 
                                 ui.add_space(3.0);
 
-                                let push_btn = widgets::toolbar_btn_icon(ui, icons::UPLOAD, "Push", has_repo && !busy)
-                                    .on_hover_text("Push current branch  (Ctrl+Shift+U)");
-                                if push_btn.clicked() { action = Some(ToolbarAction::Push); }
+                                let push_btn = widgets::toolbar_btn_icon(
+                                    ui,
+                                    icons::UPLOAD,
+                                    "Push",
+                                    has_repo && !busy,
+                                )
+                                .on_hover_text("Push current branch  (Ctrl+Shift+U)");
+                                if push_btn.clicked() {
+                                    action = Some(ToolbarAction::Push);
+                                }
                                 push_btn.context_menu(|ui| {
                                     ui.set_min_width(200.0);
-                                    if ui.button("Push").clicked() { action = Some(ToolbarAction::Push); ui.close_menu(); }
-                                    if ui.button("Force Push with Lease").clicked() { action = Some(ToolbarAction::PushWithLease); ui.close_menu(); }
-                                    if ui.button("Push and Set Upstream").clicked() { action = Some(ToolbarAction::PushSetUpstream); ui.close_menu(); }
+                                    if ui.button("Push").clicked() {
+                                        action = Some(ToolbarAction::Push);
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Force Push with Lease").clicked() {
+                                        action = Some(ToolbarAction::PushWithLease);
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Push and Set Upstream").clicked() {
+                                        action = Some(ToolbarAction::PushSetUpstream);
+                                        ui.close_menu();
+                                    }
                                 });
 
                                 ui.add_space(6.0);
                                 vsep(ui);
                                 ui.add_space(6.0);
                             } else {
-                                overflow.push(OverflowItem { kind: OverflowKind::Fetch,    icon: icons::DOWNLOAD,  label: "Fetch",      enabled: has_repo && !busy });
-                                overflow.push(OverflowItem { kind: OverflowKind::Pull,     icon: icons::SWAP_VERT, label: "Pull",       enabled: has_repo && !busy });
-                                overflow.push(OverflowItem { kind: OverflowKind::Push,     icon: icons::UPLOAD,    label: "Push",       enabled: has_repo && !busy });
+                                overflow.push(OverflowItem {
+                                    kind: OverflowKind::Fetch,
+                                    icon: icons::DOWNLOAD,
+                                    label: "Fetch",
+                                    enabled: has_repo && !busy,
+                                });
+                                overflow.push(OverflowItem {
+                                    kind: OverflowKind::Pull,
+                                    icon: icons::SWAP_VERT,
+                                    label: "Pull",
+                                    enabled: has_repo && !busy,
+                                });
+                                overflow.push(OverflowItem {
+                                    kind: OverflowKind::Push,
+                                    icon: icons::UPLOAD,
+                                    label: "Push",
+                                    enabled: has_repo && !busy,
+                                });
                             }
 
                             // ── Branch ops: New Branch / Stash ────────────
                             let avail = ui.available_width();
                             if avail >= BRANCH_OPS_W + OVERFLOW_BTN_W {
-                                if widgets::toolbar_btn_icon(ui, icons::HUB, "New Branch", has_repo && !busy)
-                                    .on_hover_text("Create a new branch").clicked()
-                                { action = Some(ToolbarAction::CreateBranch); }
+                                if widgets::toolbar_btn_icon(
+                                    ui,
+                                    icons::HUB,
+                                    "New Branch",
+                                    has_repo && !busy,
+                                )
+                                .on_hover_text("Create a new branch")
+                                .clicked()
+                                {
+                                    action = Some(ToolbarAction::CreateBranch);
+                                }
 
                                 ui.add_space(3.0);
 
-                                if widgets::toolbar_btn_icon(ui, icons::HISTORY, "Stash", has_repo && dirty && !busy)
-                                    .on_hover_text("Stash uncommitted changes").clicked()
-                                { action = Some(ToolbarAction::Stash); }
+                                if widgets::toolbar_btn_icon(
+                                    ui,
+                                    icons::HISTORY,
+                                    "Stash",
+                                    has_repo && dirty && !busy,
+                                )
+                                .on_hover_text("Stash uncommitted changes")
+                                .clicked()
+                                {
+                                    action = Some(ToolbarAction::Stash);
+                                }
 
                                 ui.add_space(6.0);
                                 vsep(ui);
                                 ui.add_space(6.0);
                             } else {
-                                overflow.push(OverflowItem { kind: OverflowKind::NewBranch, icon: icons::HUB,     label: "New Branch", enabled: has_repo && !busy });
-                                overflow.push(OverflowItem { kind: OverflowKind::Stash,     icon: icons::HISTORY, label: "Stash",      enabled: has_repo && dirty && !busy });
+                                overflow.push(OverflowItem {
+                                    kind: OverflowKind::NewBranch,
+                                    icon: icons::HUB,
+                                    label: "New Branch",
+                                    enabled: has_repo && !busy,
+                                });
+                                overflow.push(OverflowItem {
+                                    kind: OverflowKind::Stash,
+                                    icon: icons::HISTORY,
+                                    label: "Stash",
+                                    enabled: has_repo && dirty && !busy,
+                                });
                             }
 
                             // ── Branch filter toggle ───────────────────────
                             let avail = ui.available_width();
                             if avail >= FILTER_W + OVERFLOW_BTN_W {
-                                let filter_color = if show_all_branches { theme::ACCENT_BLUE } else { theme::text_secondary() };
-                                let (fi, fl) = if show_all_branches { (icons::SOURCE, "All Branches") } else { (icons::COMMIT, "This Branch") };
+                                let filter_color = if show_all_branches {
+                                    theme::ACCENT_BLUE
+                                } else {
+                                    theme::text_secondary()
+                                };
+                                let (fi, fl) = if show_all_branches {
+                                    (icons::SOURCE, "All Branches")
+                                } else {
+                                    (icons::COMMIT, "This Branch")
+                                };
                                 if widgets::toolbar_btn_icon_colored(
                                     ui,
                                     fi,
@@ -304,53 +442,101 @@ impl Toolbar {
                                     filter_color,
                                     true,
                                     theme::bg_panel(),
-                                    if show_all_branches { theme::ACCENT_BLUE.gamma_multiply(0.4) } else { theme::border() },
-                                ).on_hover_text("Toggle: show all branches or current branch only").clicked() {
+                                    if show_all_branches {
+                                        theme::ACCENT_BLUE.gamma_multiply(0.4)
+                                    } else {
+                                        theme::border()
+                                    },
+                                )
+                                .on_hover_text("Toggle: show all branches or current branch only")
+                                .clicked()
+                                {
                                     action = Some(ToolbarAction::ToggleAllBranches);
                                 }
                             } else {
-                                overflow.push(OverflowItem { kind: OverflowKind::BranchFilter, icon: icons::SOURCE, label: "Toggle Branch Filter", enabled: true });
+                                overflow.push(OverflowItem {
+                                    kind: OverflowKind::BranchFilter,
+                                    icon: icons::SOURCE,
+                                    label: "Toggle Branch Filter",
+                                    enabled: true,
+                                });
                             }
 
                             // ── Overflow ⋯ button ─────────────────────────
                             if !overflow.is_empty() {
                                 ui.add_space(4.0);
                                 let more_id = ui.make_persistent_id("toolbar_overflow_popup");
-                                let more_btn = widgets::icon_btn_mat(ui, icons::MORE_VERT, 18.0, "More actions");
+                                let more_btn = widgets::icon_btn_mat(
+                                    ui,
+                                    icons::MORE_VERT,
+                                    18.0,
+                                    "More actions",
+                                );
                                 if more_btn.clicked() {
                                     ui.ctx().memory_mut(|m| m.toggle_popup(more_id));
                                 }
                                 let mut overflow_action: Option<ToolbarAction> = None;
-                                egui::popup_below_widget::<()>(ui, more_id, &more_btn, egui::PopupCloseBehavior::CloseOnClickOutside, |ui: &mut egui::Ui| {
-                                    ui.set_min_width(190.0);
-                                    for item in &overflow {
-                                        let mut job = egui::text::LayoutJob::default();
-                                        job.append(&item.icon.to_string(), 0.0, egui::TextFormat {
-                                            font_id: icons::font(14.0),
-                                            color: if item.enabled { theme::text_secondary() } else { theme::text_muted() },
-                                            line_height: Some(16.0),
-                                            valign: egui::Align::Center,
-                                            ..Default::default()
-                                        });
-                                        job.append(&format!("  {}", item.label), 0.0, egui::TextFormat {
-                                            font_id: egui::FontId::proportional(12.5),
-                                            color: if item.enabled { theme::text_secondary() } else { theme::text_muted() },
-                                            line_height: Some(16.0),
-                                            valign: egui::Align::Center,
-                                            ..Default::default()
-                                        });
-                                        if ui.add_enabled(item.enabled,
-                                            egui::Button::new(job).fill(egui::Color32::TRANSPARENT).stroke(Stroke::NONE)
-                                                .min_size(egui::vec2(180.0, 28.0))
-                                        ).clicked() {
-                                            overflow_action = Some(item.kind.to_action(show_all_branches));
-                                            ui.ctx().memory_mut(|m| m.close_popup());
+                                egui::popup_below_widget::<()>(
+                                    ui,
+                                    more_id,
+                                    &more_btn,
+                                    egui::PopupCloseBehavior::CloseOnClickOutside,
+                                    |ui: &mut egui::Ui| {
+                                        ui.set_min_width(190.0);
+                                        for item in &overflow {
+                                            let mut job = egui::text::LayoutJob::default();
+                                            job.append(
+                                                &item.icon.to_string(),
+                                                0.0,
+                                                egui::TextFormat {
+                                                    font_id: icons::font(14.0),
+                                                    color: if item.enabled {
+                                                        theme::text_secondary()
+                                                    } else {
+                                                        theme::text_muted()
+                                                    },
+                                                    line_height: Some(16.0),
+                                                    valign: egui::Align::Center,
+                                                    ..Default::default()
+                                                },
+                                            );
+                                            job.append(
+                                                &format!("  {}", item.label),
+                                                0.0,
+                                                egui::TextFormat {
+                                                    font_id: egui::FontId::proportional(12.5),
+                                                    color: if item.enabled {
+                                                        theme::text_secondary()
+                                                    } else {
+                                                        theme::text_muted()
+                                                    },
+                                                    line_height: Some(16.0),
+                                                    valign: egui::Align::Center,
+                                                    ..Default::default()
+                                                },
+                                            );
+                                            if ui
+                                                .add_enabled(
+                                                    item.enabled,
+                                                    egui::Button::new(job)
+                                                        .fill(egui::Color32::TRANSPARENT)
+                                                        .stroke(Stroke::NONE)
+                                                        .min_size(egui::vec2(180.0, 28.0)),
+                                                )
+                                                .clicked()
+                                            {
+                                                overflow_action =
+                                                    Some(item.kind.to_action(show_all_branches));
+                                                ui.ctx().memory_mut(|m| m.close_popup());
+                                            }
                                         }
-                                    }
-                                });
-                                if overflow_action.is_some() { action = overflow_action; }
+                                    },
+                                );
+                                if overflow_action.is_some() {
+                                    action = overflow_action;
+                                }
                             }
-                        }
+                        },
                     ); // end allocate_ui_with_layout (left section)
 
                     // ── Right section ─────────────────────────────────────
@@ -359,9 +545,17 @@ impl Toolbar {
 
                         // Avatar
                         let initials = self.state.lock().unwrap().git_user_initials.clone();
-                        let (av_rect, av_resp) = ui.allocate_exact_size(egui::Vec2::splat(28.0), egui::Sense::click());
-                        ui.painter().circle_filled(av_rect.center(), 14.0, theme::ACCENT_PURPLE);
-                        ui.painter().text(av_rect.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::proportional(10.0), egui::Color32::WHITE);
+                        let (av_rect, av_resp) =
+                            ui.allocate_exact_size(egui::Vec2::splat(28.0), egui::Sense::click());
+                        ui.painter()
+                            .circle_filled(av_rect.center(), 14.0, theme::ACCENT_PURPLE);
+                        ui.painter().text(
+                            av_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            &initials,
+                            egui::FontId::proportional(10.0),
+                            egui::Color32::WHITE,
+                        );
                         if av_resp.on_hover_text("Account settings").clicked() {
                             action = Some(ToolbarAction::OpenUserMenu);
                         }
@@ -370,32 +564,65 @@ impl Toolbar {
                         vsep(ui);
                         ui.add_space(8.0);
 
-                        if widgets::icon_btn_mat(ui, icons::HISTORY, 18.0, "Reflog").clicked()
-                        { action = Some(ToolbarAction::OpenReflog); }
+                        if widgets::icon_btn_mat(ui, icons::HISTORY, 18.0, "Reflog").clicked() {
+                            action = Some(ToolbarAction::OpenReflog);
+                        }
 
                         ui.add_space(4.0);
 
-                        if widgets::icon_btn_mat(ui, icons::BUG_REPORT, 18.0, "Provider integrations  (issues, CI, releases)").clicked()
-                        { action = Some(ToolbarAction::OpenProvider); }
+                        if widgets::icon_btn_mat(
+                            ui,
+                            icons::BUG_REPORT,
+                            18.0,
+                            "Provider integrations  (issues, CI, releases)",
+                        )
+                        .clicked()
+                        {
+                            action = Some(ToolbarAction::OpenProvider);
+                        }
 
                         ui.add_space(4.0);
 
-                        let theme_icon = if dark_theme { icons::LIGHT_MODE } else { icons::DARK_MODE };
-                        if widgets::icon_btn_mat(ui, theme_icon, 18.0, "Toggle theme").clicked()
-                        { action = Some(ToolbarAction::ToggleTheme); }
+                        let theme_icon = if dark_theme {
+                            icons::LIGHT_MODE
+                        } else {
+                            icons::DARK_MODE
+                        };
+                        if widgets::icon_btn_mat(ui, theme_icon, 18.0, "Toggle theme").clicked() {
+                            action = Some(ToolbarAction::ToggleTheme);
+                        }
 
                         ui.add_space(4.0);
 
-                        if widgets::icon_btn_mat(ui, icons::TERMINAL, 18.0, "Command palette  (Ctrl+K)").clicked()
-                        { action = Some(ToolbarAction::OpenCommandPalette); }
+                        if widgets::icon_btn_mat(
+                            ui,
+                            icons::TERMINAL,
+                            18.0,
+                            "Command palette  (Ctrl+K)",
+                        )
+                        .clicked()
+                        {
+                            action = Some(ToolbarAction::OpenCommandPalette);
+                        }
 
                         ui.add_space(4.0);
 
-                        let sc = if search_active { theme::ACCENT_TEAL } else { theme::text_muted() };
-                        if ui.add(egui::Button::new(icons::rich(icons::SEARCH, 18.0).color(sc))
-                            .fill(egui::Color32::TRANSPARENT).stroke(Stroke::NONE))
-                            .on_hover_text("Search commits  (Ctrl+F)").clicked()
-                        { action = Some(ToolbarAction::ToggleSearch); }
+                        let sc = if search_active {
+                            theme::ACCENT_TEAL
+                        } else {
+                            theme::text_muted()
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(icons::rich(icons::SEARCH, 18.0).color(sc))
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .stroke(Stroke::NONE),
+                            )
+                            .on_hover_text("Search commits  (Ctrl+F)")
+                            .clicked()
+                        {
+                            action = Some(ToolbarAction::ToggleSearch);
+                        }
 
                         ui.add_space(8.0);
                         vsep(ui);
@@ -403,7 +630,13 @@ impl Toolbar {
 
                         // Branch switcher — cap branch name to prevent right section bloat
                         {
-                            let branch_raw = self.state.lock().unwrap().head_branch.clone().unwrap_or_else(|| "HEAD".into());
+                            let branch_raw = self
+                                .state
+                                .lock()
+                                .unwrap()
+                                .head_branch
+                                .clone()
+                                .unwrap_or_else(|| "HEAD".into());
                             let branch = if branch_raw.len() > 22 {
                                 format!("{}…", &branch_raw[..21])
                             } else {
@@ -417,7 +650,10 @@ impl Toolbar {
                                 true,
                                 theme::bg_panel(),
                                 theme::ACCENT_TEAL.gamma_multiply(0.4),
-                            ).on_hover_text("Switch branch  (Ctrl+B)").clicked() {
+                            )
+                            .on_hover_text("Switch branch  (Ctrl+B)")
+                            .clicked()
+                            {
                                 action = Some(ToolbarAction::OpenBranchSwitcher);
                             }
                         }

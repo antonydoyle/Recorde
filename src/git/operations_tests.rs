@@ -18,16 +18,90 @@ fn rename_conflicts_report_every_path_and_its_available_sides() {
     assert!(conflicts.iter().all(|entry| entry.version.is_some()));
     let ours = conflicts.iter().find(|entry| entry.path == "ours").unwrap();
     assert!(!ours.ours_deleted && ours.theirs_deleted);
-    let theirs = conflicts.iter().find(|entry| entry.path == "theirs").unwrap();
+    let theirs = conflicts
+        .iter()
+        .find(|entry| entry.path == "theirs")
+        .unwrap();
     assert!(theirs.ours_deleted && !theirs.theirs_deleted);
     assert_eq!(std::fs::read(repo.path().join("ours")).unwrap(), b"base\n");
-    assert_eq!(std::fs::read(repo.path().join("theirs")).unwrap(), b"base\n");
+    assert_eq!(
+        std::fs::read(repo.path().join("theirs")).unwrap(),
+        b"base\n"
+    );
+}
+
+#[test]
+fn sparse_index_in_linked_worktree_keeps_status_and_other_worktrees_independent() {
+    let main = TestRepo::new();
+    for name in ["included", "excluded"] {
+        std::fs::create_dir(main.path().join(name)).unwrap();
+    }
+    main.commit("included/file", b"keep\n");
+    let original = main.commit("excluded/file", b"hidden\n");
+    let root = tempfile::tempdir().unwrap();
+    let linked = root.path().join("linked");
+    main.git_ok(&["worktree", "add", "-b", "linked", linked.to_str().unwrap()]);
+    let git = |args: &[&str]| {
+        let mut all = vec!["-C", linked.to_str().unwrap()];
+        all.extend_from_slice(args);
+        main.git(&all)
+    };
+    let sparse = git(&[
+        "sparse-checkout",
+        "set",
+        "--cone",
+        "--sparse-index",
+        "included",
+    ]);
+    assert!(
+        sparse.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sparse.stderr)
+    );
+    let repo = git2::Repository::open(&linked).unwrap();
+    assert!(capabilities::detect(&linked).is_sparse);
+    assert!(capabilities::detect(&linked).has_worktrees);
+    assert!(!capabilities::detect(main.path()).is_sparse);
+    assert_eq!(collect_status(&repo).unwrap().0, 0);
+    std::fs::write(linked.join("included/file"), b"linked edit\n").unwrap();
+    let (_, files) = collect_status(&repo).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "included/file");
+    assert_eq!(files[0].unstaged_status, Some('M'));
+    assert!(git(&["add", "--", "included/file"]).status.success());
+    let (_, files) = collect_status(&repo).unwrap();
+    assert_eq!(files[0].staged_status, Some('M'));
+    let checkpoint = crate::git::recovery::capture(&linked, "Sparse linked snapshot")
+        .unwrap()
+        .unwrap();
+    let snapshot = repo
+        .find_commit(git2::Oid::from_str(checkpoint.snapshot.as_ref().unwrap()).unwrap())
+        .unwrap();
+    assert!(snapshot
+        .tree()
+        .unwrap()
+        .get_path(Path::new("excluded/file"))
+        .is_ok());
+    assert!(git(&["commit", "-m", "linked change"]).status.success());
+    crate::git::lifecycle::set_sparse(&linked, None).unwrap();
+    assert_eq!(
+        std::fs::read(linked.join("excluded/file")).unwrap(),
+        b"hidden\n"
+    );
+    assert_eq!(main.head(), original);
+    assert_eq!(main.index_bytes("included/file"), b"keep\n");
+    assert_eq!(
+        std::fs::read(main.path().join("excluded/file")).unwrap(),
+        b"hidden\n"
+    );
 }
 
 #[test]
 fn sparse_status_omits_absent_directories_and_reports_real_edits() {
     let repo = TestRepo::new();
-    for name in ["included", "excluded"] { std::fs::create_dir(repo.path().join(name)).unwrap(); }
+    for name in ["included", "excluded"] {
+        std::fs::create_dir(repo.path().join(name)).unwrap();
+    }
     repo.commit("included/file", b"keep\n");
     repo.commit("excluded/file", b"hidden\n");
     crate::git::lifecycle::set_sparse(repo.path(), Some(vec!["included".into()])).unwrap();
@@ -37,10 +111,18 @@ fn sparse_status_omits_absent_directories_and_reports_real_edits() {
     assert_eq!(count, 1);
     assert_eq!(files[0].path, "included/file");
     assert_eq!(files[0].unstaged_status, Some('M'));
-    let saved = crate::git::recovery::capture(repo.path(), "Sparse snapshot").unwrap().unwrap();
+    let saved = crate::git::recovery::capture(repo.path(), "Sparse snapshot")
+        .unwrap()
+        .unwrap();
     let opened = repo.open();
-    let snapshot = opened.find_commit(git2::Oid::from_str(saved.snapshot.as_ref().unwrap()).unwrap()).unwrap();
-    assert!(snapshot.tree().unwrap().get_path(Path::new("excluded/file")).is_ok());
+    let snapshot = opened
+        .find_commit(git2::Oid::from_str(saved.snapshot.as_ref().unwrap()).unwrap())
+        .unwrap();
+    assert!(snapshot
+        .tree()
+        .unwrap()
+        .get_path(Path::new("excluded/file"))
+        .is_ok());
 }
 
 #[test]
@@ -161,7 +243,8 @@ fn restored_worktree_diff_is_reloaded_after_offscreen_edits() {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "restored diff was not refreshed: {:?}", state.lock().unwrap().error
+            "restored diff was not refreshed: {:?}",
+            state.lock().unwrap().error
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -334,12 +417,25 @@ fn provider_requests_reject_out_of_order_and_changed_context_results() {
 fn status_capabilities_invalidate_requests_when_provider_remote_changes() {
     let repo = TestRepo::new();
     repo.commit("file", b"base");
-    repo.git_ok(&["remote", "add", "origin", "https://github.com/example/first.git"]);
-    let mut state = AppState { repo_path: Some(repo.path().into()), ..Default::default() };
+    repo.git_ok(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/example/first.git",
+    ]);
+    let mut state = AppState {
+        repo_path: Some(repo.path().into()),
+        ..Default::default()
+    };
     apply_capabilities(&mut state, capabilities::detect(repo.path()));
     let pending = ProviderScope::begin(&mut state, ProviderRead::PullRequests).unwrap();
     state.pr_loaded = true;
-    repo.git_ok(&["remote", "set-url", "origin", "https://github.com/example/second.git"]);
+    repo.git_ok(&[
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/example/second.git",
+    ]);
     apply_capabilities(&mut state, capabilities::detect(repo.path()));
     assert!(!state.pr_loaded);
     assert!(!pending.is_current(&state));

@@ -24,17 +24,43 @@ fn branch_push_override_and_lease_target_the_fork_without_changing_pull_upstream
     local.git_ok(&["config", "branch.main.pushRemote", "fork"]);
     let before = local.head();
     let lease = capture_lease(local.path()).unwrap();
-    assert_eq!(lease.remote, "fork"); assert_eq!(lease.destination, "refs/heads/main");
+    assert_eq!(lease.remote, "fork");
+    assert_eq!(lease.destination, "refs/heads/main");
     assert_eq!(lease.expected, before.to_string());
     let next = local.commit("next", b"next");
     push(local.path(), &AtomicBool::new(false)).unwrap();
     assert_eq!(fork.refname_to_id("refs/heads/main").unwrap(), next);
-    assert_eq!(git2::Repository::open_bare(upstream_dir.path()).unwrap().refname_to_id("refs/heads/trunk").unwrap(), before);
+    assert_eq!(
+        git2::Repository::open_bare(upstream_dir.path())
+            .unwrap()
+            .refname_to_id("refs/heads/trunk")
+            .unwrap(),
+        before
+    );
     assert_eq!(upstream(local.path()).unwrap().0, "upstream");
-    save_remote(local.path(), "personal", fork_dir.path().to_str().unwrap(), Some("fork")).unwrap();
-    assert_eq!(local.open().config().unwrap().get_string("branch.main.pushRemote").unwrap(), "personal");
+    save_remote(
+        local.path(),
+        "personal",
+        fork_dir.path().to_str().unwrap(),
+        Some("fork"),
+    )
+    .unwrap();
+    assert_eq!(
+        local
+            .open()
+            .config()
+            .unwrap()
+            .get_string("branch.main.pushRemote")
+            .unwrap(),
+        "personal"
+    );
     remove_remote(local.path(), "personal").unwrap();
-    assert!(local.open().config().unwrap().get_string("branch.main.pushRemote").is_err());
+    assert!(local
+        .open()
+        .config()
+        .unwrap()
+        .get_string("branch.main.pushRemote")
+        .is_err());
 }
 
 #[test]

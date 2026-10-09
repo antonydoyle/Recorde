@@ -1,18 +1,7 @@
 // On Windows, suppress the console window that would otherwise open alongside the GUI.
-#![cfg_attr(windows, windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
-mod app;
-mod auth;
-mod config;
-mod crash;
-mod git;
-mod icons;
-mod providers;
-mod state;
-mod theme;
-mod ui;
-
-use app::RecordeApp;
+use recorde::{app::RecordeApp, auth, crash};
 
 fn main() -> eframe::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--credential-helper") {
@@ -45,4 +34,16 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-pub mod external;
+#[cfg(all(test, windows))]
+mod tests {
+    #[test]
+    fn test_executable_uses_console_subsystem() {
+        let bytes = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let offset = u32::from_le_bytes(bytes[60..64].try_into().unwrap()) as usize;
+        let subsystem = u16::from_le_bytes(bytes[offset + 92..offset + 94].try_into().unwrap());
+        assert_eq!(
+            subsystem, 3,
+            "The GUI subsystem attribute must exclude test executables"
+        );
+    }
+}

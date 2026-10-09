@@ -2,13 +2,14 @@ use std::path::Path;
 
 /// Returns true if `git lfs` is installed and callable (exit code 0).
 pub fn is_lfs_installed() -> bool {
-    std::process::Command::new("git")
-        .args(["lfs", "version"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let mut command = super::process::background_command("git");
+    command.args(["lfs", "version"]);
+    super::process::run(
+        &mut command,
+        &std::sync::atomic::AtomicBool::new(false),
+        std::time::Duration::from_secs(10),
+    )
+    .is_ok_and(|out| out.status.success())
 }
 
 /// Returns true if the repo has a `.git/lfs` directory OR `.gitattributes`

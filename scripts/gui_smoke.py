@@ -45,6 +45,7 @@ def main():
     split_selection = "--split-selection" in sys.argv[3:]
     line_selection = "--line-selection" in sys.argv[3:] or split_selection
     frame_profile = "--frame-profile" in sys.argv[3:]
+    repository_settings = "--repository-settings" in sys.argv[3:]
     assert not (image_preview and line_selection), "Select one GUI fixture"
     artifacts.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="recorde-gui-") as temporary:
@@ -116,7 +117,7 @@ def main():
                         time.sleep(8)
                         if app.poll() is not None:
                             raise RuntimeError(f"GUI exited with code {app.returncode}; see gui-smoke.log")
-                        if image_preview or line_selection:
+                        if image_preview or line_selection or repository_settings:
                             # Select the sole working file in the fixed 1280x800 fixture.
                             # Use a child so Xlib reads only this private display/cookie.
                             click = '''import ctypes
@@ -137,6 +138,25 @@ x.XFlush(d)
 x.XCloseDisplay(d)
 '''
                             subprocess.run([sys.executable, "-c", click], env=env, check=True)
+                            time.sleep(2)
+                        if repository_settings:
+                            menu = click.replace("80, 485", "180, 17")
+                            subprocess.run([sys.executable, "-c", menu], env=env, check=True)
+                            time.sleep(1)
+                            png_from_xwd(root / "Xvfb_screen0", artifacts / "settings-menu.png")
+                            choose = click.replace("80, 485", "225, 450")
+                            subprocess.run([sys.executable, "-c", choose], env=env, check=True)
+                            time.sleep(2)
+                            png_from_xwd(root / "Xvfb_screen0", artifacts / "settings-top.png")
+                            scroll = click.split("t.XTestFakeMotionEvent(d, -1, 80, 485, 0)")[0] + '''import time
+t.XTestFakeMotionEvent(d, -1, 700, 460, 0)
+for _ in range(9):
+    t.XTestFakeButtonEvent(d, 5, 1, 0)
+    t.XTestFakeButtonEvent(d, 5, 0, 20)
+    x.XFlush(d)
+    time.sleep(0.1)
+x.XCloseDisplay(d)'''
+                            subprocess.run([sys.executable, "-c", scroll], env=env, check=True)
                             time.sleep(2)
                         if line_selection:
                             select = click.split("t.XTestFakeMotionEvent(d, -1, 80, 485, 0)")[0] + '''import time

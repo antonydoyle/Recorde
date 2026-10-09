@@ -83,7 +83,10 @@ fn cherry_pick_conflict_can_continue_and_preserves_author() {
     let opened = repo.open();
     let commit = opened.head().unwrap().peel_to_commit().unwrap();
     assert_eq!(commit.author().email().ok(), Some("author@example.com"));
-    assert_eq!(commit.committer().email().ok(), Some("committer@example.com"));
+    assert_eq!(
+        commit.committer().email().ok(),
+        Some("committer@example.com")
+    );
     assert!(!opened.path().join("CHERRY_PICK_HEAD").exists());
     assert_eq!(repo.index_bytes("file.txt"), b"resolved\n");
 }
@@ -111,7 +114,10 @@ fn successful_cherry_pick_preserves_original_author() {
     let opened = repo.open();
     let commit = opened.head().unwrap().peel_to_commit().unwrap();
     assert_eq!(commit.author().email().ok(), Some("author@example.com"));
-    assert_eq!(commit.committer().email().ok(), Some("committer@example.com"));
+    assert_eq!(
+        commit.committer().email().ok(),
+        Some("committer@example.com")
+    );
 }
 
 #[test]

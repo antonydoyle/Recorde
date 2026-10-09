@@ -85,33 +85,24 @@ pub fn run(operation: &str) {
 }
 
 fn system_helper(input: &str, path: Option<&Path>) -> Result<String, String> {
-    use std::process::{Command, Stdio};
-    let mut command = Command::new("git");
+    let mut command = crate::git::process::background_command("git");
     if let Some(path) = path {
         command.arg("-C").arg(path);
     }
-    let mut child = command
+    command
         .args(["credential", "fill"])
         // Drop the parent command's temporary helper override before consulting
         // the repository/system helpers. The recursion guard fails closed.
         .env_remove("GIT_CONFIG_PARAMETERS")
         .env_remove("GIT_CONFIG_COUNT")
         .env("RECORDE_HELPER_ACTIVE", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "Cannot start system credential helper.")?;
-    child
-        .stdin
-        .take()
-        .ok_or("Cannot open helper input.")?
-        .write_all(input.as_bytes())
-        .map_err(|_| "Cannot write helper input.")?;
-    let output = child
-        .wait_with_output()
-        .map_err(|_| "System credential helper stopped.")?;
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let output = crate::git::process::run_with_input(
+        &mut command,
+        input.as_bytes(),
+        std::time::Duration::from_secs(60),
+    )
+    .map_err(|_| "System credential helper stopped.")?;
     if !output.status.success() {
         return Err("No credentials available from the configured Git helpers.".into());
     }

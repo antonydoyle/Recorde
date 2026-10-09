@@ -4,11 +4,11 @@ use crate::state::ReflogEntry;
 
 /// Load reflog for HEAD (up to 200 entries).
 pub fn load_reflog(repo_path: &Path) -> Vec<ReflogEntry> {
-    let Ok(output) = std::process::Command::new("git")
-        .arg("-C").arg(repo_path)
-        .args(["reflog", "--format=%H\t%h\t%gd\t%gs\t%ct", "-n", "200"])
-        .output()
-    else {
+    let Ok(output) = super::process::git(
+        repo_path,
+        &["reflog", "--format=%H\t%h\t%gd\t%gs\t%ct", "-n", "200"],
+        &std::sync::atomic::AtomicBool::new(false),
+    ) else {
         return Vec::new();
     };
 
@@ -16,12 +16,18 @@ pub fn load_reflog(repo_path: &Path) -> Vec<ReflogEntry> {
         .lines()
         .filter_map(|line| {
             let mut parts = line.splitn(5, '\t');
-            let oid       = parts.next()?.trim().to_string();
+            let oid = parts.next()?.trim().to_string();
             let short_oid = parts.next()?.trim().to_string();
-            let refname   = parts.next()?.trim().to_string();
-            let message   = parts.next()?.trim().to_string();
+            let refname = parts.next()?.trim().to_string();
+            let message = parts.next()?.trim().to_string();
             let timestamp = parts.next()?.trim().parse::<i64>().unwrap_or(0);
-            Some(ReflogEntry { oid, short_oid, refname, message, timestamp })
+            Some(ReflogEntry {
+                oid,
+                short_oid,
+                refname,
+                message,
+                timestamp,
+            })
         })
         .collect()
 }
@@ -29,11 +35,18 @@ pub fn load_reflog(repo_path: &Path) -> Vec<ReflogEntry> {
 /// Recover a reflog entry by creating a branch at that OID.
 pub fn recover(repo_path: &Path, oid: &str, branch_name: &str) -> Result<(), String> {
     let oid = git2::Oid::from_str(oid).map_err(|_| "Recovery requires an exact commit ID.")?;
-    if branch_name.starts_with('-') || !git2::Reference::is_valid_name(&format!("refs/heads/{branch_name}")) {
+    if branch_name.starts_with('-')
+        || !git2::Reference::is_valid_name(&format!("refs/heads/{branch_name}"))
+    {
         return Err("Invalid recovery branch name.".into());
     }
-    super::process::git(repo_path, &["branch", "--", branch_name, &oid.to_string()], &std::sync::atomic::AtomicBool::new(false))
-        .map(|_| ()).map_err(|e| e.user_message())
+    super::process::git(
+        repo_path,
+        &["branch", "--", branch_name, &oid.to_string()],
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .map(|_| ())
+    .map_err(|e| e.user_message())
 }
 
 /// Return true if a bisect is currently active in this repo.
@@ -61,6 +74,9 @@ mod tests {
         assert!(recover(repo.path(), "--force", "recovered").is_err());
         assert_eq!(repo.head(), head);
         recover(repo.path(), &head.to_string(), "recovered").unwrap();
-        assert_eq!(repo.open().refname_to_id("refs/heads/recovered").unwrap(), head);
+        assert_eq!(
+            repo.open().refname_to_id("refs/heads/recovered").unwrap(),
+            head
+        );
     }
 }

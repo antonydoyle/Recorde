@@ -2,14 +2,18 @@ use std::path::PathBuf;
 
 pub struct SshDiagnostics {
     pub agent_running: bool,
-    pub agent_keys: Vec<String>,  // lines from ssh-add -l
+    pub agent_keys: Vec<String>,        // lines from ssh-add -l
     pub key_files: Vec<(String, bool)>, // (name, exists)
 }
 
 pub fn diagnose() -> SshDiagnostics {
-    let agent_output = std::process::Command::new("ssh-add")
-        .arg("-l")
-        .output();
+    let mut command = crate::git::process::background_command("ssh-add");
+    command.arg("-l");
+    let agent_output = crate::git::process::run(
+        &mut command,
+        &std::sync::atomic::AtomicBool::new(false),
+        std::time::Duration::from_secs(10),
+    );
 
     let (agent_running, agent_keys) = match agent_output {
         Ok(out) if out.status.success() => {
@@ -33,7 +37,11 @@ pub fn diagnose() -> SshDiagnostics {
 
     let key_files = key_file_status();
 
-    SshDiagnostics { agent_running, agent_keys, key_files }
+    SshDiagnostics {
+        agent_running,
+        agent_keys,
+        key_files,
+    }
 }
 
 fn key_file_status() -> Vec<(String, bool)> {

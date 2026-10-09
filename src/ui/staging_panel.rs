@@ -1,13 +1,18 @@
 use egui::{Color32, RichText, Ui, Vec2};
 
-use crate::git::{conflicts, operations::{load_blame, load_file_history, load_workdir_diff}, staging};
+use crate::git::{
+    conflicts,
+    operations::{load_blame, load_file_history, load_workdir_diff},
+    staging,
+};
 use crate::state::{ConflictedFile, DiffContext, PendingDiscard, SharedState, WorkingDirFile};
 use crate::theme;
 
 pub struct StagingPanel {
     state: SharedState,
     drafts: super::commit_draft::Drafts,
-    selections: std::collections::HashMap<std::path::PathBuf, std::collections::BTreeSet<(bool, String)>>,
+    selections:
+        std::collections::HashMap<std::path::PathBuf, std::collections::BTreeSet<(bool, String)>>,
     conflicts_expanded: bool,
     staged_expanded: bool,
     unstaged_expanded: bool,
@@ -31,12 +36,24 @@ impl StagingPanel {
         let repo = self.state.lock().unwrap().repo_path.clone();
         self.drafts.switch_to(repo);
         self.drafts.poll();
-        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::bg_surface());
+        ui.painter()
+            .rect_filled(ui.max_rect(), 0.0, theme::bg_surface());
         for (path, error) in &self.drafts.save_errors {
-            ui.colored_label(theme::ACCENT_RED, format!("Draft is only in memory ({}): {error}", path.display()));
+            ui.colored_label(
+                theme::ACCENT_RED,
+                format!("Draft is only in memory ({}): {error}", path.display()),
+            );
         }
 
-        let (files, conflicted, head_branch, selected_file, repo_path, any_seq_in_progress, git_user) = {
+        let (
+            files,
+            conflicted,
+            head_branch,
+            selected_file,
+            repo_path,
+            any_seq_in_progress,
+            git_user,
+        ) = {
             let s = self.state.lock().unwrap();
             let in_progress = s.capabilities.as_ref().map_or(false, |c| {
                 c.merge_in_progress || c.cherry_pick_in_progress || c.revert_in_progress
@@ -64,16 +81,42 @@ impl StagingPanel {
             .filter(|f| f.unstaged_status == Some('?'))
             .collect();
 
-        let selection = self.selections.entry(repo_path.clone().unwrap_or_default()).or_default();
-        selection.retain(|(staged, path)| files.iter().any(|file| &file.path == path && if *staged { file.staged_status.is_some() } else { file.unstaged_status.is_some() }));
+        let selection = self
+            .selections
+            .entry(repo_path.clone().unwrap_or_default())
+            .or_default();
+        selection.retain(|(staged, path)| {
+            files.iter().any(|file| {
+                &file.path == path
+                    && if *staged {
+                        file.staged_status.is_some()
+                    } else {
+                        file.unstaged_status.is_some()
+                    }
+            })
+        });
         let mut batch = None;
         if !selection.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 for (staged, label) in [(false, "Stage selected"), (true, "Unstage selected")] {
-                    let paths: Vec<_> = selection.iter().filter(|(side, _)| *side == staged).map(|(_, path)| path.clone()).collect();
-                    if ui.add_enabled(!paths.is_empty(), egui::Button::new(format!("{label} ({})", paths.len()))).clicked() { batch = Some((paths, staged)); }
+                    let paths: Vec<_> = selection
+                        .iter()
+                        .filter(|(side, _)| *side == staged)
+                        .map(|(_, path)| path.clone())
+                        .collect();
+                    if ui
+                        .add_enabled(
+                            !paths.is_empty(),
+                            egui::Button::new(format!("{label} ({})", paths.len())),
+                        )
+                        .clicked()
+                    {
+                        batch = Some((paths, staged));
+                    }
                 }
-                if ui.button("Clear selection").clicked() { selection.clear(); }
+                if ui.button("Clear selection").clicked() {
+                    selection.clear();
+                }
             });
         }
 
@@ -397,6 +440,9 @@ impl StagingPanel {
                     ui.add_space(12.0);
                     ui.checkbox(&mut self.drafts.current.signoff_enabled,
                         RichText::new("Sign off").color(theme::text_muted()).size(11.0));
+                    if ui.small_button("Identity / signing").clicked() {
+                        self.state.lock().unwrap().pending_commit_settings = true;
+                    }
                 });
 
                 ui.add_space(8.0);
@@ -461,10 +507,18 @@ impl StagingPanel {
             });
 
         // ── Apply actions ────────────────────────────────────────────────
-        if let Some(path) = do_stash_file    { crate::git::branches::stash_file(&path, self.state.clone()); }
-        if let Some(path) = do_choose_ours   { conflicts::choose_ours(&path, self.state.clone()); }
-        if let Some(path) = do_choose_theirs { conflicts::choose_theirs(&path, self.state.clone()); }
-        if let Some(path) = do_mark_resolved { conflicts::mark_resolved(&path, self.state.clone()); }
+        if let Some(path) = do_stash_file {
+            crate::git::branches::stash_file(&path, self.state.clone());
+        }
+        if let Some(path) = do_choose_ours {
+            conflicts::choose_ours(&path, self.state.clone());
+        }
+        if let Some(path) = do_choose_theirs {
+            conflicts::choose_theirs(&path, self.state.clone());
+        }
+        if let Some(path) = do_mark_resolved {
+            conflicts::mark_resolved(&path, self.state.clone());
+        }
         if let Some(path) = do_open_mergetool {
             if let Some(ref rp) = repo_path {
                 conflicts::open_mergetool(&path, rp, self.state.clone());
@@ -476,9 +530,15 @@ impl StagingPanel {
         if let Some(path) = do_unstage_file {
             staging::unstage_file(&path, self.state.clone());
         }
-        if let Some((paths, reverse)) = batch { staging::stage_files(paths, reverse, self.state.clone()); }
-        if do_stage_all { staging::stage_all(self.state.clone()); }
-        if do_unstage_all { staging::unstage_all(self.state.clone()); }
+        if let Some((paths, reverse)) = batch {
+            staging::stage_files(paths, reverse, self.state.clone());
+        }
+        if do_stage_all {
+            staging::stage_all(self.state.clone());
+        }
+        if do_unstage_all {
+            staging::unstage_all(self.state.clone());
+        }
 
         if let Some(path) = do_discard_file {
             self.state.lock().unwrap().pending_discard = Some(PendingDiscard::File { path });
@@ -490,14 +550,25 @@ impl StagingPanel {
 
         if do_commit || do_amend {
             let full_msg = build_message(
-                &self.drafts.current.subject, &self.drafts.current.body,
-                &self.drafts.current.co_authors, self.drafts.current.signoff_enabled,
-                &repo_path, &git_user,
+                &self.drafts.current.subject,
+                &self.drafts.current.body,
+                &self.drafts.current.co_authors,
+                self.drafts.current.signoff_enabled,
+                &repo_path,
+                &git_user,
             );
             let completion = if do_commit {
-                staging::create_commit(&full_msg, self.drafts.current.signoff_enabled, self.state.clone())
+                staging::create_commit(
+                    &full_msg,
+                    self.drafts.current.signoff_enabled,
+                    self.state.clone(),
+                )
             } else {
-                staging::amend_commit(&full_msg, self.drafts.current.signoff_enabled, self.state.clone())
+                staging::amend_commit(
+                    &full_msg,
+                    self.drafts.current.signoff_enabled,
+                    self.state.clone(),
+                )
             };
             if let Some(completion) = completion {
                 self.drafts.submitted(completion);
@@ -534,12 +605,14 @@ fn build_message(
         msg.push_str(body.trim());
     }
     // Trailers
-    let mut trailers: Vec<String> = co_authors.iter()
+    let mut trailers: Vec<String> = co_authors
+        .iter()
         .map(|a| format!("Co-Authored-By: {}", a))
         .collect();
     if signoff {
         // Read full name + email from git config for the sign-off line
-        let identity = repo_path.as_ref()
+        let identity = repo_path
+            .as_ref()
             .and_then(|p| git_identity_for_signoff(p))
             .or_else(|| git_identity_for_signoff(std::path::Path::new(".")));
         if let Some((name, email)) = identity {
@@ -554,9 +627,12 @@ fn build_message(
 }
 
 fn git_identity_for_signoff(repo_path: &std::path::Path) -> Option<(String, String)> {
-    let config = git2::Repository::open(repo_path).ok()?.config().ok()
+    let config = git2::Repository::open(repo_path)
+        .ok()?
+        .config()
+        .ok()
         .or_else(|| git2::Config::open_default().ok())?;
-    let name  = config.get_string("user.name").ok()?;
+    let name = config.get_string("user.name").ok()?;
     let email = config.get_string("user.email").ok()?;
     Some((name, email))
 }
@@ -578,22 +654,33 @@ fn load_commit_template(repo_path: &std::path::Path) -> Option<String> {
 fn open_file_in_editor(file_path: &str, repo_path: &Option<std::path::PathBuf>) {
     let Some(rp) = repo_path else { return };
     let full = rp.join(file_path);
-    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| {
-        #[cfg(target_os = "windows")] { "notepad".into() }
-        #[cfg(not(target_os = "windows"))] { "xdg-open".into() }
-    });
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| {
+            #[cfg(target_os = "windows")]
+            {
+                "notepad".into()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                "xdg-open".into()
+            }
+        });
     let mut parts = editor.split_whitespace();
     let Some(prog) = parts.next() else { return };
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("cmd")
-        .args(["/C", prog]).args(parts).arg(full)
+        .args(["/C", prog])
+        .args(parts)
+        .arg(full)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
     #[cfg(not(target_os = "windows"))]
     let _ = std::process::Command::new(prog)
-        .args(parts).arg(full)
+        .args(parts)
+        .arg(full)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -606,7 +693,6 @@ fn reveal_in_folder(file_path: &str, repo_path: &Option<std::path::PathBuf>) {
     let dir = dir.parent().unwrap_or(rp.as_path());
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
-
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -623,12 +709,16 @@ fn collapsible_section(
         let toggle = ui.add(
             egui::Button::new(
                 RichText::new(format!("{} {}  ({})", arrow, title, count))
-                    .color(theme::text_muted()).size(10.5).strong()
+                    .color(theme::text_muted())
+                    .size(10.5)
+                    .strong(),
             )
             .fill(Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE),
         );
-        if toggle.clicked() { *expanded = !*expanded; }
+        if toggle.clicked() {
+            *expanded = !*expanded;
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(12.0);
             add_right(ui);
@@ -646,33 +736,51 @@ fn file_row(
     staged: bool,
     add_btns: impl FnOnce(&mut Ui),
 ) -> egui::Response {
-    let row_resp = ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        let key = (staged, path.to_owned());
-        let mut checked = selection.contains(&key);
-        if ui.checkbox(&mut checked, "").on_hover_text(format!("Select {path} for batch staging")).changed() {
-            if checked { selection.insert(key); } else { selection.remove(&key); }
-        }
-        let (icon, color) = status_icon(status);
-        ui.label(RichText::new(icon).font(egui::FontId::monospace(11.0)).color(color))
+    let row_resp = ui
+        .horizontal(|ui| {
+            ui.add_space(4.0);
+            let key = (staged, path.to_owned());
+            let mut checked = selection.contains(&key);
+            if ui
+                .checkbox(&mut checked, "")
+                .on_hover_text(format!("Select {path} for batch staging"))
+                .changed()
+            {
+                if checked {
+                    selection.insert(key);
+                } else {
+                    selection.remove(&key);
+                }
+            }
+            let (icon, color) = status_icon(status);
+            ui.label(
+                RichText::new(icon)
+                    .font(egui::FontId::monospace(11.0))
+                    .color(color),
+            )
             .on_hover_text(status_tooltip(status));
-        ui.add_space(4.0);
-        let name = path.rsplit('/').next().unwrap_or(path);
-        let label = ui.selectable_label(
-            is_selected,
-            RichText::new(name)
-                .color(if is_selected { theme::bg_app() } else { theme::text_secondary() })
-                .size(12.0),
-        );
-        let label = label.on_hover_text(path);
-        if ui.available_width() > 150.0 {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(8.0);
-                add_btns(ui);
-            });
-        }
-        label
-    }).inner;
+            ui.add_space(4.0);
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let label = ui.selectable_label(
+                is_selected,
+                RichText::new(name)
+                    .color(if is_selected {
+                        theme::bg_app()
+                    } else {
+                        theme::text_secondary()
+                    })
+                    .size(12.0),
+            );
+            let label = label.on_hover_text(path);
+            if ui.available_width() > 150.0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(8.0);
+                    add_btns(ui);
+                });
+            }
+            label
+        })
+        .inner;
 
     row_resp
 }
@@ -685,25 +793,33 @@ fn small_btn(label: &str) -> egui::Button<'_> {
 }
 
 fn small_btn_accent(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(theme::bg_app()).size(10.5).strong())
-        .fill(theme::ACCENT_TEAL)
-        .stroke(egui::Stroke::new(1.0, theme::ACCENT_TEAL))
-        .min_size(egui::Vec2::new(0.0, 22.0))
+    egui::Button::new(
+        RichText::new(label)
+            .color(theme::bg_app())
+            .size(10.5)
+            .strong(),
+    )
+    .fill(theme::ACCENT_TEAL)
+    .stroke(egui::Stroke::new(1.0, theme::ACCENT_TEAL))
+    .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
 fn small_btn_danger(label: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(label).color(theme::ACCENT_RED).size(10.5))
         .fill(Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, theme::ACCENT_RED.gamma_multiply(0.5)))
+        .stroke(egui::Stroke::new(
+            1.0,
+            theme::ACCENT_RED.gamma_multiply(0.5),
+        ))
         .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
 fn status_icon(status: char) -> (&'static str, Color32) {
     match status {
         'A' | '?' => ("A", theme::ACCENT_GREEN),
-        'D'       => ("D", theme::ACCENT_RED),
-        'R'       => ("R", theme::ACCENT_YELLOW),
-        _         => ("M", theme::ACCENT_YELLOW),
+        'D' => ("D", theme::ACCENT_RED),
+        'R' => ("R", theme::ACCENT_YELLOW),
+        _ => ("M", theme::ACCENT_YELLOW),
     }
 }
 
@@ -723,27 +839,38 @@ fn conflict_file_row(
     is_selected: bool,
     add_btns: impl FnOnce(&mut Ui),
 ) -> egui::Response {
-    let row_resp = ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        ui.label(RichText::new("C").font(egui::FontId::monospace(11.0)).color(theme::ACCENT_RED).strong())
+    let row_resp = ui
+        .horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(
+                RichText::new("C")
+                    .font(egui::FontId::monospace(11.0))
+                    .color(theme::ACCENT_RED)
+                    .strong(),
+            )
             .on_hover_text("Conflicted");
-        ui.add_space(4.0);
-        let name = path.rsplit('/').next().unwrap_or(path);
-        let label = ui.selectable_label(
-            is_selected,
-            RichText::new(name)
-                .color(if is_selected { theme::bg_app() } else { theme::ACCENT_RED.gamma_multiply(0.85) })
-                .size(12.0),
-        );
-        let label = label.on_hover_text(path);
-        if ui.available_width() > 170.0 {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(8.0);
-                add_btns(ui);
-            });
-        }
-        label
-    }).inner;
+            ui.add_space(4.0);
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let label = ui.selectable_label(
+                is_selected,
+                RichText::new(name)
+                    .color(if is_selected {
+                        theme::bg_app()
+                    } else {
+                        theme::ACCENT_RED.gamma_multiply(0.85)
+                    })
+                    .size(12.0),
+            );
+            let label = label.on_hover_text(path);
+            if ui.available_width() > 170.0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(8.0);
+                    add_btns(ui);
+                });
+            }
+            label
+        })
+        .inner;
     row_resp
 }
 

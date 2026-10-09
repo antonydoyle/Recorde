@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use recorde::git::capabilities;
 use recorde::git::graph::CommitGraph;
-use recorde::git::runner::GitRunner;
 use recorde::git::job::JobProgress;
+use recorde::git::runner::GitRunner;
 use recorde::state::{AppState, SharedState};
 
 // ── TestRepo helper ───────────────────────────────────────────────────────────
@@ -47,7 +47,8 @@ impl TestRepo {
         let sig = repo.signature().expect("sig");
 
         let parent_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-        let parents: Vec<&git2::Commit> = parent_commit.as_ref().map(|c| vec![c]).unwrap_or_default();
+        let parents: Vec<&git2::Commit> =
+            parent_commit.as_ref().map(|c| vec![c]).unwrap_or_default();
 
         repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
             .expect("commit")
@@ -92,8 +93,11 @@ fn test_capability_detection_merge_in_progress() {
         .expect("open")
         .path()
         .to_owned();
-    std::fs::write(git_dir.join("MERGE_HEAD"), "0000000000000000000000000000000000000000\n")
-        .expect("write MERGE_HEAD");
+    std::fs::write(
+        git_dir.join("MERGE_HEAD"),
+        "0000000000000000000000000000000000000000\n",
+    )
+    .expect("write MERGE_HEAD");
 
     let caps = capabilities::detect(repo.path());
     assert!(caps.merge_in_progress, "should detect MERGE_HEAD");
@@ -161,10 +165,7 @@ fn test_runner_cancel_token() {
     repo.add_and_commit("initial", &[("file.txt", "hello")]);
 
     let mut runner = GitRunner::new();
-    let handle = runner.submit(
-        recorde::git::job::JobKind::FetchAll,
-        repo.path().to_owned(),
-    );
+    let handle = runner.submit(recorde::git::job::JobKind::FetchAll, repo.path().to_owned());
 
     // Immediately signal cancel
     handle.cancel.store(true, Ordering::Relaxed);
@@ -180,11 +181,16 @@ fn test_runner_cancel_token() {
                 _ => {}
             }
         }
-        if got_terminal { break; }
+        if got_terminal {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    assert!(got_terminal, "should receive terminal event even after cancel");
+    assert!(
+        got_terminal,
+        "should receive terminal event even after cancel"
+    );
 }
 
 // ── Conflict detection test ───────────────────────────────────────────────────
@@ -214,7 +220,8 @@ fn test_conflict_detection() {
     // Back to main, make a conflicting change
     {
         let r = git2::Repository::open(repo.path()).unwrap();
-        let main_ref = r.find_branch("main", git2::BranchType::Local)
+        let main_ref = r
+            .find_branch("main", git2::BranchType::Local)
             .or_else(|_| r.find_branch("master", git2::BranchType::Local))
             .unwrap();
         let obj = main_ref.get().peel(git2::ObjectType::Commit).unwrap();
@@ -227,38 +234,47 @@ fn test_conflict_detection() {
     repo.add_and_commit("main change", &[("conflict.txt", "main content\n")]);
 
     // Attempt to merge branch-a — should produce a conflict
-    let merge_result = std::process::Command::new("git")
-        .arg("-C").arg(repo.path())
-        .args(["merge", "--no-edit", "branch-a"])
-        .output()
-        .unwrap();
-
-    // Merge should have failed with conflicts
-    if merge_result.status.success() {
-        // If no conflict (fast-forward or clean merge), skip the rest
-        return;
+    {
+        let r = git2::Repository::open(repo.path()).unwrap();
+        let branch = r.find_reference("refs/heads/branch-a").unwrap();
+        let annotated = r.reference_to_annotated_commit(&branch).unwrap();
+        r.merge(&[&annotated], None, None).unwrap();
+        assert!(r.index().unwrap().has_conflicts());
     }
 
     // Now check conflict detection
     let r = git2::Repository::open(repo.path()).unwrap();
     let index = r.index().unwrap();
     let has_conflicts = index.has_conflicts();
-    assert!(has_conflicts, "index should have conflicts after failed merge");
+    assert!(
+        has_conflicts,
+        "index should have conflicts after failed merge"
+    );
 
     // The collect_conflicts logic from operations.rs
-    let conflicts: Vec<String> = index.conflicts().unwrap()
+    let conflicts: Vec<String> = index
+        .conflicts()
+        .unwrap()
         .filter_map(|c| c.ok())
         .filter_map(|entry| {
-            entry.our.as_ref()
+            entry
+                .our
+                .as_ref()
                 .or(entry.their.as_ref())
                 .or(entry.ancestor.as_ref())
                 .and_then(|e| std::str::from_utf8(&e.path).ok().map(|p| p.to_string()))
         })
         .collect();
 
-    assert!(!conflicts.is_empty(), "should detect at least one conflicted file");
-    assert!(conflicts.iter().any(|p| p.contains("conflict.txt")),
-        "conflict.txt should be in the conflict list, got: {:?}", conflicts);
+    assert!(
+        !conflicts.is_empty(),
+        "should detect at least one conflicted file"
+    );
+    assert!(
+        conflicts.iter().any(|p| p.contains("conflict.txt")),
+        "conflict.txt should be in the conflict list, got: {:?}",
+        conflicts
+    );
 }
 
 // ── Patch round-trip tests ────────────────────────────────────────────────────
@@ -268,8 +284,13 @@ fn test_stage_hunk_round_trip() {
     // Two separate hunks: stage only the first, verify second stays unstaged.
     let repo = TestRepo::new();
     // Create base file with two sections separated by context
-    repo.add_and_commit("base", &[("file.txt",
-        "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n")]);
+    repo.add_and_commit(
+        "base",
+        &[(
+            "file.txt",
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        )],
+    );
 
     // Modify lines far apart so git produces two hunks
     let modified = "CHANGED1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nCHANGED2\nline10\n";
@@ -279,12 +300,15 @@ fn test_stage_hunk_round_trip() {
     let git_repo = git2::Repository::open(repo.path()).unwrap();
     let mut diff_opts = git2::DiffOptions::new();
     diff_opts.pathspec("file.txt");
-    let diff = git_repo.diff_index_to_workdir(None, Some(&mut diff_opts)).unwrap();
+    let diff = git_repo
+        .diff_index_to_workdir(None, Some(&mut diff_opts))
+        .unwrap();
 
     // Collect hunks using Rc<RefCell<>> to share state across closures
-    use std::rc::Rc;
     use std::cell::RefCell;
-    let raw: Rc<RefCell<Vec<(String, Vec<recorde::state::DiffLine>)>>> = Rc::new(RefCell::new(Vec::new()));
+    use std::rc::Rc;
+    let raw: Rc<RefCell<Vec<(String, Vec<recorde::state::DiffLine>)>>> =
+        Rc::new(RefCell::new(Vec::new()));
     let raw_h = Rc::clone(&raw);
     let raw_l = Rc::clone(&raw);
 
@@ -292,7 +316,10 @@ fn test_stage_hunk_round_trip() {
         &mut |_, _| true,
         None,
         Some(&mut |_, h| {
-            let header = std::str::from_utf8(h.header()).unwrap_or("").trim_end().to_string();
+            let header = std::str::from_utf8(h.header())
+                .unwrap_or("")
+                .trim_end()
+                .to_string();
             raw_h.borrow_mut().push((header, Vec::new()));
             true
         }),
@@ -300,21 +327,31 @@ fn test_stage_hunk_round_trip() {
             if let Some(last) = raw_l.borrow_mut().last_mut() {
                 last.1.push(recorde::state::DiffLine {
                     origin: line.origin(),
-                    content: std::str::from_utf8(line.content()).unwrap_or("").to_string(),
+                    content: std::str::from_utf8(line.content())
+                        .unwrap_or("")
+                        .to_string(),
                     old_lineno: line.old_lineno(),
                     new_lineno: line.new_lineno(),
                 });
             }
             true
         }),
-    ).unwrap();
-    drop(raw_h); drop(raw_l);
-    let hunks: Vec<recorde::state::DiffHunk> = Rc::try_unwrap(raw).unwrap().into_inner()
+    )
+    .unwrap();
+    drop(raw_h);
+    drop(raw_l);
+    let hunks: Vec<recorde::state::DiffHunk> = Rc::try_unwrap(raw)
+        .unwrap()
+        .into_inner()
         .into_iter()
         .map(|(header, lines)| recorde::state::DiffHunk { header, lines })
         .collect();
 
-    assert!(hunks.len() >= 2, "expected at least 2 hunks, got {}", hunks.len());
+    assert!(
+        hunks.len() >= 2,
+        "expected at least 2 hunks, got {}",
+        hunks.len()
+    );
 
     // Stage just the first hunk
     let patch = recorde::git::patch::hunk_patch("file.txt", &hunks[0]);
@@ -322,19 +359,35 @@ fn test_stage_hunk_round_trip() {
 
     // Check staged diff: should have CHANGED1 staged
     let git_repo2 = git2::Repository::open(repo.path()).unwrap();
-    let head_tree = git_repo2.head().unwrap().peel_to_commit().unwrap().tree().unwrap();
-    let staged_diff = git_repo2.diff_tree_to_index(Some(&head_tree), None, None).unwrap();
+    let head_tree = git_repo2
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .tree()
+        .unwrap();
+    let staged_diff = git_repo2
+        .diff_tree_to_index(Some(&head_tree), None, None)
+        .unwrap();
     let stats = staged_diff.stats().unwrap();
     assert!(stats.files_changed() == 1, "staged diff should show 1 file");
 
     // The staged diff should contain CHANGED1 but not CHANGED2
     let mut staged_content = String::new();
-    staged_diff.print(git2::DiffFormat::Patch, |_, _, line| {
-        staged_content.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
-        true
-    }).unwrap();
-    assert!(staged_content.contains("CHANGED1"), "CHANGED1 should be staged");
-    assert!(!staged_content.contains("CHANGED2"), "CHANGED2 should NOT be staged yet");
+    staged_diff
+        .print(git2::DiffFormat::Patch, |_, _, line| {
+            staged_content.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+            true
+        })
+        .unwrap();
+    assert!(
+        staged_content.contains("CHANGED1"),
+        "CHANGED1 should be staged"
+    );
+    assert!(
+        !staged_content.contains("CHANGED2"),
+        "CHANGED2 should NOT be staged yet"
+    );
 }
 
 #[test]
@@ -349,18 +402,24 @@ fn test_discard_hunk_round_trip() {
     let git_repo = git2::Repository::open(repo.path()).unwrap();
     let mut opts = git2::DiffOptions::new();
     opts.pathspec("discard.txt");
-    let diff = git_repo.diff_index_to_workdir(None, Some(&mut opts)).unwrap();
+    let diff = git_repo
+        .diff_index_to_workdir(None, Some(&mut opts))
+        .unwrap();
 
-    use std::rc::Rc;
     use std::cell::RefCell;
-    let raw2: Rc<RefCell<Vec<(String, Vec<recorde::state::DiffLine>)>>> = Rc::new(RefCell::new(Vec::new()));
+    use std::rc::Rc;
+    let raw2: Rc<RefCell<Vec<(String, Vec<recorde::state::DiffLine>)>>> =
+        Rc::new(RefCell::new(Vec::new()));
     let raw2h = Rc::clone(&raw2);
     let raw2l = Rc::clone(&raw2);
     diff.foreach(
         &mut |_, _| true,
         None,
         Some(&mut |_, h| {
-            let hdr = std::str::from_utf8(h.header()).unwrap_or("").trim_end().to_string();
+            let hdr = std::str::from_utf8(h.header())
+                .unwrap_or("")
+                .trim_end()
+                .to_string();
             raw2h.borrow_mut().push((hdr, Vec::new()));
             true
         }),
@@ -368,15 +427,19 @@ fn test_discard_hunk_round_trip() {
             if let Some(last) = raw2l.borrow_mut().last_mut() {
                 last.1.push(recorde::state::DiffLine {
                     origin: line.origin(),
-                    content: std::str::from_utf8(line.content()).unwrap_or("").to_string(),
+                    content: std::str::from_utf8(line.content())
+                        .unwrap_or("")
+                        .to_string(),
                     old_lineno: line.old_lineno(),
                     new_lineno: line.new_lineno(),
                 });
             }
             true
         }),
-    ).unwrap();
-    drop(raw2h); drop(raw2l);
+    )
+    .unwrap();
+    drop(raw2h);
+    drop(raw2l);
     let mut hunks2 = Rc::try_unwrap(raw2).unwrap().into_inner();
     let (hdr, lines) = hunks2.remove(0);
     let hunk = recorde::state::DiffHunk { header: hdr, lines };
@@ -387,7 +450,10 @@ fn test_discard_hunk_round_trip() {
 
     // File should be restored
     let content = std::fs::read_to_string(repo.path().join("discard.txt")).unwrap();
-    assert_eq!(content, "aaa\nbbb\nccc\n", "file should be restored to original");
+    assert_eq!(
+        content, "aaa\nbbb\nccc\n",
+        "file should be restored to original"
+    );
 }
 
 // ── Graph layout tests ────────────────────────────────────────────────────────
@@ -396,16 +462,20 @@ fn test_discard_hunk_round_trip() {
 fn test_graph_linear_history_all_lane_zero() {
     // A single linear chain of commits should all occupy lane 0.
     let repo = TestRepo::new();
-    repo.add_and_commit("first",  &[("a.txt", "1")]);
+    repo.add_and_commit("first", &[("a.txt", "1")]);
     repo.add_and_commit("second", &[("a.txt", "2")]);
-    repo.add_and_commit("third",  &[("a.txt", "3")]);
+    repo.add_and_commit("third", &[("a.txt", "3")]);
 
     let git_repo = git2::Repository::open(repo.path()).unwrap();
     let graph = CommitGraph::from_repo(&git_repo).unwrap();
 
     assert_eq!(graph.nodes.len(), 3, "expected 3 commits");
     for node in &graph.nodes {
-        assert_eq!(node.lane, 0, "commit '{}' should be on lane 0 in a linear history", node.summary);
+        assert_eq!(
+            node.lane, 0,
+            "commit '{}' should be on lane 0 in a linear history",
+            node.summary
+        );
     }
     assert_eq!(graph.max_lane, 0);
 }
@@ -435,7 +505,8 @@ fn test_graph_branch_occupies_second_lane() {
     // Switch back to main and add another commit
     {
         let r = git2::Repository::open(repo.path()).unwrap();
-        let main_ref = r.find_branch("main", git2::BranchType::Local)
+        let main_ref = r
+            .find_branch("main", git2::BranchType::Local)
             .or_else(|_| r.find_branch("master", git2::BranchType::Local))
             .unwrap();
         let obj = main_ref.get().peel(git2::ObjectType::Commit).unwrap();
@@ -452,10 +523,16 @@ fn test_graph_branch_occupies_second_lane() {
 
     // The graph must have at least 3 commits and use more than one lane.
     assert!(graph.nodes.len() >= 3);
-    assert!(graph.max_lane >= 1, "branching history should use at least 2 lanes");
+    assert!(
+        graph.max_lane >= 1,
+        "branching history should use at least 2 lanes"
+    );
 
     let lanes: std::collections::HashSet<usize> = graph.nodes.iter().map(|n| n.lane).collect();
-    assert!(lanes.len() >= 2, "expected commits on at least 2 different lanes");
+    assert!(
+        lanes.len() >= 2,
+        "expected commits on at least 2 different lanes"
+    );
 }
 
 #[test]
@@ -471,12 +548,22 @@ fn test_graph_edges_connect_parent_child() {
 
     for edge in &graph.edges {
         // from_row (child) comes before to_row (parent) in topological order
-        assert!(edge.from_row < edge.to_row,
-            "edge from_row {} should be less than to_row {}", edge.from_row, edge.to_row);
-        assert!(edge.from_row < graph.nodes.len(),
-            "edge from_row {} out of bounds", edge.from_row);
-        assert!(edge.to_row < graph.nodes.len(),
-            "edge to_row {} out of bounds", edge.to_row);
+        assert!(
+            edge.from_row < edge.to_row,
+            "edge from_row {} should be less than to_row {}",
+            edge.from_row,
+            edge.to_row
+        );
+        assert!(
+            edge.from_row < graph.nodes.len(),
+            "edge from_row {} out of bounds",
+            edge.from_row
+        );
+        assert!(
+            edge.to_row < graph.nodes.len(),
+            "edge to_row {} out of bounds",
+            edge.to_row
+        );
         // Lane assignments in the edge must match the nodes
         assert_eq!(edge.from_lane, graph.nodes[edge.from_row].lane);
         assert_eq!(edge.to_lane, graph.nodes[edge.to_row].lane);
@@ -493,8 +580,11 @@ fn test_graph_oid_to_row_index_is_consistent() {
     let graph = CommitGraph::from_repo(&git_repo).unwrap();
 
     for (oid, &row) in &graph.oid_to_row {
-        assert_eq!(&graph.nodes[row].oid, oid,
-            "oid_to_row entry {} points to wrong row {}", oid, row);
+        assert_eq!(
+            &graph.nodes[row].oid, oid,
+            "oid_to_row entry {} points to wrong row {}",
+            oid, row
+        );
     }
     assert_eq!(graph.oid_to_row.len(), graph.nodes.len());
 }

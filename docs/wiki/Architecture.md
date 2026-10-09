@@ -1,179 +1,125 @@
-# Developer Guide
+# Architecture
 
-## Prerequisites
+Recorde is a native egui application with a small set of clear layers:
 
-- Rust toolchain with Cargo.
-- Native dependencies required by egui/eframe and the selected platform backend.
-- Git.
+- `main.rs` configures the native window and starts eframe using the shared library.
+  Application modules are compiled once, in `lib.rs`; the executable does not
+  redeclare them or duplicate their unit tests.
+- `RecordeApp` in `app.rs` owns UI components, settings, modal inputs, and
+  command dispatch.
+- `AppState` in `state.rs` is shared between UI code and background work through
+  `Arc<Mutex<AppState>>`.
+- `git/` modules perform repository operations using `git2` and selected Git CLI
+  commands where appropriate.
+- `ui/` modules render focused panels and return user actions to `RecordeApp`.
+- `providers/` modules translate GitHub/GitLab API responses into provider-neutral
+  structs.
+- `auth/` and `config.rs` persist local settings and provider credentials.
 
-The crate vendors libgit2 and OpenSSL through the `git2` dependency features, so
-most Git library dependencies are built as part of the Rust build.
+## Application Startup
 
-## Build
+Startup happens in `src/main.rs`:
 
-```bash
-cargo build
-```
+1. Install the crash handler.
+2. Initialize logging through `env_logger`.
+3. Read an optional repository path from the first CLI argument.
+4. Load the PNG app icon from `assets/icon.png`.
+5. Configure an eframe native viewport with title, app id, size, and minimum size.
+6. Construct `RecordeApp`.
 
-For a release binary:
+`RecordeApp::new` then loads configuration, applies theme settings, registers
+fonts, creates shared state and UI panels, and opens either the CLI-provided repo
+or the saved active repository, restoring its workspace tabs.
 
-```bash
-cargo build --release
-```
+## Shared State Model
 
-The binary target is named `recorde`.
+`AppState` is the single shared model for repository data and transient UI state.
+It contains:
 
-## Run
+- Current repository path.
+- Commit graph and selected commit/file/diff.
+- Working tree files, stashes, conflicts, submodules, and worktrees.
+- Branch, ahead/behind, dirty count, and capability data.
+- Active Git jobs and console log lines.
+- Modal state and destructive-action confirmation state.
+- Provider lists for PRs/MRs, issues, CI runs, and releases.
+- History/review data such as reflog, blame, compare, and bisect state.
 
-```bash
-cargo run
-```
+UI components clone the `SharedState` handle and lock it briefly when rendering or
+reacting to events.
 
-To open a repository on startup:
+## UI Composition
 
-```bash
-cargo run -- /path/to/repo
-```
+The main UI is composed from reusable structs in `src/ui/`:
 
-## Test
+- `Toolbar` emits high-level repository and remote actions.
+- `Sidebar` emits branch, tag, stash, conflict, submodule, and worktree actions.
+- `CommitGraphView` renders history and commit context actions.
+- `DetailPanel` shows selected commit metadata and changed files.
+- `DiffView` renders current diff hunks and line-level state.
+- `StagingPanel` handles staged and unstaged changes plus commit controls.
+- `StatusBar` shows repository status and operation progress.
+- `RebaseModal` edits an interactive rebase todo list.
 
-```bash
-cargo test --locked --all-targets
-```
+`RecordeApp` handles actions returned by these components. This keeps individual
+widgets focused on presentation while the app object coordinates side effects.
 
-Tests create temporary Git repositories and cover graph structure, capabilities,
-jobs, safe detached checkout, partial staging/unstaging bytes, cherry-pick/revert
-conflicts and continuation, commit hooks, message-only amend, concurrent rebases,
-draft retention and obsolete repository-load results. New Git fixtures set local
-identity, hooks and newline defaults to avoid depending on developer settings.
+## Git Operation Flow
 
-Credential tests inject a vault backend to exercise migration, locked/unavailable
-storage, exact host/account matching and secret redaction without touching personal
-credentials. A local HTTP fixture checks token redirect isolation. Mutation queue
-tests cover linked worktrees, ordered staging/commit and cancellation of a queued
-push against a disposable bare remote. Native vaults require separate desktop
-smoke tests on each supported platform.
+Operation workers use the following paths:
 
-`.github/workflows/ci.yml` runs `cargo check`, Clippy and tests with `--locked
---all-targets` on Linux, Windows and macOS. Release publication depends on that
-workflow. Clippy warnings are currently reported rather than denied; a global
-formatting gate is pending cleanup of the existing formatting baseline.
+- Read workers return repository-epoch and request-generation scoped data.
+  Stale results are rejected, including provider responses after account/remote changes.
+- Local mutations reserve FIFO jobs shared by the canonical common Git directory,
+  so linked worktrees serialize writes. Same-user OS locks coordinate Recorde
+  processes. Native Git commands use supervised process groups/jobs with timeout,
+  cancellation and concurrent bounded output draining.
+- Remote jobs submitted to `GitRunner`, which owns a worker thread and returns
+  progress events through an mpsc channel.
 
-## Dependency Notes
+`RecordeApp` drains runner progress once per frame, updates `active_ops`, refreshes
+repository state after terminal operations, and renders progress to the UI.
 
-The project uses:
+## Module Boundaries
 
-- `eframe` and `egui` for UI.
-- `git2` for repository operations.
-- `rfd` for native file dialogs.
-- `serde`, `toml`, and `dirs` for config persistence.
-- `ureq` and `serde_json` for provider HTTP APIs.
-- `tempfile` for isolated interactive-rebase todos and test repositories.
-- `keyring` for native credential vaults, `fs2` for account-index locking, and
-  `url` for credential destination parsing. Linux D-Bus is vendored at build time;
-  a desktop Secret Service is still required at runtime.
+| Module | Responsibility |
+| --- | --- |
+| `git/operations.rs` | Repository loading, status collection, diffs, commit details, provider load orchestration. |
+| `git/runner.rs` and `git/job.rs` | Background remote operation queue and progress events. |
+| `git/remote.rs` | Fetch, pull, push, upstream, and ahead/behind logic. |
+| `git/branches.rs` | Branch, tag, stash, cherry-pick, and revert operations. |
+| `git/staging.rs` | Index, commit, amend, reset, hunk, line, and discard workflows. |
+| `git/merge.rs`, `git/rebase.rs`, `git/conflicts.rs` | Conflict and sequence-operation handling. |
+| `git/graph.rs`, `git/history.rs`, `git/blame.rs`, `git/reflog.rs` | Review and history data. |
+| `git/capabilities.rs` | Repository state detection. |
+| `git/lifecycle.rs` | Clone, init, terminal, and file-manager helpers. |
+| `providers/github.rs`, `providers/gitlab.rs` | HTTP API calls for provider metadata. |
 
-`Cargo.toml` patches `eframe` to a vendored copy in `vendor/eframe`.
+## Error Handling
 
-## Development Workflow
+Git-facing modules usually return `git2::Error`, `GitError`, or `Result<_, String>`.
+User-visible failures are written to `AppState.error` and often appended to
+`console_log`. Remote jobs report `Started`, `Update`, `Done`, or `Failed`
+events.
 
-1. Make focused changes in the relevant module.
-2. Run `cargo test` for behavior that can be tested without a UI.
-3. Run `cargo check` or `cargo build` after UI or cross-module changes.
-4. Manually exercise affected UI workflows with a disposable Git repository.
-5. Update this wiki when behavior, configuration, packaging, or architecture
-   changes.
-
-## Adding a Git Operation
-
-Use the existing operation style:
-
-- Add low-level logic to the most specific `src/git/` module.
-- Update `AppState` only with data the UI actually needs.
-- For long-running remote work, route through `GitRunner` and `JobProgress`.
-- For modal-driven flows, add or extend a `ModalKind` variant.
-- Return user-facing errors into `AppState.error` and log useful context to
-  `console_log`.
-
-## Adding UI
-
-Prefer a focused component in `src/ui/` when a panel or reusable control grows
-beyond simple app-level modal handling. Components should render from shared
-state and return explicit action enums. `RecordeApp` should remain responsible
-for side effects and cross-module coordination.
-
-## Adding Provider Support
-
-Follow the GitHub and GitLab pattern:
-
-- Add provider-specific API code in `src/providers/`.
-- Convert provider responses into shared provider structs.
-- Keep token lookup in the auth/config layer.
-- Update `ProviderKind` and account UI where needed.
-- Route load operations through `git/operations.rs` so state updates remain
-  centralized.
+Destructive actions are routed through confirmation state before execution where
+the UI can prevent accidental data loss.
 
 
+## Recovery and credentials
 
-## Extended fixtures and Linux GUI startup
+Recovery checkpoints preserve independent index/worktree trees, non-ignored
+untracked files, HEAD and branch identity using protected refs and atomic journals.
+Restoration checks the captured post-operation state and saves an inverse snapshot.
+Sequencer continuation matches native control-file witnesses; mismatches leave
+manual recovery available. Sparse checkout must be disabled before restoration.
 
-```sh
-# Requires git-lfs; creates only disposable local repositories/remotes.
-cargo test --locked --lib lfs_stage_push_clone_round_trip -- --ignored
+Credentials use OS vaults with exact endpoint/account bindings. Provider reads
+and writes reject redirects, cap responses and redact errors. Confirmed review
+mutations bind to repository, endpoint, account and expected head. Drafts persist
+without restoring confirmations or submitting work automatically.
 
-# Opt-in 100k-commit graph benchmark (reports timings, no machine-specific threshold).
-cargo test --locked --lib benchmark_large_history_first_page -- --ignored --nocapture
-
-# Requires Xvfb and libxkbcommon-x11-0; config/data/repo are isolated.
-cargo build --locked
-python3 scripts/gui_smoke.py target/debug/recorde /tmp/recorde-gui-artifacts
-# Also requires libXtst; selects an image and checks both snapshot colors.
-python3 scripts/gui_smoke.py target/debug/recorde /tmp/recorde-image-artifacts --image-preview
-# Ctrl-selects two separated lines, stages them and checks actual index bytes.
-python3 scripts/gui_smoke.py target/debug/recorde /tmp/recorde-selection-artifacts --line-selection
-```
-
-The GUI check verifies startup and captures a PNG plus logs for inspection.
-The optional image case clicks a fixture row and checks rendered snapshot colors
-in a fixed viewport. This does not prove general interactive workflows or native
-Windows/macOS behavior. Linux CI
-runs it and uploads artifacts. LFS has a separate Linux CI step.
-
-New operations should use `mutation::spawn_operation` for scoped completion and
-`process::git`/`process::run` for supervised CLI work. Do not mutate another
-repository's active UI from a background completion. Native Git is used where
-hooks, filters, credential helpers or sequencer behavior matters.
-
-Additional dependencies: `command-group` for process groups/Windows jobs,
-`notify` for filesystem events, `image` for bounded binary previews, and native Git/Git LFS for their respective
-workflows. A per-file filter fixture checks actual index bytes.
-
-Release tags must match the package version in Cargo.toml. Publishing downloads
-only platform packaging artifacts and adds SHA256SUMS. These integrity hashes are
-not signing or update authentication; signed distribution remains separate work.
-
-## Security checks
-
-Run `cargo audit --deny unsound` after dependency changes. CI installs cargo-audit
-0.22.2 and runs this gate against the current RustSec database. Keep maintenance
-warnings visible; the current paste/ttf-parser warnings are tracked in the gap
-analysis, with no blanket advisory exclusions.
-
-Treat remote responses, Git paths and commit metadata as untrusted data. Route
-provider links through `external::open_url`, use argument arrays and literal Git
-pathspecs, and validate exact OIDs where an operation expects a commit. App file
-I/O uses `git::safe_path` checks; this is not a replacement for OS-level isolation
-against a concurrent hostile local process. Bound decoded images and conflict
-text before loading them into the UI. Security fixtures use disposable files and
-local mock servers, never personal credentials or live provider writes.
-
-## External editor
-
-The editor setting accepts an executable and arguments, with quotes around paths
-or arguments containing spaces. There is no shell expansion or redirection.
-For example: `"C:\Program Files\Microsoft VS Code\Code.exe" --wait`.
-Windows requires an .exe/.com, or an executable name found on PATH; .cmd/.bat
-wrappers are refused so repository paths cannot become command-interpreter input.
+## Diffs, sessions and paging
 
 Unified text diffs support click, Ctrl/Cmd toggle and Shift range selection.
 `multi_selection_patch` emits one file header and recalculates coordinates across
@@ -206,3 +152,11 @@ Batch staging uses NUL-delimited literal pathspec files and one native index
 operation. Selected-range discard holds the confirmed diff and validates raw
 patch bytes inside the mutation queue. Ignore-file edits reject symlinks, escape
 literal filenames and replace the file atomically.
+
+Repositories with Git commit-graph indexes use bounded native `rev-list` pages
+with captured OID roots, original-object semantics and cached loaded IDs/metadata.
+Each response is at most 4,096 commits. Revision roots go through a temporary
+stdin file to avoid Windows command-line length limits. Indexed traversals do not
+keep a subprocess open between requests. Unindexed histories keep the existing
+libgit2 revwalk. Backend changes invalidate the cursor; refs/HEAD changes still
+invalidate all cached pages.

@@ -322,18 +322,21 @@ mod tests {
         let reservation = reserve(&path);
         let locks = reservation.lock_process(&AtomicBool::new(false)).unwrap();
         git2::Repository::init(&path).unwrap();
-        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        let mut command = crate::git::process::background_command(std::env::current_exe().unwrap());
         command
             .args(["--exact", test_name, "--nocapture"])
             .env("RECORDE_MUTATION_LOCK_CHILD", &path)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000);
+        struct ReapChild(std::process::Child);
+        impl Drop for ReapChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
         }
-        let mut child = command.spawn().unwrap();
+        // Assertions can unwind before the explicit timeout; reap on every path.
+        let mut child = ReapChild(command.spawn().unwrap());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         while !path.with_extension("ready").exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -342,14 +345,14 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!path.with_extension("acquired").exists());
         drop(locks);
-        while child.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
+        while child.0.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        if child.try_wait().unwrap().is_none() {
-            let _ = child.kill();
+        if child.0.try_wait().unwrap().is_none() {
+            let _ = child.0.kill();
             panic!("child lock did not resume");
         }
-        assert!(child.wait().unwrap().success());
+        assert!(child.0.wait().unwrap().success());
         assert!(path.with_extension("acquired").exists());
     }
 

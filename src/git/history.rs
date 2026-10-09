@@ -4,11 +4,18 @@ use std::path::Path;
 /// Returns the full commit OIDs of every commit that touched `file_path`,
 /// following renames (`--follow`).
 pub fn file_history_oids(repo_path: &Path, file_path: &str) -> HashSet<String> {
-    let Ok(output) = std::process::Command::new("git")
-        .arg("-C").arg(repo_path)
-        .args(["--literal-pathspecs", "log", "--follow", "--format=%H", "--", file_path])
-        .output()
-    else {
+    let Ok(output) = super::process::git(
+        repo_path,
+        &[
+            "--literal-pathspecs",
+            "log",
+            "--follow",
+            "--format=%H",
+            "--",
+            file_path,
+        ],
+        &std::sync::atomic::AtomicBool::new(false),
+    ) else {
         return HashSet::new();
     };
 

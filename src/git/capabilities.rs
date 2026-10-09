@@ -40,23 +40,24 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
     let is_detached_head = repo.head_detached().unwrap_or(false);
 
     // In-progress state: look for the sentinel files git uses
-    let merge_in_progress     = git_dir.join("MERGE_HEAD").exists();
+    let merge_in_progress = git_dir.join("MERGE_HEAD").exists();
     let cherry_pick_in_progress = git_dir.join("CHERRY_PICK_HEAD").exists();
-    let revert_in_progress    = git_dir.join("REVERT_HEAD").exists();
-    let rebase_in_progress    = git_dir.join("rebase-merge").exists()
-        || git_dir.join("rebase-apply").exists();
+    let revert_in_progress = git_dir.join("REVERT_HEAD").exists();
+    let rebase_in_progress =
+        git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists();
 
     // Submodules: .gitmodules in the workdir
-    let has_submodules = repo.workdir()
+    let has_submodules = repo
+        .workdir()
         .map(|wd| wd.join(".gitmodules").exists())
         .unwrap_or(false);
 
     // Linked worktrees: .git/worktrees/ directory with entries
-    let has_worktrees = git_dir.join("worktrees").exists()
-        && git_dir.join("worktrees").read_dir().map(|mut d| d.next().is_some()).unwrap_or(false);
+    let has_worktrees = repo.worktrees().is_ok_and(|names| !names.is_empty());
 
     // Sparse checkout: config core.sparseCheckout = true
-    let is_sparse = repo.config()
+    let is_sparse = repo
+        .config()
         .ok()
         .and_then(|c| c.get_bool("core.sparseCheckout").ok())
         .unwrap_or(false);
@@ -98,25 +99,44 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
 }
 
 fn detect_provider(repo: &git2::Repository) -> ProviderType {
-    let Ok(name) = super::remote::provider_remote(repo) else { return ProviderType::Unknown };
-    let Ok(remote) = repo.find_remote(&name) else { return ProviderType::Unknown };
-    let Some(url) = remote.url().ok() else { return ProviderType::Unknown };
-    let Ok(endpoint) = crate::auth::endpoint::parse(url, true) else { return ProviderType::Unknown };
+    let Ok(name) = super::remote::provider_remote(repo) else {
+        return ProviderType::Unknown;
+    };
+    let Ok(remote) = repo.find_remote(&name) else {
+        return ProviderType::Unknown;
+    };
+    let Some(url) = remote.url().ok() else {
+        return ProviderType::Unknown;
+    };
+    let Ok(endpoint) = crate::auth::endpoint::parse(url, true) else {
+        return ProviderType::Unknown;
+    };
     match endpoint.host.as_str() {
         "github.com" => return ProviderType::GitHub,
         "gitlab.com" => return ProviderType::GitLab,
         "bitbucket.org" => return ProviderType::Bitbucket,
-        _ => {},
+        _ => {}
     }
     let config = crate::config::Config::load();
     let binding = config.get_repo_config(repo.workdir().unwrap_or(repo.path()));
-    let username = binding.provider_accounts.get(&endpoint.host).or(endpoint.username.as_ref());
-    let account = config.accounts.iter().find(|account|
-        crate::auth::endpoint::normalize_host(&account.host).ok().as_deref() == Some(&endpoint.host)
-        && username.is_none_or(|user| user == &account.username));
+    let username = binding
+        .provider_accounts
+        .get(&endpoint.host)
+        .or(endpoint.username.as_ref());
+    let account = config.accounts.iter().find(|account| {
+        crate::auth::endpoint::normalize_host(&account.host)
+            .ok()
+            .as_deref()
+            == Some(&endpoint.host)
+            && username.is_none_or(|user| user == &account.username)
+    });
     match account.map(|account| &account.provider) {
-        Some(crate::auth::ProviderKind::GitHubCom | crate::auth::ProviderKind::GitHubEnterprise) => ProviderType::GitHub,
-        Some(crate::auth::ProviderKind::GitLabCom | crate::auth::ProviderKind::GitLabSelf) => ProviderType::GitLab,
+        Some(
+            crate::auth::ProviderKind::GitHubCom | crate::auth::ProviderKind::GitHubEnterprise,
+        ) => ProviderType::GitHub,
+        Some(crate::auth::ProviderKind::GitLabCom | crate::auth::ProviderKind::GitLabSelf) => {
+            ProviderType::GitLab
+        }
         None => ProviderType::Unknown,
     }
 }

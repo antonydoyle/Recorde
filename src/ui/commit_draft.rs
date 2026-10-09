@@ -98,7 +98,10 @@ impl Drafts {
             }
             false
         });
-        if self.last_persist_attempt.is_none_or(|time| time.elapsed() >= std::time::Duration::from_millis(400)) {
+        if self
+            .last_persist_attempt
+            .is_none_or(|time| time.elapsed() >= std::time::Duration::from_millis(400))
+        {
             let _ = self.persist_current();
             for (repo, draft) in &self.saved {
                 if self.save_errors.contains_key(repo) && write_draft(repo, draft).is_ok() {
@@ -142,8 +145,14 @@ fn draft_path(repo: &std::path::Path) -> Result<PathBuf, String> {
 fn read_draft(repo: &std::path::Path) -> Option<CommitDraft> {
     use std::io::Read;
     let mut bytes = Vec::new();
-    std::fs::File::open(draft_path(repo).ok()?).ok()?.take(1_048_577).read_to_end(&mut bytes).ok()?;
-    if bytes.len() > 1_048_576 { return None; }
+    std::fs::File::open(draft_path(repo).ok()?)
+        .ok()?
+        .take(1_048_577)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 1_048_576 {
+        return None;
+    }
     toml::from_str(std::str::from_utf8(&bytes).ok()?).ok()
 }
 fn write_draft(repo: &std::path::Path, draft: &CommitDraft) -> Result<(), String> {

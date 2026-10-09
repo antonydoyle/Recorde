@@ -82,11 +82,11 @@ pub enum RebaseAction {
 impl RebaseAction {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Pick   => "pick",
+            Self::Pick => "pick",
             Self::Reword => "reword",
             Self::Squash => "squash",
-            Self::Fixup  => "fixup",
-            Self::Drop   => "drop",
+            Self::Fixup => "fixup",
+            Self::Drop => "drop",
         }
     }
 }
@@ -123,8 +123,8 @@ pub enum DiffContext {
 pub struct ReflogEntry {
     pub oid: String,
     pub short_oid: String,
-    pub refname: String,  // e.g. "HEAD@{0}"
-    pub message: String,  // e.g. "commit: fix typo"
+    pub refname: String, // e.g. "HEAD@{0}"
+    pub message: String, // e.g. "commit: fix typo"
     pub timestamp: i64,
 }
 
@@ -168,8 +168,14 @@ pub struct WorktreeInfo {
 /// A destructive action pending user confirmation.
 #[derive(Debug, Clone)]
 pub enum PendingDiscard {
-    File { path: String },
-    Selection { repo: std::path::PathBuf, diff: Arc<FileDiff>, lines: Vec<(usize, usize)> },
+    File {
+        path: String,
+    },
+    Selection {
+        repo: std::path::PathBuf,
+        diff: Arc<FileDiff>,
+        lines: Vec<(usize, usize)>,
+    },
     ResetHard,
 }
 
@@ -195,13 +201,22 @@ pub enum ModalKind {
     RebaseOnto,
     CloneRepo,
     InitRepo,
-    RenameBranch { old_name: String },
-    ConfirmDetachedCheckout { oid: String },
+    RenameBranch {
+        old_name: String,
+    },
+    ConfirmDetachedCheckout {
+        oid: String,
+    },
     StashWithMessage,
-    CreateBranchFromStash { stash_index: usize },
+    CreateBranchFromStash {
+        stash_index: usize,
+    },
     Reflog,
     Bisect,
-    Compare { base_oid: String, compare_oid: String },
+    Compare {
+        base_oid: String,
+        compare_oid: String,
+    },
 }
 
 #[derive(Default)]
@@ -233,6 +248,7 @@ pub struct AppState {
 
     pub conflicted_files: Vec<ConflictedFile>,
     pub pending_conflict_editor: Option<String>,
+    pub pending_commit_settings: bool,
     pub merged_into_head: std::collections::HashSet<String>,
     pub modal: ModalKind,
     /// Context for the currently-loaded diff (commit vs staged vs unstaged).
@@ -308,7 +324,7 @@ pub struct AppState {
 
     // ── Phase 12: Submodules and Worktrees ───────────────────────────────────
     pub submodules: Vec<SubmoduleInfo>,
-    pub worktrees:  Vec<WorktreeInfo>,
+    pub worktrees: Vec<WorktreeInfo>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
@@ -316,16 +332,35 @@ pub type SharedState = Arc<Mutex<AppState>>;
 impl AppState {
     pub fn invalidate_provider_data(&mut self) {
         for view in self.repo_views.values_mut() {
-            view.pr_loaded = false; view.pr_list.clear(); view.pr_source = None; view.pr_selected = None;
-            view.issue_list.clear(); view.issue_selected = None; view.ci_runs.clear(); view.releases.clear();
+            view.pr_loaded = false;
+            view.pr_list.clear();
+            view.pr_source = None;
+            view.pr_selected = None;
+            view.issue_list.clear();
+            view.issue_selected = None;
+            view.ci_runs.clear();
+            view.releases.clear();
         }
-        for request in &mut self.provider_requests { *request = request.wrapping_add(1); }
-        self.pr_loaded = false; self.pr_list.clear(); self.pr_source = None; self.pr_selected = None;
-        self.pr_loading = false; self.pr_detail_loading = false; self.pr_error = None;
-        self.issue_list.clear(); self.issue_selected = None;
-        self.issue_loading = false; self.issue_error = None;
-        self.ci_runs.clear(); self.ci_loading = false; self.ci_error = None;
-        self.releases.clear(); self.releases_loading = false; self.releases_error = None;
+        for request in &mut self.provider_requests {
+            *request = request.wrapping_add(1);
+        }
+        self.pr_loaded = false;
+        self.pr_list.clear();
+        self.pr_source = None;
+        self.pr_selected = None;
+        self.pr_loading = false;
+        self.pr_detail_loading = false;
+        self.pr_error = None;
+        self.issue_list.clear();
+        self.issue_selected = None;
+        self.issue_loading = false;
+        self.issue_error = None;
+        self.ci_runs.clear();
+        self.ci_loading = false;
+        self.ci_error = None;
+        self.releases.clear();
+        self.releases_loading = false;
+        self.releases_error = None;
     }
 }
 
@@ -362,8 +397,14 @@ pub struct RepoView {
 }
 impl RepoView {
     pub fn capture(state: &AppState) -> Self {
-        Self { modal: state.modal.clone(), history_limit: state.history_limit, selected_commit: state.selected_commit.clone(), search_active: state.search_active,
-            search_query: state.search_query.clone(), show_all_branches: state.show_all_branches, graph_filter: state.graph_filter.clone(),
+        Self {
+            modal: state.modal.clone(),
+            history_limit: state.history_limit,
+            selected_commit: state.selected_commit.clone(),
+            search_active: state.search_active,
+            search_query: state.search_query.clone(),
+            show_all_branches: state.show_all_branches,
+            graph_filter: state.graph_filter.clone(),
             deleted_branches: state.deleted_branches.clone(),
             selected_commit_detail: state.selected_commit_detail.clone(),
             selected_file: state.selected_file.clone(),
@@ -412,8 +453,11 @@ impl RepoView {
         state.ci_runs = self.ci_runs;
         state.releases = self.releases;
 
-        state.search_active = self.search_active; state.search_query = self.search_query;
-        state.graph_filter = self.graph_filter; state.show_all_branches = self.show_all_branches; state.deleted_branches = self.deleted_branches;
+        state.search_active = self.search_active;
+        state.search_query = self.search_query;
+        state.graph_filter = self.graph_filter;
+        state.show_all_branches = self.show_all_branches;
+        state.deleted_branches = self.deleted_branches;
     }
 }
 
@@ -425,14 +469,18 @@ pub fn new_shared_state() -> SharedState {
         .map(|name| {
             let mut words = name.split_whitespace();
             let first = words.next().and_then(|w| w.chars().next());
-            let last  = words.last().and_then(|w| w.chars().next());
+            let last = words.last().and_then(|w| w.chars().next());
             match (first, last) {
                 (Some(a), Some(b)) => format!("{}{}", a.to_uppercase(), b.to_uppercase()),
-                (Some(a), None)    => a.to_uppercase().to_string(),
-                _                  => "?".into(),
+                (Some(a), None) => a.to_uppercase().to_string(),
+                _ => "?".into(),
             }
         })
         .unwrap_or_else(|| "?".into());
 
-    Arc::new(Mutex::new(AppState { show_all_branches: true, git_user_initials, ..Default::default() }))
+    Arc::new(Mutex::new(AppState {
+        show_all_branches: true,
+        git_user_initials,
+        ..Default::default()
+    }))
 }

@@ -3,7 +3,14 @@ use super::*;
 #[test]
 #[ignore = "requires a native desktop credential vault"]
 fn native_vault_round_trip_uses_an_isolated_test_entry() {
-    let service = format!("recorde-vault-fixture-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    let service = format!(
+        "recorde-vault-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
     let entry = keyring::Entry::new(&service, "fixture-user").unwrap();
     entry.set_password("recorde-disposable-test-value").unwrap();
     let actual = entry.get_password();

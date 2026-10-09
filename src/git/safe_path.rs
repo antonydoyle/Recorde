@@ -51,7 +51,9 @@ fn checked_entry(root: &Path, file: &str, allow_link: bool) -> Result<PathBuf, S
             }
             // A deleted directory may contain the missing ancestor side of a
             // rename conflict. Existing ancestors were still checked above.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && (allow_link || index + 1 == count) => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && (allow_link || index + 1 == count) => {}
             Err(e) => return Err(e.to_string()),
         }
     }

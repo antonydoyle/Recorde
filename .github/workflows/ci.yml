@@ -35,12 +35,26 @@ jobs:
       CARGO_TERM_COLOR: always
       GIT_CONFIG_NOSYSTEM: '1'
       GIT_TERMINAL_PROMPT: '0'
+      # Native Git-heavy fixtures otherwise oversubscribe Windows process/IO limits.
+      RUST_TEST_THREADS: '1'
+      CARGO_BUILD_JOBS: '1'
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Check subprocess launch rules
+        run: python scripts/check_process_safety.py
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Verify Windows task cleanup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows_task_selftest.ps1 -Artifacts "$env:RUNNER_TEMP/process-safety"
+      - name: Verify Linux task cleanup
+        if: runner.os == 'Linux'
+        run: python3 scripts/linux_task_selftest.py "$RUNNER_TEMP/process-safety"
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -64,33 +78,69 @@ jobs:
           git config --file "$GIT_CONFIG_GLOBAL" core.autocrlf false
           git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
       - name: Check all targets
+        if: runner.os == 'macOS'
         run: cargo check --locked --all-targets
       - name: Clippy
+        if: runner.os == 'macOS'
         run: cargo clippy --locked --all-targets
       - name: Test
+        if: runner.os == 'macOS'
         run: cargo test --locked --all-targets
-      - name: LFS round trip
-        if: runner.os == 'Linux' || runner.os == 'Windows'
-        run: cargo test --locked --lib lfs_stage_push_clone_round_trip -- --ignored
-      - name: Windows credential vault
+      - name: Windows checks in bounded jobs
         if: runner.os == 'Windows'
-        run: cargo test --locked --lib native_vault_round_trip -- --ignored
+        shell: pwsh
+        run: |
+          foreach ($operation in @('check', 'clippy')) {
+            ./scripts/windows_task.ps1 -Executable cargo -Arguments @($operation, '--locked', '--all-targets') -Purpose "CI cargo $operation" -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 1200 -MaxMemoryMiB 8192
+          }
+          ./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--lib', '--test', 'git_integration', '--test', 'credential_helper') -Purpose 'CI unique unit and integration tests' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 600
+          ./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--bin', 'recorde') -Purpose 'CI binary process safety' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 300
+      - name: Linux checks in bounded tasks
+        if: runner.os == 'Linux'
+        run: |
+          for operation in check clippy; do
+            python3 scripts/linux_task.py --purpose "CI cargo $operation" --artifacts "$RUNNER_TEMP/process-safety" --timeout 1200 -- cargo "$operation" --locked --all-targets
+          done
+          python3 scripts/linux_task.py --purpose 'CI unique unit and integration tests' --artifacts "$RUNNER_TEMP/process-safety" --timeout 600 -- cargo test --locked --lib --test git_integration --test credential_helper
+      - name: LFS round trip
+        if: runner.os == 'Linux'
+        run: python3 scripts/linux_task.py --purpose 'CI LFS round trip' --artifacts "$RUNNER_TEMP/process-safety" --timeout 300 -- cargo test --locked --lib lfs_stage_push_clone_round_trip -- --ignored
+      - name: SSH commit signing round trip
+        if: runner.os == 'Linux'
+        run: python3 scripts/linux_task.py --purpose 'CI SSH signing' --artifacts "$RUNNER_TEMP/process-safety" --timeout 300 -- cargo test --locked --lib ssh_signed_commit_verifies_with_disposable_key -- --ignored
+      - name: Windows LFS, signing and credential vault
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($fixture in @('lfs_stage_push_clone_round_trip', 'ssh_signed_commit_verifies_with_disposable_key', 'native_vault_round_trip')) {
+            ./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--lib', $fixture, '--', '--ignored') -Purpose "CI $fixture" -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 300
+          }
       - name: Windows GUI startup
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cargo build --locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./scripts/windows_smoke.ps1 -Binary target/debug/recorde.exe -Artifacts "$env:RUNNER_TEMP/gui-artifacts"
+          ./scripts/windows_task.ps1 -Executable cargo -Arguments @('build', '--locked') -Purpose 'CI GUI build' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 1200 -MaxMemoryMiB 8192
+          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts") -Purpose 'CI GUI smoke test' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 120
+      - name: Upload Windows process ledgers
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-process-safety
+          path: ${{ runner.temp }}/process-safety
       - name: Linux GUI startup
         if: runner.os == 'Linux'
         run: |
-          cargo build --locked
-          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts"
-          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/image-preview" --image-preview
-          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/line-selection" --line-selection
-          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/split-selection" --split-selection
-          python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/frame-profile" --frame-profile
+          python3 scripts/linux_task.py --purpose 'CI GUI build' --artifacts "$RUNNER_TEMP/process-safety" --timeout 1200 -- cargo build --locked
+          python3 scripts/linux_task.py --purpose 'CI GUI startup' --artifacts "$RUNNER_TEMP/process-safety" --timeout 120 -- python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts"
+          for fixture in image-preview line-selection split-selection frame-profile repository-settings; do
+            python3 scripts/linux_task.py --purpose "CI GUI $fixture" --artifacts "$RUNNER_TEMP/process-safety" --timeout 120 -- python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/$fixture" "--$fixture"
+          done
+      - name: Upload Linux process ledgers
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-process-safety
+          path: ${{ runner.temp }}/process-safety
       - name: Upload GUI smoke artifacts
         if: always() && (runner.os == 'Linux' || runner.os == 'Windows')
         uses: actions/upload-artifact@v4
