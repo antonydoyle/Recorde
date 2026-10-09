@@ -153,8 +153,10 @@ def main():
                 with (artifacts / "gui-smoke.log").open("w") as log:
                     app = subprocess.Popen([str(binary), *([] if welcome else [str(repo)])], env=env, stdout=log, stderr=log)
                     try:
-                        time.sleep(3)
+                        # Font/GL initialization varies on shared CI runners. Wait
+                        # for the actual window, with a deadline, before resizing.
                         resize = '''import ctypes
+import time
 x = ctypes.CDLL("libX11.so.6")
 x.XOpenDisplay.argtypes = [ctypes.c_char_p]
 x.XOpenDisplay.restype = ctypes.c_void_p
@@ -168,18 +170,23 @@ x.XCloseDisplay.argtypes = [ctypes.c_void_p]
 x.XFree.argtypes = [ctypes.c_void_p]
 d = x.XOpenDisplay(None)
 assert d
-root, parent, children, count = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.POINTER(ctypes.c_ulong)(), ctypes.c_uint()
-x.XQueryTree(d, x.XDefaultRootWindow(d), ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count))
-found = False
-for i in range(count.value):
-    name = ctypes.c_char_p()
-    x.XFetchName(d, children[i], ctypes.byref(name))
-    if name.value and b'Recorde' in name.value:
-        x.XResizeWindow(d, children[i], WIDTH, HEIGHT)
-        found = True
-    if name: x.XFree(name)
-if children: x.XFree(children)
-assert found, 'Recorde native window not found'
+deadline = time.monotonic() + 20
+while True:
+    root, parent, children, count = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.POINTER(ctypes.c_ulong)(), ctypes.c_uint()
+    x.XQueryTree(d, x.XDefaultRootWindow(d), ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count))
+    found = False
+    for i in range(count.value):
+        name = ctypes.c_char_p()
+        x.XFetchName(d, children[i], ctypes.byref(name))
+        if name.value and b'Recorde' in name.value:
+            x.XResizeWindow(d, children[i], WIDTH, HEIGHT)
+            found = True
+        if name: x.XFree(name)
+    if children: x.XFree(children)
+    if found:
+        break
+    assert time.monotonic() < deadline, 'Recorde native window not found within 20 seconds; see gui-smoke.log'
+    time.sleep(0.1)
 x.XFlush(d)
 x.XCloseDisplay(d)
 '''
@@ -326,7 +333,7 @@ x.XCloseDisplay(d)'''
                                     print(line)
                         print("GUI startup and image comparison passed; framebuffer captured" if image_preview
                             else "GUI line selection staged only the selected lines; framebuffer captured" if line_selection
-                            else "GUI remained running for 8 seconds; framebuffer captured")
+                            else "GUI window became ready and remained running; framebuffer captured")
                     finally:
                         if app.poll() is None:
                             app.terminate()
