@@ -1,3 +1,4 @@
+use crate::ui::button::Button;
 use egui::{Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use std::sync::Arc;
 
@@ -674,9 +675,9 @@ impl DiffView {
             ui.allocate_ui_at_rect(toolbar, |ui| {
                 ui.horizontal(|ui| {
                     let label = if diff_context == DiffContext::StagedFile { "Unstage" } else { "Stage" };
-                    apply = ui.add_enabled(!self.selected_rows.is_empty(), egui::Button::new(format!("{label} ({})", self.selected_rows.len()))).clicked();
+                    apply = ui.add_enabled(!self.selected_rows.is_empty(), Button::new(format!("{label} ({})", self.selected_rows.len()))).clicked();
                     if diff_context == DiffContext::UnstagedFile {
-                        discard = ui.add_enabled(!self.selected_rows.is_empty(), egui::Button::new("Discard")).clicked();
+                        discard = ui.add_enabled(!self.selected_rows.is_empty(), Button::new("Discard")).clicked();
                     }
                     if ui.button("Clear").clicked() { self.selected_rows.clear(); self.selection_anchor = None; }
                     ui.label(crate::icons::rich(crate::icons::INFO, 16.0).color(theme::text_muted())).on_hover_text("Click lines to select. Ctrl/Cmd toggles a line, Shift selects a range. The gutter stages or unstages one line.");

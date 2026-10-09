@@ -1,3 +1,4 @@
+use crate::ui::button::Button;
 use egui::{Color32, FontId, RichText, Ui};
 
 use crate::state::{RebaseAction, RebaseEntry};
@@ -254,7 +255,7 @@ impl RebaseModal {
             if ui
                 .add_enabled(
                     validation.is_ok(),
-                    egui::Button::new(
+                    Button::new(
                         RichText::new("Start Rebase")
                             .color(Color32::WHITE)
                             .size(14.0),
@@ -269,7 +270,7 @@ impl RebaseModal {
             ui.add_space(8.0);
             if ui
                 .add(
-                    egui::Button::new(RichText::new("Cancel").color(theme::text_secondary()))
+                    Button::new(RichText::new("Cancel").color(theme::text_secondary()))
                         .fill(Color32::TRANSPARENT)
                         .stroke(egui::Stroke::new(1.0, theme::border())),
                 )

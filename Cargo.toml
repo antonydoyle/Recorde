@@ -1,6 +1,6 @@
 [package]
 name = "recorde"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2021"
 authors = ["Antony Doyle <antony@siege21.com>"]
 description = "A cross-platform desktop Git client built with Rust"
@@ -62,6 +62,7 @@ assets = [
     ["target/release/recorde",    "usr/bin/recorde",                                          "755"],
     ["assets/icon.png",           "usr/share/icons/hicolor/256x256/apps/recorde.png",         "644"],
     ["packaging/recorde.desktop", "usr/share/applications/recorde.desktop",                   "644"],
+    ["assets/fonts/*-*.txt", "usr/share/doc/recorde/licenses/", "644"],
 ]
 
 [package.metadata.wix]

@@ -1,3 +1,4 @@
+use crate::ui::button::Button;
 use std::collections::HashMap;
 
 use egui::{Color32, Pos2, Rect, RichText, Stroke, Ui, Vec2};
@@ -175,7 +176,7 @@ impl Sidebar {
                                     }
                                     ui.separator();
                                     if ui
-                                        .add(egui::Button::new(
+                                        .add(Button::new(
                                             RichText::new("Force Delete")
                                                 .color(theme::accent_red()),
                                         ))
@@ -187,7 +188,7 @@ impl Sidebar {
                                         ui.close_menu();
                                     }
                                     if ui
-                                        .add(egui::Button::new(
+                                        .add(Button::new(
                                             RichText::new("Delete Branch")
                                                 .color(theme::accent_red()),
                                         ))
@@ -251,7 +252,7 @@ impl Sidebar {
                                 }
                                 ui.separator();
                                 if ui
-                                    .add(egui::Button::new(
+                                    .add(Button::new(
                                         RichText::new("Delete Tag").color(theme::accent_red()),
                                     ))
                                     .clicked()
@@ -275,7 +276,7 @@ impl Sidebar {
                             };
                             if ui
                                 .add(
-                                    egui::Button::new(label)
+                                    Button::new(label)
                                         .fill(Color32::TRANSPARENT)
                                         .stroke(Stroke::NONE),
                                 )
@@ -349,7 +350,7 @@ impl Sidebar {
                                 }
                                 ui.separator();
                                 if ui
-                                    .add(egui::Button::new(
+                                    .add(Button::new(
                                         RichText::new("Drop").color(theme::accent_red()),
                                     ))
                                     .clicked()

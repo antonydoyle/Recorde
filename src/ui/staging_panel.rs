@@ -1,3 +1,4 @@
+use crate::ui::button::Button;
 use egui::{Color32, RichText, Ui, Vec2};
 
 use crate::git::{
@@ -100,7 +101,7 @@ impl StagingPanel {
                     if ui
                         .add_enabled(
                             !paths.is_empty(),
-                            egui::Button::new(format!("{label} ({})", paths.len())),
+                            Button::new(format!("{label} ({})", paths.len())),
                         )
                         .clicked()
                     {
@@ -150,7 +151,7 @@ impl StagingPanel {
                         ui.add_space(8.0);
                         let arrow = if *conflicts_expanded { "▼" } else { "▶" };
                         let toggle = ui.add(
-                            egui::Button::new(
+                            Button::new(
                                 RichText::new(format!(
                                     "{} Conflicts ({})",
                                     arrow,
@@ -434,7 +435,7 @@ impl StagingPanel {
                         ui.add_space(4.0);
                         let amend_color = if self.drafts.current.is_amend { theme::accent_yellow() } else { theme::text_muted() };
                         if ui.add(
-                            egui::Button::new(RichText::new("Amend").color(amend_color).size(12.0))
+                            Button::new(RichText::new("Amend").color(amend_color).size(12.0))
                                 .fill(if self.drafts.current.is_amend { theme::bg_selected() } else { Color32::TRANSPARENT })
                                 .stroke(egui::Stroke::new(1.0, if self.drafts.current.is_amend { theme::accent_yellow() } else { theme::border() })),
                         ).clicked() {
@@ -553,7 +554,7 @@ impl StagingPanel {
                     ui.add_space(12.0);
                     let btn = ui.add_enabled(
                         can_commit,
-                        egui::Button::new(RichText::new(&btn_label).color(if can_commit { theme::on_primary() } else { theme::text_muted() }).size(14.0).strong())
+                        Button::new(RichText::new(&btn_label).color(if can_commit { theme::on_primary() } else { theme::text_muted() }).size(14.0).strong())
                             .fill(if can_commit { theme::primary_fill() } else { theme::bg_elevated() })
                             .min_size(Vec2::new(form_width(ui, 24.0, 480.0), 38.0)),
                     );
@@ -783,7 +784,7 @@ fn collapsible_section(
         ui.add_space(8.0);
         let arrow = if *expanded { "▼" } else { "▶" };
         let toggle = ui.add(
-            egui::Button::new(
+            Button::new(
                 RichText::new(format!("{} {}  ({})", arrow, title, count))
                     .color(theme::text_secondary())
                     .size(13.0)
@@ -841,7 +842,7 @@ fn file_row(
             let label = ui
                 .add_sized(
                     [width, 32.0],
-                    egui::Button::new("")
+                    Button::new("")
                         .fill(if is_selected {
                             theme::bg_selected()
                         } else {
@@ -880,15 +881,15 @@ fn file_row(
     row_resp
 }
 
-fn small_btn(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(theme::text_muted()).size(12.0))
+fn small_btn(label: &str) -> Button<'_> {
+    Button::new(RichText::new(label).color(theme::text_muted()).size(12.0))
         .fill(Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(1.0, theme::border()))
         .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
-fn small_btn_accent(label: &str) -> egui::Button<'_> {
-    egui::Button::new(
+fn small_btn_accent(label: &str) -> Button<'_> {
+    Button::new(
         RichText::new(label)
             .color(theme::on_primary())
             .size(12.0)
@@ -899,8 +900,8 @@ fn small_btn_accent(label: &str) -> egui::Button<'_> {
     .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
-fn small_btn_danger(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(theme::accent_red()).size(12.0))
+fn small_btn_danger(label: &str) -> Button<'_> {
+    Button::new(RichText::new(label).color(theme::accent_red()).size(12.0))
         .fill(Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(
             1.0,

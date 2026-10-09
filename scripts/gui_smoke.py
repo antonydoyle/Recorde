@@ -212,6 +212,14 @@ x.XCloseDisplay(d)
 
                             subprocess.run([sys.executable, "-c", click], env=env, check=True)
                             time.sleep(2)
+                        if '--hover-review' in sys.argv[3:]:
+                            assert design_review and not welcome and ui_scale == 1.0
+                            for label, px, py in [('toolbar-hover', 235, 115), ('graph-hover', 300, 173), ('stage-hover', width - 46, 218), ('icon-hover', width - 36, 115)]:
+                                motion = click.split('t.XTestFakeMotionEvent(d, -1,')[0]
+                                motion += f't.XTestFakeMotionEvent(d, -1, {px}, {py}, 0)\nx.XFlush(d)\nx.XCloseDisplay(d)'
+                                subprocess.run([sys.executable, '-c', motion], env=env, check=True)
+                                time.sleep(0.4)
+                                png_from_xwd(root / 'Xvfb_screen0', artifacts / f'{label}.png')
                         if recent_menu:
                             # Fixed native fixture: open the toolbar's repository chevron.
                             # Verify removal only changes history, then open another real repo.

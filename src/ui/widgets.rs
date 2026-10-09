@@ -1,3 +1,4 @@
+use crate::ui::button::Button;
 use egui::{Color32, FontId, Pos2, Rect, Response, RichText, Stroke, Ui, Vec2};
 
 use crate::icons;
@@ -132,7 +133,7 @@ pub fn section_header(ui: &mut Ui, title: &str, count: usize, open: &mut bool) -
 pub fn toolbar_btn(ui: &mut Ui, label: &str, enabled: bool) -> Response {
     ui.add_enabled(
         enabled,
-        egui::Button::new(
+        Button::new(
             RichText::new(label)
                 .color(if enabled {
                     theme::text_secondary()
@@ -190,7 +191,7 @@ pub fn toolbar_btn_icon_colored(
     let content_width = 18.0 + gap + text.size().x;
     let response = ui.add_enabled(
         enabled,
-        egui::Button::new("")
+        Button::new("")
             .fill(fill)
             .stroke(Stroke::new(1.0, stroke))
             .rounding(7.0)
@@ -246,7 +247,7 @@ pub fn icon_btn_mat_colored(
 ) -> Response {
     let response = ui.add_sized(
         [32.0, 32.0],
-        egui::Button::new("")
+        Button::new("")
             .fill(Color32::TRANSPARENT)
             .stroke(Stroke::NONE),
     );

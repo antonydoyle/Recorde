@@ -14,5 +14,6 @@ pub mod widgets;
 
 pub mod binary_preview;
 
+pub mod button;
 pub(crate) mod frame_metrics;
 mod highlight;

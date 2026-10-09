@@ -32,8 +32,16 @@ if ($Child) {
         $copyOut = $worker.StandardOutput.BaseStream.CopyToAsync($stdout)
         $copyErr = $worker.StandardError.BaseStream.CopyToAsync($stderr)
         $worker.WaitForExit()
-        $null = $copyOut.GetAwaiter().GetResult()
-        $null = $copyErr.GetAwaiter().GetResult()
+        # An orphaned helper may inherit an output pipe after the actual worker
+        # exits. Bound draining so the parent can terminate the owned job instead
+        # of waiting for that helper indefinitely.
+        if ([Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($copyOut, $copyErr), 2000)) {
+            $null = $copyOut.GetAwaiter().GetResult()
+            $null = $copyErr.GetAwaiter().GetResult()
+        } else {
+            $worker.StandardOutput.Close()
+            $worker.StandardError.Close()
+        }
         exit $worker.ExitCode
     } finally { $stdout.Dispose(); $stderr.Dispose() }
 }
@@ -192,18 +200,26 @@ finally {
         }
     } finally { $job.Dispose() }
     if ($null -ne $wrapper) { $null = $wrapper.WaitForExit(3000) }
-    $survivors = @(Get-CimInstance Win32_Process | Where-Object {
-        $candidate = $_
-        @($members | Where-Object { $_.ProcessId -eq $candidate.ProcessId -and $_.CreationDate -eq $candidate.CreationDate }).Count -gt 0
-    })
+    # Job termination is asynchronous. In particular, compiler helpers can still
+    # appear in CIM briefly after TerminateJobObject has returned. Wait for the
+    # recorded identities to exit; never terminate a reused PID or unrelated host.
+    $cleanupTimer = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        $survivors = @(Get-CimInstance Win32_Process | Where-Object {
+            $candidate = $_
+            @($members | Where-Object { $_.ProcessId -eq $candidate.ProcessId -and $_.CreationDate -eq $candidate.CreationDate }).Count -gt 0
+        })
+        if ($survivors.Count -eq 0 -or $cleanupTimer.Elapsed.TotalSeconds -ge 10) { break }
+        Start-Sleep -Milliseconds 200
+    } while ($true)
     $survivingIds = @($survivors | ForEach-Object { $_.ProcessId })
     $remainingPorts = @(Get-TaskPorts $survivingIds)
     $windows = @([RecordeTaskJob]::GitWindows() | Where-Object { $_ -notin $baselineWindows })
+    if ($survivors.Count -gt 0 -or $remainingPorts.Count -gt 0 -or $windows.Count -gt 0) { $failure = 'Cleanup verification failed; inspect result.json. No unrelated process was terminated.' }
     @{ Purpose=$Purpose; ExitCode=$exitCode; Failure=$failure; RemainingPids=$survivingIds; RemainingPorts=$remainingPorts;
         UnattributedConsoleWindows=$windows; FinishedUtc=[DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath (Join-Path $runRoot 'result.json')
     Write-Output "Cleanup: $($survivors.Count) task processes, $($remainingPorts.Count) task listeners, $($windows.Count) new tool windows remain. Artifacts: $runRoot"
-    if ($survivors.Count -gt 0 -or $remainingPorts.Count -gt 0 -or $windows.Count -gt 0) { $failure = 'Cleanup verification failed; inspect result.json. No unrelated process was terminated.' }
 }
 if ($failure) { throw $failure }
 if ($exitCode -ne 0) { throw "Task exited with code $exitCode; see $runRoot" }

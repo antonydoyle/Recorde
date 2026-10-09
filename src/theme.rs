@@ -363,15 +363,41 @@ pub mod font_size {
 
 // ── Graph lane colours ────────────────────────────────────────────────────────
 pub const LANE_COLORS: &[Color32] = &[
-    Color32::from_rgb(82, 150, 255),  // blue
-    Color32::from_rgb(245, 190, 69),  // amber
-    Color32::from_rgb(165, 103, 232), // purple
-    Color32::from_rgb(255, 139, 55),  // orange
-    Color32::from_rgb(74, 208, 128),  // green
-    Color32::from_rgb(83, 199, 184),  // teal
-    Color32::from_rgb(239, 93, 93),   // red
-    Color32::from_rgb(200, 140, 255), // lavender
+    Color32::from_rgb(0, 229, 255),   // electric cyan
+    Color32::from_rgb(255, 70, 203),  // hot pink
+    Color32::from_rgb(177, 105, 255), // violet
+    Color32::from_rgb(81, 255, 137),  // neon green
+    Color32::from_rgb(255, 197, 53),  // amber
+    Color32::from_rgb(87, 136, 255),  // electric blue
+    Color32::from_rgb(255, 103, 72),  // coral
+    Color32::from_rgb(196, 246, 45),  // lime
 ];
+
+// Saturated counterparts with enough contrast against the light graph surface.
+const LANE_COLORS_LIGHT: &[Color32] = &[
+    Color32::from_rgb(0, 124, 151),
+    Color32::from_rgb(210, 24, 148),
+    Color32::from_rgb(124, 52, 224),
+    Color32::from_rgb(0, 143, 82),
+    Color32::from_rgb(166, 105, 0),
+    Color32::from_rgb(44, 96, 237),
+    Color32::from_rgb(207, 65, 36),
+    Color32::from_rgb(105, 130, 0),
+];
+
+/// Stable repository-specific shuffle, without filesystem access or saved state.
+/// Use the full path so repositories with identical names can have different orders.
+pub fn graph_color_order(repo: Option<&std::path::Path>) -> [usize; 8] {
+    use sha2::{Digest, Sha256};
+    let mut order = [0, 1, 2, 3, 4, 5, 6, 7];
+    if let Some(repo) = repo {
+        let seed = Sha256::digest(repo.as_os_str().as_encoded_bytes());
+        for i in (1..order.len()).rev() {
+            order.swap(i, seed[i] as usize % (i + 1));
+        }
+    }
+    order
+}
 
 /// Optimised for deuteranopia/protanopia — no red/green confusion.
 pub const LANE_COLORS_COLORBLIND: &[Color32] = &[
@@ -410,7 +436,12 @@ pub fn lane_color_for_palette(lane: usize, colorblind: bool) -> Color32 {
             color
         }
     } else {
-        lane_color(lane)
+        let colors = if dark() {
+            LANE_COLORS
+        } else {
+            LANE_COLORS_LIGHT
+        };
+        colors[lane % colors.len()]
     }
 }
 
@@ -596,6 +627,31 @@ pub fn apply_ui_scale(ctx: &egui::Context, scale: f32) {
 
 #[cfg(test)]
 mod typography_tests {
+    #[test]
+    fn repository_graph_colours_are_stable_varied_permutations() {
+        use std::{collections::HashSet, path::Path};
+        let mut first_colours = HashSet::new();
+        for parent in 0..32 {
+            // Deliberately reuse the basename: identity must use the full path.
+            let repo = format!("/projects/{parent}/recorde");
+            let order = super::graph_color_order(Some(Path::new(&repo)));
+            assert_eq!(order, super::graph_color_order(Some(Path::new(&repo))));
+            first_colours.insert(order[0]);
+            let mut sorted = order;
+            sorted.sort_unstable();
+            assert_eq!(sorted, [0, 1, 2, 3, 4, 5, 6, 7]);
+        }
+        assert!(
+            first_colours.len() >= 6,
+            "Repositories should vary their starting hue"
+        );
+        assert_eq!(super::LANE_COLORS.len(), super::LANE_COLORS_LIGHT.len());
+        assert_eq!(
+            super::LANE_COLORS.len(),
+            super::LANE_COLORS_COLORBLIND.len()
+        );
+    }
+
     #[test]
     fn ui_zoom_preserves_native_density_and_monitor_changes() {
         let ctx = egui::Context::default();

@@ -10,6 +10,9 @@ No artwork from these references is shipped.
 
 - Graphite dark and soft white light palettes, with independent accent colours.
 - Consistent controls, spacing, typography, focus states and restrained borders.
+- Graph navigation has a 10-pixel top inset. Custom-coloured and icon buttons
+  retain visible hover, pressed and keyboard-focus states; disabled controls
+  remain inactive. Shared button rendering lives in `src/ui/button.rs`.
 - Embedded Inter Regular replaces the framework's Ubuntu Light default. The
   normal body size is 14 logical pixels, secondary labels are 12, and code is 13.
   Light-theme secondary text has stronger contrast. UI zoom multiplies the native
@@ -21,6 +24,10 @@ No artwork from these references is shipped.
 - Diff display options live in the sliders menu. Search remains directly available.
 - A welcome screen provides Open, Clone and Create actions.
 - Commit graph topology, branching geometry and history actions are preserved.
+  Neon lane and node colours use a stable shuffle based on the full repository
+  path, cached when switching repositories. Refreshing or restarting keeps the
+  same order; relocating a repository can change it. Light mode uses saturated,
+  darker counterparts for contrast, and the colourblind palette remains available.
   Narrower initial columns give commit messages more space. Lane colours adapt to
   light/dark themes; high contrast and colourblind options remain available.
 - Icon fonts and symbol fallbacks are bundled. Incorrect Filter, Brightness and

@@ -1,3 +1,4 @@
+use crate::ui::button::Button;
 use std::path::PathBuf;
 
 use egui::{Context, RichText, Stroke};
@@ -643,7 +644,7 @@ pub fn recent_repositories_menu(
                         let width = (ui.available_width() - 44.0).max(160.0);
                         let row = ui.add_sized(
                             [width, 56.0],
-                            egui::Button::new("")
+                            Button::new("")
                                 .fill(if active {
                                     theme::bg_selected()
                                 } else {
