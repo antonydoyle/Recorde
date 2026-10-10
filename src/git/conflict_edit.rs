@@ -10,7 +10,7 @@ pub struct Snapshot {
     pub theirs: String,
     pub result: String,
     stages: [Option<git2::Oid>; 3],
-    original: Vec<u8>,
+    original: Option<Vec<u8>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -18,6 +18,8 @@ pub struct Draft {
     file: String,
     stages: [Option<String>; 3],
     original: String,
+    #[serde(default)]
+    original_missing: bool,
     pub result: String,
 }
 
@@ -25,10 +27,14 @@ impl Draft {
     pub fn matches(&self, snapshot: &Snapshot) -> bool {
         self.file == snapshot.file
             && self.stages == snapshot.stages.map(|oid| oid.map(|oid| oid.to_string()))
+            && self.original_missing == snapshot.original.is_none()
             && self.original
-                == git2::Oid::hash_object(git2::ObjectType::Blob, &snapshot.original)
-                    .expect("Git blob hashing")
-                    .to_string()
+                == git2::Oid::hash_object(
+                    git2::ObjectType::Blob,
+                    snapshot.original.as_deref().unwrap_or_default(),
+                )
+                .expect("Git blob hashing")
+                .to_string()
     }
 }
 
@@ -43,10 +49,21 @@ fn draft_path(snapshot: &Snapshot) -> Result<PathBuf, String> {
 }
 
 pub fn read_draft(snapshot: &Snapshot) -> Result<Option<Draft>, String> {
-    match std::fs::read(draft_path(snapshot)?) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|e| e.to_string()),
+    use std::io::Read;
+    match std::fs::File::open(draft_path(snapshot)?) {
+        Ok(file) => {
+            // JSON escaping can expand an 8 MiB result by up to six times.
+            let mut bytes = Vec::new();
+            file.take(64 * 1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > 64 * 1024 * 1024 {
+                return Err("Conflict draft exceeds its size limit.".into());
+            }
+            serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| e.to_string())
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
     }
@@ -54,15 +71,22 @@ pub fn read_draft(snapshot: &Snapshot) -> Result<Option<Draft>, String> {
 
 pub fn write_draft(snapshot: &Snapshot, result: &str) -> Result<(), String> {
     use std::io::Write;
+    if result.len() > 8 * 1024 * 1024 {
+        return Err("Conflict drafts support up to 8 MiB.".into());
+    }
     let path = draft_path(snapshot)?;
     let parent = path.parent().ok_or("Invalid draft path.")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let draft = Draft {
         file: snapshot.file.clone(),
         stages: snapshot.stages.map(|oid| oid.map(|oid| oid.to_string())),
-        original: git2::Oid::hash_object(git2::ObjectType::Blob, &snapshot.original)
-            .map_err(|e| e.to_string())?
-            .to_string(),
+        original: git2::Oid::hash_object(
+            git2::ObjectType::Blob,
+            snapshot.original.as_deref().unwrap_or_default(),
+        )
+        .map_err(|e| e.to_string())?
+        .to_string(),
+        original_missing: snapshot.original.is_none(),
         result: result.into(),
     };
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
@@ -133,10 +157,8 @@ pub fn load(path: &Path, file: &str) -> Result<Snapshot, String> {
     let workdir = repo
         .workdir()
         .ok_or("Conflict editing requires a worktree.")?;
-    let original = super::safe_path::ScopedFile::new(workdir, file)?
-        .read(8 * 1024 * 1024)?
-        .unwrap_or_default();
-    let result = String::from_utf8(original.clone())
+    let original = super::safe_path::ScopedFile::new(workdir, file)?.read(8 * 1024 * 1024)?;
+    let result = String::from_utf8(original.clone().unwrap_or_default())
         .map_err(|_| "This encoding requires an external merge tool.".to_string())?;
     Ok(Snapshot {
         repo: path.into(),
@@ -169,15 +191,21 @@ pub fn save(snapshot: &Snapshot, result: &str) -> Result<(), String> {
     let target =
         super::safe_path::ScopedFile::new(repo.workdir().ok_or("No worktree.")?, &snapshot.file)?;
     let original = target.read(8 * 1024 * 1024)?;
-    if original.as_deref().unwrap_or_default() != snapshot.original {
+    if original != snapshot.original {
         return Err("The conflicted file changed before saving. Refresh and retry.".into());
     }
     target.replace(original.as_deref(), result.as_bytes())?;
+    if target.read(8 * 1024 * 1024)?.as_deref() != Some(result.as_bytes()) {
+        return Err("The resolution changed before staging. Inspect the file and retry.".into());
+    }
     super::merge::run_git_seq(
         &snapshot.repo,
         &["--literal-pathspecs", "add", "--", &snapshot.file],
     )
     .map_err(|e| e.user_message())?;
+    if target.read(8 * 1024 * 1024)?.as_deref() != Some(result.as_bytes()) {
+        return Err("The resolution changed during staging. Inspect the index and working file before continuing; your draft is retained.".into());
+    }
     clear_saved_draft(snapshot, result);
     Ok(())
 }
@@ -206,7 +234,7 @@ mod tests {
         assert!(save(&snapshot, "must not escape\n").is_err());
         assert_eq!(
             std::fs::read(outside.path().join("saved/file")).unwrap(),
-            snapshot.original
+            snapshot.original.unwrap()
         );
         std::fs::remove_file(repo.path().join("dir")).unwrap();
         std::fs::rename(outside.path().join("saved"), repo.path().join("dir")).unwrap();
@@ -225,6 +253,21 @@ mod tests {
         repo.commit("file.txt", b"ours\n");
         assert!(!repo.git(&["merge", "other"]).status.success());
         repo
+    }
+    #[test]
+    fn empty_file_deletion_is_a_new_resolution_and_is_not_overwritten() {
+        let repo = conflicted();
+        repo.write("file.txt", b"");
+        let snapshot = load(repo.path(), "file.txt").unwrap();
+        write_draft(&snapshot, "draft").unwrap();
+        std::fs::remove_file(repo.path().join("file.txt")).unwrap();
+        let missing = load(repo.path(), "file.txt").unwrap();
+        assert!(!read_draft(&missing).unwrap().unwrap().matches(&missing));
+        assert!(save(&snapshot, "must not recreate").is_err());
+        assert!(!repo.path().join("file.txt").exists());
+        repo.write("file.txt", b"");
+        assert!(save(&missing, "must not overwrite new file").is_err());
+        assert!(repo.open().index().unwrap().has_conflicts());
     }
     #[test]
     fn conflict_draft_survives_reopen_and_detects_changed_worktree() {

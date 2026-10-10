@@ -108,6 +108,7 @@ pub(crate) fn version(path: &Path, file: &str) -> Result<Version, String> {
             )?
             .open()
             .map_err(|e| e.to_string())?;
+            let metadata = input.metadata().map_err(|e| e.to_string())?;
             let mut hasher = Sha256::new();
             let mut buffer = [0u8; 65536];
             loop {
@@ -117,7 +118,7 @@ pub(crate) fn version(path: &Path, file: &str) -> Result<Version, String> {
                 }
                 hasher.update(&buffer[..count]);
             }
-            let after = std::fs::symlink_metadata(&target).map_err(|e| e.to_string())?;
+            let after = input.metadata().map_err(|e| e.to_string())?;
             if after.file_type() != metadata.file_type()
                 || after.len() != metadata.len()
                 || after.modified().ok() != metadata.modified().ok()
