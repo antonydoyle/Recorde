@@ -3,13 +3,31 @@ use std::path::Path;
 pub fn update(repo: &Path, path: &str) -> Result<(), String> {
     crate::git::merge::run_git_seq(
         repo,
-        &["--literal-pathspecs", "submodule", "update", "--init", "--recursive", "--", path],
+        &[
+            "--literal-pathspecs",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+            "--",
+            path,
+        ],
     )
     .map_err(|e| e.user_message())
 }
 pub fn sync(repo: &Path, path: &str) -> Result<(), String> {
-    crate::git::merge::run_git_seq(repo, &["--literal-pathspecs", "submodule", "sync", "--recursive", "--", path])
-        .map_err(|e| e.user_message())
+    crate::git::merge::run_git_seq(
+        repo,
+        &[
+            "--literal-pathspecs",
+            "submodule",
+            "sync",
+            "--recursive",
+            "--",
+            path,
+        ],
+    )
+    .map_err(|e| e.user_message())
 }
 
 #[derive(Debug, Clone)]
