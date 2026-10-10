@@ -292,6 +292,17 @@ pub fn private_tempdir(parent: &Path, prefix: &str) -> Result<tempfile::TempDir,
         .map_err(|_| "Cannot create private update staging directory.".into())
 }
 
+/// Resolve OS temporary-directory aliases (for example macOS /var) only in tests.
+/// Production update paths must continue to reject symbolic-link ancestors.
+#[cfg(test)]
+pub(super) fn fixture_dir() -> tempfile::TempDir {
+    let parent = std::env::temp_dir()
+        .canonicalize()
+        .expect("Cannot resolve the test temporary directory.");
+    private_tempdir(&parent, "recorde-update-test-")
+        .expect("Cannot create a private update test directory.")
+}
+
 pub fn open_lock(path: &Path) -> Result<std::fs::File, String> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);

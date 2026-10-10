@@ -901,8 +901,7 @@ mod tests {
     use super::*;
     #[test]
     fn failed_signal_flush_never_publishes_and_existing_signal_is_preserved() {
-        let directory =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let directory = security::fixture_dir();
         let signal = directory.path().join("continue");
         assert!(
             write_new_with_flush(&signal, b"nonce", |_| Err("injected flush failure".into()))
@@ -916,8 +915,7 @@ mod tests {
     }
     #[test]
     fn interrupted_swap_blocks_normal_startup_and_names_retained_backup() {
-        let directory =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let directory = security::fixture_dir();
         let target = directory.path().join("recorde");
         let backup = directory
             .path()
@@ -948,8 +946,7 @@ mod tests {
     #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn completed_payload_cleanup_preserves_live_helpers_failures_and_receipts() {
-        let directory =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let directory = security::fixture_dir();
         let artifact = directory.path().join("recorde-fixture");
         let helper = directory.path().join(if cfg!(windows) {
             "recorde-update-helper.exe"
@@ -1026,8 +1023,7 @@ mod tests {
     }
     #[test]
     fn retries_use_fresh_attempts_and_preserve_verified_download() {
-        let root =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let root = security::fixture_dir();
         let source = root.path().join("download");
         std::fs::write(&source, b"verified bytes").unwrap();
         let (size, sha256) = protocol::digest(security::open_read(&source).unwrap()).unwrap();
@@ -1083,7 +1079,8 @@ mod tests {
     #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn living_parent_and_installer_failures_never_trigger_fallback_relaunch() {
-        let file = tempfile::NamedTempFile::new().unwrap();
+        let directory = security::fixture_dir();
+        let file = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
         let mut request = Request {
             schema: 1,
             parent: Witness::current().unwrap(),
@@ -1109,8 +1106,7 @@ mod tests {
     }
     #[test]
     fn atomic_replacement_keeps_old_bytes_and_can_roll_back() {
-        let directory =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let directory = security::fixture_dir();
         let target = directory.path().join("recorde");
         let candidate = directory.path().join("candidate");
         let backup = directory.path().join("backup");
@@ -1126,8 +1122,7 @@ mod tests {
     #[test]
     fn failed_application_launch_restores_verified_original() {
         use std::os::unix::fs::PermissionsExt;
-        let directory =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let directory = security::fixture_dir();
         let target = directory.path().join("recorde");
         let artifact = directory.path().join("artifact");
         std::fs::write(
@@ -1178,8 +1173,7 @@ mod tests {
     #[test]
     fn replacement_rejects_writable_installation_and_symlinks() {
         use std::os::unix::fs::PermissionsExt;
-        let directory =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let directory = security::fixture_dir();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
         assert!(security::owned_directory(directory.path()).is_err());
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1198,8 +1192,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn launch_gate_accepts_nonce_before_state_writes_and_reaps_exited_probe() {
-        let directory =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let directory = security::fixture_dir();
         let nonce = "a".repeat(64);
         let path = script(
             directory.path(),
@@ -1217,8 +1210,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn no_ack_timeout_stops_owned_descendants_and_never_releases_state_gate() {
-        let directory =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let directory = security::fixture_dir();
         let nonce = "a".repeat(64);
         let path = script(directory.path(), "no-ack-probe", "/bin/sleep 30");
         assert!(
@@ -1237,8 +1229,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn inherited_appimage_cannot_select_another_application() {
-        let directory =
-            security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+        let directory = security::fixture_dir();
         let image = directory.path().join("other.AppImage");
         std::fs::write(&image, b"other app").unwrap();
         assert!(validate_appimage_location(
@@ -1274,8 +1265,7 @@ mod tests {
     #[test]
     fn successful_swap_and_no_ack_rollback_preserve_adjacent_files() {
         for acknowledge in [true, false] {
-            let directory =
-                security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-").unwrap();
+            let directory = security::fixture_dir();
             let nonce = "b".repeat(64);
             let target = script(directory.path(), "recorde", "exit 0");
             std::fs::write(

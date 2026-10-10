@@ -123,9 +123,7 @@ mod tests {
     use super::*;
     #[test]
     fn another_instance_shared_lock_prevents_exclusive_apply() {
-        let directory =
-            super::super::security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-")
-                .unwrap();
+        let directory = super::super::security::fixture_dir();
         let first = lock_file(directory.path()).unwrap();
         let second = lock_file(directory.path()).unwrap();
         FileExt::try_lock_shared(&first).unwrap();

@@ -226,9 +226,7 @@ mod tests {
     }
     #[test]
     fn checkpoint_survives_reopen_and_rejects_rollback_older_issuance_and_corruption() {
-        let directory =
-            super::super::security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-")
-                .unwrap();
+        let directory = super::super::security::fixture_dir();
         accept(
             directory.path(),
             &manifest("2.0.0", 100),
@@ -281,9 +279,7 @@ mod tests {
     #[test]
     fn held_state_lock_blocks_mutation() {
         use fs2::FileExt;
-        let directory =
-            super::super::security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-")
-                .unwrap();
+        let directory = super::super::security::fixture_dir();
         let lock =
             super::super::security::create_private(&directory.path().join("state.lock")).unwrap();
         lock.lock_exclusive().unwrap();
@@ -300,10 +296,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlinked_state_is_preserved() {
-        let directory =
-            super::super::security::private_tempdir(&std::env::temp_dir(), "recorde-update-test-")
-                .unwrap();
-        let outside = tempfile::NamedTempFile::new().unwrap();
+        let directory = super::super::security::fixture_dir();
+        let outside = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
         std::os::unix::fs::symlink(outside.path(), directory.path().join("state.json")).unwrap();
         assert!(accept(
             directory.path(),
