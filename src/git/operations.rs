@@ -1217,6 +1217,12 @@ pub fn load_prs(state: crate::state::SharedState) {
                 ProviderType::GitLab => {
                     crate::providers::gitlab::list_mrs(&host, &owner, &repo, &token, api_state)
                 }
+                ProviderType::Bitbucket => {
+                    crate::providers::bitbucket::list_prs(&owner, &repo, &token, api_state)
+                }
+                ProviderType::AzureDevOps => {
+                    crate::providers::azure::list_prs(&owner, &repo, &token, api_state)
+                }
                 _ => Err("Provider is not supported for in-app PR listing.".into()),
             }?;
             Ok::<_, String>((prs, remote, provider, remote_url))
@@ -1279,6 +1285,12 @@ pub fn load_pr_details(state: SharedState) {
                 capabilities::ProviderType::GitLab => {
                     crate::providers::gitlab::details(&host, &owner, &repo, number, &token)
                 }
+                capabilities::ProviderType::Bitbucket => {
+                    crate::providers::bitbucket::details(&owner, &repo, number, &token)
+                }
+                capabilities::ProviderType::AzureDevOps => {
+                    crate::providers::azure::details(&owner, &repo, number, &token)
+                }
                 _ => Err("Review details are not supported for this provider.".into()),
             }?;
             if queue {
@@ -1299,7 +1311,7 @@ pub fn load_pr_details(state: SharedState) {
                         &item.base_ref,
                         &token,
                     ),
-                    _ => unreachable!(),
+                    _ => Err("Merge queues are unavailable for this provider.".into()),
                 };
                 item.queue_status = Some(match status {
                     Ok(status) => status,
@@ -1392,11 +1404,20 @@ pub(crate) fn resolve_repo_info_for_remote(
         Some(ProviderKind::GitLabCom | ProviderKind::GitLabSelf) => ProviderType::GitLab,
         None if endpoint.host == "github.com" => ProviderType::GitHub,
         None if endpoint.host == "gitlab.com" => ProviderType::GitLab,
+        Some(ProviderKind::BitbucketCloud) => ProviderType::Bitbucket,
+        Some(ProviderKind::AzureDevOps) => ProviderType::AzureDevOps,
+        None if endpoint.host == "bitbucket.org" => ProviderType::Bitbucket,
+        None if endpoint.host == "dev.azure.com" => ProviderType::AzureDevOps,
         _ => {
             return Err(
                 "Choose the provider type for this host in Settings > Accounts & SSH.".into(),
             )
         }
+    };
+    let token = match provider {
+        ProviderType::Bitbucket => crate::providers::bitbucket::basic(&user, &token),
+        ProviderType::AzureDevOps => crate::providers::bitbucket::basic("", &token),
+        _ => token,
     };
     Ok((
         endpoint.namespace,
@@ -1426,6 +1447,8 @@ pub fn load_issues(state: crate::state::SharedState) {
                 ProviderType::GitLab => {
                     crate::providers::gitlab::list_issues(&host, &owner, &repo, &token, api_state)
                 }
+                ProviderType::Bitbucket => Err("Bitbucket Cloud retired its issue tracker in August 2026. Use your linked Jira project in a browser.".into()),
+                ProviderType::AzureDevOps => crate::providers::azure::list_issues(&owner, &token, api_state),
                 _ => Err(format!(
                     "Provider at {} not yet supported for issues.",
                     host
@@ -1473,6 +1496,12 @@ pub fn load_ci_runs(state: crate::state::SharedState) {
                 ProviderType::GitLab => {
                     crate::providers::gitlab::list_pipelines(&host, &owner, &repo, &branch, &token)
                 }
+                ProviderType::Bitbucket => {
+                    crate::providers::bitbucket::list_ci_runs(&owner, &repo, &branch, &token)
+                }
+                ProviderType::AzureDevOps => {
+                    crate::providers::azure::list_ci_runs(&owner, &repo, &branch, &token)
+                }
                 _ => Err(format!("Provider at {} not yet supported for CI.", host)),
             }
         })();
@@ -1514,6 +1543,8 @@ pub fn load_releases(state: crate::state::SharedState) {
                 ProviderType::GitLab => {
                     crate::providers::gitlab::list_releases(&host, &owner, &repo, &token)
                 }
+                ProviderType::Bitbucket => Err("Bitbucket Cloud has no release API. Browse repository tags or Downloads in Bitbucket.".into()),
+                ProviderType::AzureDevOps => crate::providers::azure::list_releases(&owner, &token),
                 _ => Err(format!(
                     "Provider at {} not yet supported for releases.",
                     host

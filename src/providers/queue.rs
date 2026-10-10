@@ -84,7 +84,7 @@ pub(crate) fn gitlab(
         component(&format!("{owner}/{project}")),
         component(branch)
     );
-    let entries = super::pagination::list(&url, "PRIVATE-TOKEN", token, None)?;
+    let entries = super::pagination::list(&url, "Authorization", &format!("Bearer {token}"), None)?;
     gitlab_status(entries, number, branch)
 }
 

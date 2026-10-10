@@ -1,3 +1,7 @@
+pub mod azure;
+pub mod bitbucket;
+#[cfg(test)]
+mod cloud_tests;
 pub mod github;
 pub mod gitlab;
 mod pagination;

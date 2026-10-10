@@ -63,7 +63,9 @@ fn fixture(replies: Vec<Reply>) -> (String, std::thread::JoinHandle<Vec<(String,
                 assert!(count > 0);
                 bytes.extend_from_slice(&buffer[..count]);
             }
-            assert!(headers.contains("fixture-only-token"));
+            assert!(headers
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-only-token"));
             let body = if length == 0 {
                 Value::Null
             } else {

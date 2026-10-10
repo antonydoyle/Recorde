@@ -1511,6 +1511,9 @@ impl RecordeApp {
                         theme::text_primary()
                     }
                     ProviderKind::GitLabCom | ProviderKind::GitLabSelf => theme::accent_red(),
+                    ProviderKind::BitbucketCloud | ProviderKind::AzureDevOps => {
+                        theme::accent_teal()
+                    }
                 };
                 let (dot_rect, _) =
                     ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
@@ -1599,7 +1602,7 @@ impl RecordeApp {
             );
             ui.add_space(4.0);
             // Provider picker
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(styled_label("Provider"));
                 ui.add_space(8.0);
                 for p in [
@@ -1607,6 +1610,8 @@ impl RecordeApp {
                     ProviderKind::GitHubEnterprise,
                     ProviderKind::GitLabCom,
                     ProviderKind::GitLabSelf,
+                    ProviderKind::BitbucketCloud,
+                    ProviderKind::AzureDevOps,
                 ] {
                     let active = self.add_account_provider == p;
                     let color = if active {
@@ -1635,6 +1640,15 @@ impl RecordeApp {
                     "Host: {}",
                     self.add_account_provider.default_host()
                 )));
+            }
+            match self.add_account_provider {
+                ProviderKind::BitbucketCloud => {
+                    ui.label(styled_muted("Use your Atlassian email and a scoped API token (repository, pull request and pipeline permissions as needed)."));
+                }
+                ProviderKind::AzureDevOps => {
+                    ui.label(styled_muted("Use your account name and a PAT with Code, Build, Work Items and Release permissions as needed. Boards and releases show the whole project."));
+                }
+                _ => {}
             }
             settings_text_field(ui, "Username", &mut self.add_account_username);
             ui.horizontal(|ui| {
@@ -2600,7 +2614,8 @@ impl RecordeApp {
                                 });
                             }
                             if let Some(status) = &pr.queue_status { cols[1].label(status); }
-                            if cols[1].add_enabled(!self.state.lock().unwrap().pr_detail_loading, secondary_btn("Refresh queue / train status")).clicked() {
+                            let queue_supported = self.state.lock().unwrap().pr_source.as_ref().is_some_and(|(_, provider, _)| matches!(provider, crate::git::capabilities::ProviderType::GitHub | crate::git::capabilities::ProviderType::GitLab));
+                            if cols[1].add_enabled(queue_supported && !self.state.lock().unwrap().pr_detail_loading, secondary_btn("Refresh queue / train status")).on_hover_text("Merge queue status is available for GitHub and GitLab.").clicked() {
                                 if let Some(item) = self.state.lock().unwrap().pr_list.get_mut(idx) { item.queue_status = Some("Loading queue status...".into()); }
                                 crate::git::operations::load_pr_details(self.state.clone());
                             }
@@ -2631,7 +2646,8 @@ impl RecordeApp {
                                         self.repo_ui.provider_editor = Some(crate::ui::provider_editor::ProviderEditor::new(path.clone(), remote.clone(),
                                             crate::providers::write::Action::Review { number: pr.number, head: pr.head_oid.clone(), target: pr.base_ref.clone(), body: String::new(), decision: crate::providers::write::Decision::Comment, inline: None }));
                                     }
-                                    if ui.add_enabled(enabled && pr.state == PrState::Open, secondary_btn("Merge...")).clicked() {
+                                    let can_merge = self.state.lock().unwrap().pr_source.as_ref().is_some_and(|(_, provider, _)| *provider != crate::git::capabilities::ProviderType::Bitbucket);
+                                    if ui.add_enabled(enabled && can_merge && pr.state == PrState::Open, secondary_btn("Merge...")).on_hover_text("Bitbucket merges must be completed in the browser because its API cannot guard the displayed commit.").clicked() {
                                         self.repo_ui.provider_editor = Some(crate::ui::provider_editor::ProviderEditor::new(path.clone(), remote,
                                             crate::providers::write::Action::Merge { number: pr.number, head: pr.head_oid.clone(), target: pr.base_ref.clone(), method: crate::providers::write::MergeMethod::Merge, queue: false }));
                                     }
@@ -5187,6 +5203,9 @@ impl RecordeApp {
                 });
                 ui.separator();
 
+                if self.state.lock().unwrap().capabilities.as_ref().is_some_and(|c| c.provider == crate::git::capabilities::ProviderType::AzureDevOps) {
+                    ui.label(styled_muted("Azure Boards work items and classic releases cover the whole project. CI is filtered to this repository and branch."));
+                }
                 match self.repo_ui.provider_tab {
                     ProviderTab::Issues => {
                         // Filter bar

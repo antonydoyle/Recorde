@@ -89,6 +89,22 @@ pub(super) fn list(
             }
         }
         if next.is_none() {
+            if let Some(token) = response
+                .header("x-ms-continuationtoken")
+                .filter(|s| !s.is_empty())
+            {
+                let mut target = page.clone();
+                let mut pairs: Vec<(String, String)> = page
+                    .query_pairs()
+                    .filter(|(key, _)| key != "continuationToken")
+                    .map(|(key, value)| (key.into(), value.into()))
+                    .collect();
+                pairs.push(("continuationToken".into(), token.into()));
+                target.query_pairs_mut().clear().extend_pairs(pairs);
+                next = Some(target);
+            }
+        }
+        if next.is_none() {
             if let Some(number) = response.header("X-Next-Page").filter(|s| !s.is_empty()) {
                 let number = number
                     .parse::<u32>()
@@ -119,6 +135,37 @@ pub(super) fn list(
         }
         let mut body: Value =
             serde_json::from_slice(&bytes).map_err(|_| "Invalid provider JSON response.")?;
+        if next.is_none() {
+            if let Some(target) = body["next"].as_str().filter(|s| !s.is_empty()) {
+                next = Some(page.join(target).map_err(|_| "Invalid pagination link.")?);
+            }
+        }
+        // Azure Git lists use $top/$skip rather than continuation headers.
+        if next.is_none() && array_key == Some("value") && origin.path().ends_with("/pullrequests")
+        {
+            let top = page
+                .query_pairs()
+                .find(|(key, _)| key == "$top")
+                .and_then(|(_, v)| v.parse::<usize>().ok());
+            if top.is_some_and(|top| {
+                top > 0 && body["value"].as_array().is_some_and(|a| a.len() == top)
+            }) {
+                let skip = page
+                    .query_pairs()
+                    .find(|(key, _)| key == "$skip")
+                    .and_then(|(_, v)| v.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let mut target = page.clone();
+                let mut pairs: Vec<(String, String)> = page
+                    .query_pairs()
+                    .filter(|(key, _)| key != "$skip")
+                    .map(|(k, v)| (k.into(), v.into()))
+                    .collect();
+                pairs.push(("$skip".into(), (skip + top.unwrap()).to_string()));
+                target.query_pairs_mut().clear().extend_pairs(pairs);
+                next = Some(target);
+            }
+        }
         let array = match array_key {
             Some(key) => body.get_mut(key),
             None => Some(&mut body),

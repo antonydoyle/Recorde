@@ -24,6 +24,7 @@ pub enum ProviderType {
     GitHub,
     GitLab,
     Bitbucket,
+    AzureDevOps,
     #[default]
     Unknown,
 }
@@ -115,6 +116,7 @@ fn detect_provider(repo: &git2::Repository) -> ProviderType {
         "github.com" => return ProviderType::GitHub,
         "gitlab.com" => return ProviderType::GitLab,
         "bitbucket.org" => return ProviderType::Bitbucket,
+        "dev.azure.com" => return ProviderType::AzureDevOps,
         _ => {}
     }
     let config = crate::config::Config::load();
@@ -137,6 +139,8 @@ fn detect_provider(repo: &git2::Repository) -> ProviderType {
         Some(crate::auth::ProviderKind::GitLabCom | crate::auth::ProviderKind::GitLabSelf) => {
             ProviderType::GitLab
         }
+        Some(crate::auth::ProviderKind::BitbucketCloud) => ProviderType::Bitbucket,
+        Some(crate::auth::ProviderKind::AzureDevOps) => ProviderType::AzureDevOps,
         None => ProviderType::Unknown,
     }
 }

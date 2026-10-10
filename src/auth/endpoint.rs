@@ -79,7 +79,53 @@ pub fn parse(remote: &str, for_api: bool) -> Result<Endpoint, String> {
         .trim_matches('/')
         .strip_suffix(".git")
         .unwrap_or(url.path().trim_matches('/'));
-    let (namespace, project) = path
+    let decoded = percent_encoding::percent_decode_str(path)
+        .decode_utf8()
+        .map_err(|_| "Invalid repository path encoding.")?;
+    if decoded.chars().any(|c| c.is_control() || c == '\\')
+        || decoded
+            .split('/')
+            .any(|part| matches!(part, "" | "." | ".."))
+    {
+        return Err("Invalid repository path.".into());
+    }
+    let parts: Vec<_> = decoded.split('/').collect();
+    let azure = if host == "dev.azure.com" {
+        match parts.as_slice() {
+            [org, project, "_git", repo] => Some((org.to_string(), *project, *repo)),
+            _ => return Err("Azure remote must use organization/project/_git/repository.".into()),
+        }
+    } else if ssh && host == "ssh.dev.azure.com" {
+        match parts.as_slice() {
+            ["v3", org, project, repo] => Some((org.to_string(), *project, *repo)),
+            _ => {
+                return Err("Azure SSH remote must use v3/organization/project/repository.".into())
+            }
+        }
+    } else if let Some(org) = host
+        .strip_suffix(".visualstudio.com")
+        .filter(|s| !s.is_empty() && !s.contains('.'))
+    {
+        match parts.as_slice() {
+            [project, "_git", repo] | ["DefaultCollection", project, "_git", repo] => {
+                Some((org.to_string(), *project, *repo))
+            }
+            _ => return Err("Invalid legacy Azure repository URL.".into()),
+        }
+    } else {
+        None
+    };
+    if let Some((org, project, repo)) = azure {
+        // Azure clone URLs commonly carry the organization as a placeholder user.
+        let username = username.filter(|user| user != &org);
+        return Ok(Endpoint {
+            host: "dev.azure.com".into(),
+            username,
+            namespace: format!("{org}/{project}"),
+            project: repo.into(),
+        });
+    }
+    let (namespace, project) = decoded
         .rsplit_once('/')
         .ok_or("Remote URL must include an owner and repository.")?;
     if namespace.is_empty() || project.is_empty() {
@@ -96,6 +142,50 @@ pub fn parse(remote: &str, for_api: bool) -> Result<Endpoint, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn azure_cloud_https_legacy_and_ssh_resolve_the_same_project() {
+        for url in [
+            "https://org@dev.azure.com/org/My%20Project/_git/repo",
+            "https://org.visualstudio.com/My%20Project/_git/repo",
+            "https://org.visualstudio.com/DefaultCollection/My%20Project/_git/repo",
+            "git@ssh.dev.azure.com:v3/org/My%20Project/repo",
+            "ssh://git@ssh.dev.azure.com/v3/org/My%20Project/repo",
+        ] {
+            let endpoint = parse(url, true).unwrap();
+            assert_eq!(endpoint.host, "dev.azure.com", "{url}");
+            assert_eq!(endpoint.namespace, "org/My Project", "{url}");
+            assert_eq!(endpoint.project, "repo");
+            assert!(endpoint.username.is_none());
+        }
+        for url in [
+            "https://dev.azure.com/org/_git/repo",
+            "https://dev.azure.com/org/project/_git/repo/extra",
+            "git@ssh.dev.azure.com:v3/org/repo",
+            "https://dev.azure.com/org/project/_git/%2e%2e",
+            "https://dev.azure.com/org/project/_git/repo%0a",
+        ] {
+            assert!(parse(url, true).is_err(), "{url}");
+        }
+        for host in [
+            "dev.azure.com.evil.test",
+            "org.visualstudio.com.evil.test",
+            "org.evil.visualstudio.com",
+        ] {
+            assert_eq!(
+                parse(&format!("https://{host}/org/project"), true)
+                    .unwrap()
+                    .host,
+                host
+            );
+        }
+        assert_eq!(
+            parse("https://alice@dev.azure.com/org/project/_git/repo", true)
+                .unwrap()
+                .username
+                .as_deref(),
+            Some("alice")
+        );
+    }
     #[test]
     fn exact_https_authority_and_username() {
         let endpoint = parse("https://Alice@GITHUB.com:443/org/repo.git", false).unwrap();
