@@ -404,7 +404,10 @@ mod session_tests {
         assert!(config.try_save_to(&path).is_err());
         let config = Config::load_from(&path);
         config.try_save_to(&path).unwrap();
-        assert_eq!(Config::try_load_from(&path).unwrap().favorites, vec![PathBuf::from("important")]);
+        assert_eq!(
+            Config::try_load_from(&path).unwrap().favorites,
+            vec![PathBuf::from("important")]
+        );
         std::fs::write(&path, original).unwrap();
         assert!(config.try_save_to(&path).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);

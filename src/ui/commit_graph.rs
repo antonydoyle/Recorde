@@ -291,7 +291,9 @@ impl CommitGraphView {
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        ui.set_enabled(self.interactions_enabled);
+        if !self.interactions_enabled {
+            ui.disable();
+        }
         let (
             graph_opt,
             selected,

@@ -14,6 +14,8 @@ GitLab must support device authorization, which became generally available in 17
 
 Bitbucket token accounts retain the Atlassian email address for API authentication. Embedded usernames in Bitbucket clone URLs are protocol hints; a repository account binding, or one unambiguous saved account, selects the email identity. Git HTTPS uses `x-bitbucket-api-token-auth`. Multiple saved accounts require explicit selection.
 
+For matching saved provider accounts, GitHub's `x-access-token` and GitLab's `oauth2` clone URL usernames are also recognized as transport hints. Other embedded usernames must match the repository's selected account.
+
 ## Validation
 
-Offline fixtures cover polling intervals, slow-down, cancellation, expiry, exact verification URLs, refused redirects, bounded/malformed responses, refreshed identities, token rotation and vault write verification. UI fixtures check cancellation/replacement of pending results. No fixture contacts an external provider or the real OS credential vault. A real sign-in requires a registered client ID and provider approval.
+Offline fixtures cover polling intervals, slow-down, cancellation, expiry, exact verification URLs, refused redirects, bounded/malformed responses, refreshed identities, token rotation and vault write verification. UI fixtures check cancellation/replacement of pending results and pointer activation of the explicit Save and Discard buttons. No fixture contacts an external provider or the real OS credential vault. A real sign-in requires a registered client ID and provider approval.

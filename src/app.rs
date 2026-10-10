@@ -1666,16 +1666,32 @@ impl RecordeApp {
                 }
                 _ => {}
             }
-            let browser_host = crate::auth::endpoint::normalize_host(self.add_account_provider.effective_host(&self.add_account_host)).unwrap_or_default();
-            let (configured, session) = self.browser_login.show(ui, &self.add_account_provider, &browser_host, self.config.oauth_clients.get(&browser_host), self.account_task.is_some());
+            let browser_host = crate::auth::endpoint::normalize_host(
+                self.add_account_provider
+                    .effective_host(&self.add_account_host),
+            )
+            .unwrap_or_default();
+            let (configured, session) = self.browser_login.show(
+                ui,
+                &self.add_account_provider,
+                &browser_host,
+                self.config.oauth_clients.get(&browser_host),
+                self.account_task.is_some(),
+            );
             if let Some(client) = configured {
-                self.config.oauth_clients.insert(client.host.clone(), client);
+                self.config
+                    .oauth_clients
+                    .insert(client.host.clone(), client);
                 self.save_config();
             }
             if let Some(session) = session {
                 self.account_task = Some(account_task(move || {
                     crate::auth::store::save_oauth(&session)?;
-                    Ok(AccountChange::Saved(StoredAccount { provider: session.client.provider, host: session.client.host, username: session.username }))
+                    Ok(AccountChange::Saved(StoredAccount {
+                        provider: session.client.provider,
+                        host: session.client.host,
+                        username: session.username,
+                    }))
                 }));
             }
             ui.separator();
@@ -2847,7 +2863,10 @@ impl eframe::App for RecordeApp {
                 }
             }
         }
-        if !self.settings_open || self.settings_tab != SettingsTab::Accounts || !self.add_account_open {
+        if !self.settings_open
+            || self.settings_tab != SettingsTab::Accounts
+            || !self.add_account_open
+        {
             self.browser_login.cancel();
         }
         ctx.style_mut(theme::kill_debug);
@@ -3036,7 +3055,9 @@ impl eframe::App for RecordeApp {
                     .width_range(180.0..=360.0)
                     .frame(egui::Frame::none())
                     .show(ctx, |ui| {
-                        ui.set_enabled(!self.commit_graph_view.has_pending_action());
+                        if self.commit_graph_view.has_pending_action() {
+                            ui.disable();
+                        }
                         let a = self.sidebar.show(ui);
                         if let Some(sa) = a {
                             self.handle_sidebar(sa);
@@ -3064,7 +3085,9 @@ impl eframe::App for RecordeApp {
                     .width_range(300.0..=520.0)
                     .frame(egui::Frame::none())
                     .show(ctx, |ui| {
-                        ui.set_enabled(!self.commit_graph_view.has_pending_action());
+                        if self.commit_graph_view.has_pending_action() {
+                            ui.disable();
+                        }
                         let selected_commit = self.state.lock().unwrap().selected_commit.clone();
                         let has_commit = selected_commit.is_some();
                         let has_dirty = self.state.lock().unwrap().dirty_count > 0;
@@ -3187,7 +3210,9 @@ impl eframe::App for RecordeApp {
                             [r.left_top(), r.right_top()],
                             Stroke::new(1.0, theme::border()),
                         );
-                        ui.set_enabled(!self.commit_graph_view.has_pending_action());
+                        if self.commit_graph_view.has_pending_action() {
+                            ui.disable();
+                        }
                         self.diff_view.show(ui);
                         if self.state.lock().unwrap().focused_pane == 4 {
                             focus_ring(ui);
@@ -4418,7 +4443,9 @@ impl RecordeApp {
                     .inner_margin(egui::Margin::symmetric(16.0, 6.0)),
             )
             .show(ctx, |ui| {
-                ui.set_enabled(!self.commit_graph_view.has_pending_action());
+                if self.commit_graph_view.has_pending_action() {
+                    ui.disable();
+                }
                 egui::ScrollArea::horizontal().show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if let Some(path) = &active {
@@ -4800,7 +4827,9 @@ impl RecordeApp {
     }
 
     fn show_menu_contents(&mut self, ctx: &Context, ui: &mut egui::Ui) {
-        ui.set_enabled(!self.commit_graph_view.has_pending_action());
+        if self.commit_graph_view.has_pending_action() {
+            ui.disable();
+        }
         let icon_texture = self.app_icon_texture.clone();
         egui::menu::bar(ui, |ui| {
             // App icon on the far left of the menu bar

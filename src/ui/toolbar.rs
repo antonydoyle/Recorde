@@ -107,7 +107,9 @@ impl Toolbar {
                     .inner_margin(egui::Margin::symmetric(12.0, 0.0)),
             )
             .show(ctx, |ui| {
-                ui.set_enabled(enabled);
+                if !enabled {
+                    ui.disable();
+                }
                 let r = ui.max_rect();
                 ui.painter().line_segment(
                     [r.left_bottom(), r.right_bottom()],

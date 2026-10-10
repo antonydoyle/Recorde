@@ -11,12 +11,22 @@ pub(crate) fn relative(file: &str) -> Result<&Path, String> {
     #[cfg(windows)]
     for component in path.components() {
         let name = component.as_os_str().to_string_lossy();
-        let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
-        if name.contains(':') || name.ends_with(['.', ' '])
+        let stem = name
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        if name.contains(':')
+            || name.ends_with(['.', ' '])
             || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT"))
-                && matches!(stem.as_bytes()[3], b'1'..=b'9')) {
-            return Err("Windows device names, alternate streams and ambiguous paths are not supported.".into());
+            || (stem.len() == 4
+                && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+        {
+            return Err(
+                "Windows device names, alternate streams and ambiguous paths are not supported."
+                    .into(),
+            );
         }
     }
     Ok(path)
@@ -41,13 +51,17 @@ impl ScopedFile {
         while let Some(part) = parts.next() {
             if parts.peek().is_some() {
                 parent = parent.open_dir_nofollow(part.as_os_str()).map_err(|_| {
-                    "Cannot open parent directory without following a link or reparse point.".to_string()
+                    "Cannot open parent directory without following a link or reparse point."
+                        .to_string()
                 })?;
             } else {
                 name = Some(part.as_os_str().to_os_string());
             }
         }
-        Ok(Self { parent, name: name.ok_or("Expected a file name.")? })
+        Ok(Self {
+            parent,
+            name: name.ok_or("Expected a file name.")?,
+        })
     }
 
     fn open_cap(&self) -> std::io::Result<cap_std::fs::File> {
@@ -73,20 +87,35 @@ impl ScopedFile {
             Err(e) => return Err(e.to_string()),
         };
         let mut bytes = Vec::new();
-        file.take(limit.saturating_add(1)).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > limit { return Err("File exceeds the editor size limit.".into()); }
+        file.take(limit.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > limit {
+            return Err("File exceeds the editor size limit.".into());
+        }
         Ok(Some(bytes))
     }
 
     pub fn replace(&self, expected: Option<&[u8]>, bytes: &[u8]) -> Result<(), String> {
         use std::io::Write;
-        if self.read(expected.map_or(0, |data| data.len() as u64))?.as_deref() != expected {
+        if self
+            .read(expected.map_or(0, |data| data.len() as u64))?
+            .as_deref()
+            != expected
+        {
             return Err("The file changed while it was being edited. Refresh and retry.".into());
         }
-        let permissions = self.open_cap().ok().and_then(|f| f.metadata().ok()).map(|m| m.permissions());
+        let permissions = self
+            .open_cap()
+            .ok()
+            .and_then(|f| f.metadata().ok())
+            .map(|m| m.permissions());
         let mut temporary = cap_tempfile::TempFile::new(&self.parent).map_err(|e| e.to_string())?;
         if let Some(permissions) = permissions {
-            temporary.as_file().set_permissions(permissions).map_err(|e| e.to_string())?;
+            temporary
+                .as_file()
+                .set_permissions(permissions)
+                .map_err(|e| e.to_string())?;
         }
         temporary.write_all(bytes).map_err(|e| e.to_string())?;
         temporary.as_file().sync_all().map_err(|e| e.to_string())?;
@@ -156,7 +185,10 @@ mod tests {
         assert!(target.replace(None, b"wrong missing assumption").is_err());
         std::fs::write(root.path().join("file"), b"external edits").unwrap();
         assert!(target.replace(Some(b"original"), b"overwrite").is_err());
-        assert_eq!(std::fs::read(root.path().join("file")).unwrap(), b"external edits");
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"external edits"
+        );
     }
 
     #[cfg(unix)]
@@ -172,19 +204,34 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), root.path().join("folder")).unwrap();
         assert_eq!(target.read(100).unwrap().unwrap(), b"original");
         target.replace(Some(b"original"), b"resolved").unwrap();
-        assert_eq!(std::fs::read(outside.path().join("file")).unwrap(), b"outside secret");
+        assert_eq!(
+            std::fs::read(outside.path().join("file")).unwrap(),
+            b"outside secret"
+        );
         assert!(ScopedFile::new(root.path(), "folder/file").is_err());
         std::fs::remove_file(root.path().join("parked/file")).unwrap();
-        std::os::unix::fs::symlink(outside.path().join("file"), root.path().join("parked/file")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("file"), root.path().join("parked/file"))
+            .unwrap();
         assert!(target.read(100).is_err());
         assert!(target.replace(Some(b"resolved"), b"overwrite").is_err());
-        assert_eq!(std::fs::read(outside.path().join("file")).unwrap(), b"outside secret");
+        assert_eq!(
+            std::fs::read(outside.path().join("file")).unwrap(),
+            b"outside secret"
+        );
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_device_stream_and_ambiguous_names_are_rejected() {
-        for name in [".git./config", "file:stream", "NUL", "dir/COM1.txt", "LPT9", "dir/file.", "dir/file "] {
+        for name in [
+            ".git./config",
+            "file:stream",
+            "NUL",
+            "dir/COM1.txt",
+            "LPT9",
+            "dir/file.",
+            "dir/file ",
+        ] {
             assert!(relative(name).is_err(), "{name}");
         }
     }

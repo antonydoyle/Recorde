@@ -134,7 +134,8 @@ pub fn load(path: &Path, file: &str) -> Result<Snapshot, String> {
         .workdir()
         .ok_or("Conflict editing requires a worktree.")?;
     let original = super::safe_path::ScopedFile::new(workdir, file)?
-        .read(8 * 1024 * 1024)?.unwrap_or_default();
+        .read(8 * 1024 * 1024)?
+        .unwrap_or_default();
     let result = String::from_utf8(original.clone())
         .map_err(|_| "This encoding requires an external merge tool.".to_string())?;
     Ok(Snapshot {
@@ -165,8 +166,8 @@ pub fn save(snapshot: &Snapshot, result: &str) -> Result<(), String> {
         return Err("The file or index changed while the editor was open. Reopen it to load the latest versions.".into());
     }
     let repo = git2::Repository::open(&snapshot.repo).map_err(|e| e.to_string())?;
-    let target = super::safe_path::ScopedFile::new(
-        repo.workdir().ok_or("No worktree.")?, &snapshot.file)?;
+    let target =
+        super::safe_path::ScopedFile::new(repo.workdir().ok_or("No worktree.")?, &snapshot.file)?;
     let original = target.read(8 * 1024 * 1024)?;
     if original.as_deref().unwrap_or_default() != snapshot.original {
         return Err("The conflicted file changed before saving. Refresh and retry.".into());

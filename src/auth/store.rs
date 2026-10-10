@@ -293,19 +293,44 @@ fn lookup(
     Ok(result)
 }
 
-fn remote_username<'a>(endpoint: &'a super::endpoint::Endpoint, binding: Option<&'a str>, accounts: &[super::StoredAccount]) -> Result<Option<&'a str>, String> {
+fn remote_username<'a>(
+    endpoint: &'a super::endpoint::Endpoint,
+    binding: Option<&'a str>,
+    accounts: &[super::StoredAccount],
+) -> Result<Option<&'a str>, String> {
     // Bitbucket remote usernames are clone-protocol hints, whereas API token
     // identities are Atlassian email addresses. A binding chooses the account;
     // without one the store still rejects multiple matching identities.
     let url_user = endpoint.username.as_deref().filter(|user| {
-        endpoint.host != "bitbucket.org" && !(*user == "oauth2" && accounts.iter().any(|account| account.host == endpoint.host && matches!(account.provider, super::ProviderKind::GitLabCom | super::ProviderKind::GitLabSelf)))
+        endpoint.host != "bitbucket.org"
+            && !accounts.iter().any(|account| {
+                account.host == endpoint.host
+                    && match account.provider {
+                        super::ProviderKind::GitLabCom | super::ProviderKind::GitLabSelf => {
+                            *user == "oauth2"
+                        }
+                        super::ProviderKind::GitHubCom | super::ProviderKind::GitHubEnterprise => {
+                            *user == "x-access-token"
+                        }
+                        _ => false,
+                    }
+            })
     });
     selected_username(url_user, binding)
 }
 
-fn transport_username(host: &str, user: &str, saved: &str, for_api: bool) -> Result<String, String> {
-    if for_api { return Ok(user.into()); }
-    if host == "bitbucket.org" { return Ok("x-bitbucket-api-token-auth".into()); }
+fn transport_username(
+    host: &str,
+    user: &str,
+    saved: &str,
+    for_api: bool,
+) -> Result<String, String> {
+    if for_api {
+        return Ok(user.into());
+    }
+    if host == "bitbucket.org" {
+        return Ok("x-bitbucket-api-token-auth".into());
+    }
     Ok(super::oauth::git_username(saved)?.unwrap_or(user).into())
 }
 
