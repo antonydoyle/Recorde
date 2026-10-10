@@ -506,9 +506,16 @@ mod tests {
         }
         ctx.begin_pass(input(vec![release.clone()]));
         let mut text = String::new();
-        egui::CentralPanel::default().show(&mut egui::Ui::new(ctx.clone(), egui::Id::new("test_root"), egui::UiBuilder::new().max_rect(ctx.content_rect())), |ui| {
-            ui.text_edit_singleline(&mut text).request_focus();
-        });
+        egui::CentralPanel::default().show(
+            &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new("test_root"),
+                egui::UiBuilder::new().max_rect(ctx.content_rect()),
+            ),
+            |ui| {
+                ui.text_edit_singleline(&mut text).request_focus();
+            },
+        );
         ctx.end_pass().textures_delta.clear();
         ctx.begin_pass(input(vec![event(false)]));
         assert!(ctx.egui_wants_keyboard_input());
@@ -516,9 +523,16 @@ mod tests {
         assert_eq!(shortcuts.take_command(&ctx, false), None);
         ctx.end_pass().textures_delta.clear();
         ctx.begin_pass(input(vec![release]));
-        egui::CentralPanel::default().show(&mut egui::Ui::new(ctx.clone(), egui::Id::new("test_root"), egui::UiBuilder::new().max_rect(ctx.content_rect())), |ui| {
-            ui.button("Graph action").request_focus();
-        });
+        egui::CentralPanel::default().show(
+            &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new("test_root"),
+                egui::UiBuilder::new().max_rect(ctx.content_rect()),
+            ),
+            |ui| {
+                ui.button("Graph action").request_focus();
+            },
+        );
         ctx.end_pass().textures_delta.clear();
         ctx.begin_pass(input(vec![event(false)]));
         assert!(

@@ -48,7 +48,7 @@ jobs:
     name: Linux x86_64
     needs: validate-tag
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       VERSION: ${{ needs.validate-tag.outputs.version }}
     steps:
@@ -111,6 +111,19 @@ jobs:
         run: |
           python3 scripts/check_process_safety.py
           python3 scripts/linux_task.py --purpose 'Release DEB acceptance' --artifacts "$RUNNER_TEMP/process-safety" --timeout 900 -- python3 scripts/linux_installer_acceptance.py --previous "$RUNNER_TEMP/installer-baseline/recorde_0.3.10_amd64.deb" --checksums "$RUNNER_TEMP/installer-baseline/SHA256SUMS" --candidate "dist/recorde_${VERSION}_amd64.deb" --binary target/release/recorde --artifacts "$RUNNER_TEMP/installer-acceptance"
+      - name: Verify isolated privileged updater on disposable runner
+        run: |
+          cargo build --release --locked --manifest-path tools/update-signing/Cargo.toml
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,GITHUB_WORKSPACE,RUNNER_TEMP python3 scripts/linux_task.py --purpose 'Signed DEB helper acceptance' --artifacts "$RUNNER_TEMP/privileged-process-safety" --timeout 3600 -- python3 scripts/linux_update_installer_acceptance.py --previous "$RUNNER_TEMP/installer-baseline/recorde_0.3.10_amd64.deb" --checksums "$RUNNER_TEMP/installer-baseline/SHA256SUMS" --candidate "dist/recorde_${VERSION}_amd64.deb" --binary target/release/recorde --helper tools/update-installer/target/release/recorde-update-installer --signer tools/update-signing/target/release/recorde-update-signing --artifacts "$RUNNER_TEMP/privileged-installer-acceptance"
+      - name: Make privileged acceptance ledgers readable for upload
+        if: always()
+        run: |
+          for name in privileged-process-safety privileged-installer-acceptance; do
+            path="$RUNNER_TEMP/$name"
+            if [[ -d "$path" && ! -L "$path" ]]; then
+              sudo chown -R --no-dereference "$(id -u):$(id -g)" "$path"
+            fi
+          done
       - name: Upload Linux installer evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -119,6 +132,8 @@ jobs:
           path: |
             ${{ runner.temp }}/installer-acceptance
             ${{ runner.temp }}/process-safety
+            ${{ runner.temp }}/privileged-process-safety
+            ${{ runner.temp }}/privileged-installer-acceptance
 
       # ── AppImage ──────────────────────────────────────────────────────────
       - name: Build AppImage

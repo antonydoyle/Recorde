@@ -150,7 +150,7 @@ jobs:
           Copy-Item "$mesa/x64/opengl32.dll", "$mesa/x64/libgallium_wgl.dll" target/debug/
           $env:GALLIUM_DRIVER = 'llvmpipe'
           $env:LIBGL_ALWAYS_SOFTWARE = '1'
-          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts") -Purpose 'CI GUI smoke test' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 120
+          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts", '-InspectAccessibility') -Purpose 'CI GUI smoke and native accessibility' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 120
       - name: Upload Windows process ledgers
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -164,6 +164,18 @@ jobs:
           python3 scripts/linux_task.py --purpose 'CI GUI startup' --artifacts "$RUNNER_TEMP/process-safety" --timeout 120 -- python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts"
           for fixture in image-preview line-selection split-selection frame-profile repository-settings; do
             python3 scripts/linux_task.py --purpose "CI GUI $fixture" --artifacts "$RUNNER_TEMP/process-safety" --timeout 120 -- python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/$fixture" "--$fixture"
+          done
+      - name: Linux native accessibility and display scales
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/linux_task.py --purpose 'Build development UI inspector' --artifacts "$RUNNER_TEMP/process-safety" --timeout 1200 -- cargo build --locked --features ui-inspection --bin recorde --example inspect_ui
+          export RECORDE_UI_INSPECTOR="$GITHUB_WORKSPACE/target/debug/examples/inspect_ui"
+          for dpi in 1 1.25 1.5 2; do
+            for theme in dark light; do
+              args=()
+              if [[ "$theme" == light ]]; then args+=(--light); fi
+              python3 scripts/linux_task.py --purpose "UI accessibility $theme $dpi" --artifacts "$RUNNER_TEMP/process-safety" --timeout 180 -- python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/accessibility-$theme-$dpi" --design-review "--dpi=$dpi" "${args[@]}"
+            done
           done
       - name: Upload Linux process ledgers
         if: always() && runner.os == 'Linux'
