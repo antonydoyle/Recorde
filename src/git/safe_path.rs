@@ -188,6 +188,27 @@ mod tests {
             assert!(relative(name).is_err(), "{name}");
         }
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_junction_cannot_redirect_scoped_reads_or_replacements() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("file"), b"outside secret").unwrap();
+        let junction = root.path().join("junction");
+        let mut command = super::super::process::background_command("powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command",
+            "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:RECORDE_TEST_JUNCTION -Target $env:RECORDE_TEST_TARGET | Out-Null"])
+            .env("RECORDE_TEST_JUNCTION", &junction).env("RECORDE_TEST_TARGET", outside.path());
+        let output = super::super::process::run(&mut command,
+            &std::sync::atomic::AtomicBool::new(false), std::time::Duration::from_secs(20)).unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let result = ScopedFile::new(root.path(), "junction/file");
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(outside.path().join("file")).unwrap(), b"outside secret");
+        // Remove only the link. Never recursively traverse a test junction.
+        std::fs::remove_dir(junction).unwrap();
+    }
     #[test]
     fn rejects_traversal_absolute_and_git_metadata_paths() {
         for file in [
