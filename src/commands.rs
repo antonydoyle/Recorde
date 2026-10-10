@@ -500,7 +500,11 @@ mod tests {
         assert_eq!(shortcuts.take_command(&ctx, false), Some(Command::Palette));
         assert_eq!(shortcuts.take_command(&ctx, false), None);
         let _ = ctx.end_frame();
-        ctx.begin_frame(input(vec![]));
+        let mut release = event(false);
+        if let egui::Event::Key { pressed, .. } = &mut release {
+            *pressed = false;
+        }
+        ctx.begin_frame(input(vec![release.clone()]));
         let mut text = String::new();
         egui::CentralPanel::default().show(&ctx, |ui| {
             ui.text_edit_singleline(&mut text).request_focus();
@@ -508,12 +512,9 @@ mod tests {
         let _ = ctx.end_frame();
         ctx.begin_frame(input(vec![event(false)]));
         assert!(ctx.wants_keyboard_input());
+        assert!(text_input_has_focus(&ctx));
         assert_eq!(shortcuts.take_command(&ctx, false), None);
         let _ = ctx.end_frame();
-        let mut release = event(false);
-        if let egui::Event::Key { pressed, .. } = &mut release {
-            *pressed = false;
-        }
         ctx.begin_frame(input(vec![release]));
         egui::CentralPanel::default().show(&ctx, |ui| {
             ui.button("Graph action").request_focus();
