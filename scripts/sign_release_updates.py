@@ -23,6 +23,8 @@ def main():
     if not os.environ.get('RECORDE_UPDATE_SIGNING_KEY'):
         raise SystemExit('The release signing secret is not configured; no unsigned update is published.')
     keys = json.loads(args.keys.read_text())
+    if any(args.artifacts.glob('recorde-update-*.json')):
+        raise SystemExit('Update envelopes must be generated only by this signing step; remove pre-existing envelopes.')
     if not any(key['key_id'] == args.key_id for key in keys['keys']):
         raise SystemExit('Signing key ID must already be pinned in the application.')
     signer = str(args.signer.resolve(strict=True))
