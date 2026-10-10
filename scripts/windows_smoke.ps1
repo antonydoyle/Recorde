@@ -52,7 +52,12 @@ try {
     $smokeProcess.Refresh()
     $result = [PSCustomObject]@{ Exited = $smokeProcess.HasExited; Window = $smokeProcess.MainWindowHandle; Title = $smokeProcess.MainWindowTitle }
     $result | ConvertTo-Json | Set-Content -LiteralPath "$smokeRoot\result.json"
-    if ($smokeProcess.HasExited -or $smokeProcess.MainWindowHandle -eq 0) { throw "Native startup failed; see $smokeRoot" }
+    if ($smokeProcess.HasExited -or $smokeProcess.MainWindowHandle -eq 0 -or $smokeProcess.MainWindowTitle -cne 'Recorde') {
+        throw "Native startup failed or displayed an error dialog; see $smokeRoot"
+    }
+    if (-not (Test-Path -LiteralPath "$smokeRoot\appdata\recorde" -PathType Container)) {
+        throw 'Application did not use the isolated profile directory.'
+    }
     if ($InspectAccessibility) {
         # Run on an interactive Windows test desktop (for example the hosted
         # native acceptance job). This queries the actual UI Automation bridge,
