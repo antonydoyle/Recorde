@@ -130,7 +130,12 @@ impl ScopedFile {
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         if bytes.len() as u64 > limit {
-            return Err("File exceeds the editor size limit.".into());
+            let size = if limit > 0 && limit % (1024 * 1024) == 0 {
+                format!("{} MiB", limit / (1024 * 1024))
+            } else {
+                format!("{limit} bytes")
+            };
+            return Err(format!("File exceeds the editor size limit of {size}."));
         }
         Ok(Some(bytes))
     }
