@@ -77,15 +77,16 @@ jobs:
       # ── Portable tar.gz ───────────────────────────────────────────────────
       - name: Package portable tar.gz
         run: |
-          mkdir -p dist/recorde-${VERSION}-linux-x86_64
-          cp target/release/recorde     dist/recorde-${VERSION}-linux-x86_64/
-          cp packaging/install-portable.json dist/recorde-${VERSION}-linux-x86_64/recorde-install.json
-          cp README.md LICENSE          dist/recorde-${VERSION}-linux-x86_64/
-          cp packaging/recorde.desktop  dist/recorde-${VERSION}-linux-x86_64/
-          cp assets/icon.png            dist/recorde-${VERSION}-linux-x86_64/recorde.png
-          mkdir -p dist/recorde-${VERSION}-linux-x86_64/licenses
-          cp assets/fonts/*-*.txt dist/recorde-${VERSION}-linux-x86_64/licenses/
-          cd dist && tar -czf recorde-${VERSION}-linux-x86_64.tar.gz recorde-${VERSION}-linux-x86_64/
+          mkdir -p dist
+          package="recorde-${VERSION}-linux-x86_64"
+          stage="$RUNNER_TEMP/portable/$package"
+          mkdir -p "$stage/licenses"
+          cp target/release/recorde "$stage/"
+          cp packaging/install-portable.json "$stage/recorde-install.json"
+          cp README.md LICENSE packaging/recorde.desktop "$stage/"
+          cp assets/icon.png "$stage/recorde.png"
+          cp assets/fonts/*-*.txt "$stage/licenses/"
+          tar -czf "dist/$package.tar.gz" -C "$RUNNER_TEMP/portable" "$package"
 
       # ── .deb installer ────────────────────────────────────────────────────
       - name: Install cargo-deb
@@ -173,7 +174,8 @@ jobs:
       - name: Package portable zip
         shell: pwsh
         run: |
-          $dir = "dist\recorde-$env:VERSION-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path dist
+          $dir = "$env:RUNNER_TEMP\portable\recorde-$env:VERSION-windows-x86_64"
           New-Item -ItemType Directory -Force -Path $dir
           Copy-Item target\release\recorde.exe $dir\
           Copy-Item packaging\install-portable.json "$dir\recorde-install.json"
