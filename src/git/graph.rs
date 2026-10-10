@@ -710,7 +710,7 @@ mod tests {
         let mut frames = Vec::new();
         for frame in 0..240 {
             let begin = std::time::Instant::now();
-            let output = context.run(
+            let mut output = context.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -722,6 +722,7 @@ mod tests {
                     egui::CentralPanel::default().show(ctx, |ui| view.show(ui));
                 },
             );
+            output.textures_delta.clear();
             std::hint::black_box(context.tessellate(output.shapes, output.pixels_per_point));
             if frame >= 20 {
                 frames.push(begin.elapsed());

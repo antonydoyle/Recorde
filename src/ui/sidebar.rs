@@ -126,17 +126,17 @@ impl Sidebar {
                                     if ui.button("Checkout").clicked() {
                                         action =
                                             Some(SidebarAction::CheckoutBranch(name.to_string()));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     ui.separator();
                                 }
                                 if ui.button("Rename…").clicked() {
                                     action = Some(SidebarAction::RenameBranch(name.to_string()));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Publish Branch").clicked() {
                                     action = Some(SidebarAction::PublishBranch(name.to_string()));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.menu_button("Set Upstream", |ui| {
                                     if remote.is_empty() {
@@ -148,7 +148,7 @@ impl Sidebar {
                                                 name.to_string(),
                                                 target.to_string(),
                                             ));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     }
                                 });
@@ -156,11 +156,11 @@ impl Sidebar {
                                     ui.separator();
                                     if ui.button("Merge into current").clicked() {
                                         action = Some(SidebarAction::MergeBranch(name.to_string()));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if ui.button("Rebase onto").clicked() {
                                         action = Some(SidebarAction::RebaseOnto(name.to_string()));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                                 if !is_head {
@@ -172,7 +172,7 @@ impl Sidebar {
                                                 .get(&format!("refs/heads/{name}"))
                                                 .cloned(),
                                         });
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     ui.separator();
                                     if ui
@@ -185,7 +185,7 @@ impl Sidebar {
                                         action = Some(SidebarAction::ForceDeleteBranch(
                                             name.to_string(),
                                         ));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if ui
                                         .add(Button::new(
@@ -196,7 +196,7 @@ impl Sidebar {
                                     {
                                         action =
                                             Some(SidebarAction::DeleteBranch(name.to_string()));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 } else {
                                     ui.separator();
@@ -204,7 +204,7 @@ impl Sidebar {
                                         action = Some(SidebarAction::OpenCreateBranch {
                                             from_oid: None,
                                         });
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                             });
@@ -244,11 +244,11 @@ impl Sidebar {
                                 ui.set_min_width(160.0);
                                 if ui.button("Push to Remote").clicked() {
                                     action = Some(SidebarAction::PushTag(name.to_string()));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Delete from Remote").clicked() {
                                     action = Some(SidebarAction::DeleteRemoteTag(name.to_string()));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 if ui
@@ -258,7 +258,7 @@ impl Sidebar {
                                     .clicked()
                                 {
                                     action = Some(SidebarAction::DeleteTag(name.to_string()));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                         }
@@ -333,20 +333,20 @@ impl Sidebar {
                                 ui.set_min_width(155.0);
                                 if ui.button("Preview Diff").clicked() {
                                     action = Some(SidebarAction::PreviewStash(idx, oid.clone()));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 if ui.button("Apply").clicked() {
                                     action = Some(SidebarAction::StashApply(idx));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Pop").clicked() {
                                     action = Some(SidebarAction::StashPop(idx));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Create Branch Here…").clicked() {
                                     action = Some(SidebarAction::StashBranch(idx));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 if ui
@@ -356,7 +356,7 @@ impl Sidebar {
                                     .clicked()
                                 {
                                     action = Some(SidebarAction::StashDrop(idx));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                         }
@@ -442,7 +442,7 @@ impl Sidebar {
                                         entry.name.clone(),
                                         entry.oid.clone(),
                                     ));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                         }
@@ -469,7 +469,19 @@ fn branch_row(
     let avail = ui.available_width();
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
 
-    let hovered = resp.hovered();
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            is_head,
+            format!(
+                "{} branch {name}{}",
+                if is_remote { "Remote" } else { "Local" },
+                if is_head { ", current branch" } else { "" }
+            ),
+        )
+    });
+    let hovered = resp.hovered() || resp.has_focus();
     let bg = if hovered {
         theme::bg_hover()
     } else {
@@ -576,7 +588,14 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
     let avail = ui.available_width();
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
 
-    if resp.hovered() {
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            format!("Tag {name}"),
+        )
+    });
+    if resp.hovered() || resp.has_focus() {
         ui.painter().rect_filled(row_rect, 0.0, theme::bg_hover());
     }
 
@@ -599,7 +618,7 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
         Pos2::new(cx + 12.0, row_rect.min.y),
         Pos2::new(row_rect.max.x - 8.0, row_rect.max.y),
     );
-    ui.allocate_ui_at_rect(text_rect, |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
         ui.horizontal_centered(|ui| {
             ui.label(
                 RichText::new(name)

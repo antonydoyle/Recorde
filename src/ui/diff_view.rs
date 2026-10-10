@@ -195,7 +195,7 @@ impl DiffView {
 
         // ── Left file list ────────────────────────────────────────────────
         if file_list_w > 0.0 {
-            ui.allocate_ui_at_rect(list_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(list_rect), |ui| {
                 ui.painter()
                     .rect_filled(ui.max_rect(), 0.0, theme::bg_panel());
                 egui::ScrollArea::vertical()
@@ -344,8 +344,11 @@ impl DiffView {
 
             // ── Diff area ─────────────────────────────────────────────────────
         }
-        let mut diff_child =
-            ui.child_ui(diff_rect, egui::Layout::top_down(egui::Align::LEFT), None);
+        let mut diff_child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(diff_rect)
+                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+        );
         let actions = self.show_diff_area(
             &mut diff_child,
             &diff_opt,
@@ -474,7 +477,7 @@ impl DiffView {
             header_rect.min + egui::vec2(8.0, 4.0),
             egui::vec2(header_rect.width() - 16.0, 32.0),
         );
-        ui.allocate_ui_at_rect(tabs_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 for (label, mode) in [("Diff", 0), ("Blame", 1), ("Console", 2)] {
                     let active = match mode {
@@ -513,18 +516,18 @@ impl DiffView {
                             .selectable_value(&mut self.split_view, false, "Unified diff")
                             .clicked()
                         {
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui
                             .selectable_value(&mut self.split_view, true, "Split diff")
                             .clicked()
                         {
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.checkbox(&mut self.show_whitespace, "Show whitespace");
                         if ui.button("Find in diff").clicked() {
                             self.search_open = true;
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self.show_console
                             && !console_log.is_empty()
@@ -537,7 +540,7 @@ impl DiffView {
                             {
                                 let _ = std::fs::write(path, console_log.join("\n"));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     })
                     .response
@@ -559,7 +562,7 @@ impl DiffView {
             header_rect.min + egui::vec2(12.0, 42.0),
             egui::vec2(header_rect.width() - 24.0, 32.0),
         );
-        ui.allocate_ui_at_rect(file_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(file_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 let filename = selected_file
                     .as_deref()
@@ -604,7 +607,7 @@ impl DiffView {
             let toolbar =
                 Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 36.0));
             content_rect.min.y += 36.0;
-            ui.allocate_ui_at_rect(toolbar, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar), |ui| {
                 ui.horizontal(|ui| {
                     let changed = ui
                         .add(
@@ -671,7 +674,7 @@ impl DiffView {
             content_rect.min.y += 36.0;
             let mut apply = false;
             let mut discard = false;
-            ui.allocate_ui_at_rect(toolbar, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar), |ui| {
                 ui.horizontal(|ui| {
                     let label = if diff_context == DiffContext::StagedFile { "Unstage" } else { "Stage" };
                     apply = ui.add_enabled(!self.selected_rows.is_empty(), Button::new(format!("{label} ({})", self.selected_rows.len()))).clicked();
@@ -705,7 +708,7 @@ impl DiffView {
 
         // ── Console ───────────────────────────────────────────────────────
         if self.show_console {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false; 2])
                     .stick_to_bottom(true)
@@ -749,7 +752,7 @@ impl DiffView {
 
         // ── Blame ─────────────────────────────────────────────────────────
         if self.show_blame {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
@@ -828,9 +831,9 @@ impl DiffView {
 
         // ── Empty / binary / no-changes ───────────────────────────────────
         if let Some(preview) = diff_opt.as_ref().and_then(|d| d.binary_preview.as_ref()) {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 egui::ScrollArea::vertical()
-                    .id_source("binary_preview")
+                    .id_salt("binary_preview")
                     .show(ui, |ui| {
                         crate::ui::binary_preview::show(
                             ui,
@@ -846,7 +849,7 @@ impl DiffView {
             .as_ref()
             .filter(|d| !d.is_binary && d.hunks.is_empty() && !d.raw_patch.is_empty())
         {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 egui::ScrollArea::both().show(ui, |ui| {
                     ui.label("File metadata changed");
                     ui.monospace(String::from_utf8_lossy(&diff.raw_patch));
@@ -868,7 +871,7 @@ impl DiffView {
             None
         };
         if let Some(msg) = empty_msg {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.label(
                         egui::RichText::new(msg)
@@ -933,7 +936,7 @@ fn render_unified(
     let total_h = items.len() as f32 * ROW_HEIGHT;
     let actions = std::cell::RefCell::new(Vec::<DiffAction>::new());
 
-    ui.allocate_ui_at_rect(rect, |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
@@ -1030,7 +1033,12 @@ fn render_unified(
                                             Color32::TRANSPARENT
                                         },
                                     );
-                                    painter.rect_stroke(btn_rect, 3.0, Stroke::new(1.0, *col));
+                                    painter.rect_stroke(
+                                        btn_rect,
+                                        3.0,
+                                        Stroke::new(1.0, *col),
+                                        egui::StrokeKind::Middle,
+                                    );
                                     painter.text(
                                         btn_rect.center(),
                                         egui::Align2::CENTER_CENTER,
@@ -1253,7 +1261,7 @@ fn render_split(
     let half = (avail_w / 2.0).floor();
     let total_h = rows.len() as f32 * ROW_HEIGHT;
 
-    ui.allocate_ui_at_rect(rect, |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {

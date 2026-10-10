@@ -2,6 +2,7 @@
 name = "recorde"
 version = "0.4.0"
 edition = "2021"
+rust-version = "1.95"
 authors = ["Antony Doyle <antony@siege21.com>"]
 description = "A cross-platform desktop Git client built with Rust"
 homepage = "https://antonydoyle.com"
@@ -16,13 +17,16 @@ name = "recorde"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.28", default-features = false, features = [
+eframe = { version = "0.36.2", default-features = false, features = [
+    "accesskit",
     "default_fonts",
+    "links",
     "glow",
     "wayland",
     "x11",
 ] }
-egui = "0.28"
+egui = "0.36.2"
+egui_inspection = { version = "0.36.2", default-features = false, optional = true }
 webbrowser = { version = "1.2.2", features = ["hardened"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
 git2 = { version = "0.21", features = ["vendored-libgit2", "vendored-openssl"] }
@@ -49,8 +53,13 @@ cap-std = "4.0.3"
 cap-fs-ext = "4.0.3"
 cap-tempfile = "4.0.3"
 
-[patch.crates-io]
-eframe = { path = "vendor/eframe" }
+[features]
+# Development-only native AX/input/screenshot inspection; absent from release builds.
+ui-inspection = ["eframe/inspection", "dep:egui_inspection"]
+
+[[example]]
+name = "inspect_ui"
+required-features = ["ui-inspection"]
 
 [profile.release]
 opt-level = 3

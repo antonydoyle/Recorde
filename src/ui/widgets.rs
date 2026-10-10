@@ -144,7 +144,7 @@ pub fn toolbar_btn(ui: &mut Ui, label: &str, enabled: bool) -> Response {
         )
         .fill(theme::bg_panel_alt())
         .stroke(Stroke::new(1.0, theme::border()))
-        .rounding(6.0),
+        .corner_radius(6.0),
     )
 }
 
@@ -194,7 +194,7 @@ pub fn toolbar_btn_icon_colored(
         Button::new("")
             .fill(fill)
             .stroke(Stroke::new(1.0, stroke))
-            .rounding(7.0)
+            .corner_radius(7.0)
             .min_size(Vec2::new(content_width + padding * 2.0, 34.0)),
     );
     // Font line boxes have different ascenders/descenders. Centre the visible
@@ -301,7 +301,12 @@ pub fn branch_label(
     };
 
     painter.rect_filled(rect, rect.height() / 2.0, bg);
-    painter.rect_stroke(rect, rect.height() / 2.0, Stroke::new(0.8, border_col));
+    painter.rect_stroke(
+        rect,
+        rect.height() / 2.0,
+        Stroke::new(0.8, border_col),
+        egui::StrokeKind::Middle,
+    );
     painter.galley(
         Pos2::new(rect.min.x + pad_x, rect.min.y + (h - galley.size().y) / 2.0),
         galley,

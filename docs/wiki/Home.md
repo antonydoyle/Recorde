@@ -44,5 +44,5 @@ This wiki documents the application from both user and developer perspectives.
 - `git2` with vendored libgit2/OpenSSL for repository access.
 - `ureq` and `serde_json` for provider HTTP APIs.
 - `toml`, `serde`, and `dirs` for local configuration.
-- A vendored `eframe` patch under `vendor/eframe`.
+- Upstream eframe with native AccessKit accessibility and early Wayland window visibility.
 

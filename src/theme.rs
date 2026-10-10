@@ -555,28 +555,28 @@ pub fn apply(ctx: &egui::Context, dark: bool, contrast: bool) {
         &mut v.widgets.active,
         &mut v.widgets.open,
     ] {
-        widget.rounding = egui::Rounding::same(7.0);
+        widget.corner_radius = egui::CornerRadius::same(7);
     }
     v.selection.bg_fill = bg_selected();
     v.selection.stroke = egui::Stroke::new(1.0, text_primary());
     v.window_stroke = egui::Stroke::new(1.0, border());
-    v.window_rounding = egui::Rounding::same(12.0);
+    v.window_corner_radius = egui::CornerRadius::same(12);
     v.window_shadow = egui::Shadow {
-        offset: egui::vec2(0.0, 8.0),
-        blur: 28.0,
-        spread: 0.0,
+        offset: [0, 8],
+        blur: 28,
+        spread: 0,
         color: Color32::from_black_alpha(if dark { 90 } else { 28 }),
     };
     v.popup_shadow = egui::Shadow {
-        offset: egui::vec2(0.0, 4.0),
-        blur: 16.0,
-        spread: 0.0,
+        offset: [0, 4],
+        blur: 16,
+        spread: 0,
         color: Color32::from_black_alpha(if dark { 80 } else { 24 }),
     };
     ctx.set_visuals(v);
-    ctx.style_mut(|s| {
+    ctx.global_style_mut(|s| {
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        s.spacing.window_margin = egui::Margin::same(16.0);
+        s.spacing.window_margin = egui::Margin::same(16);
         s.spacing.button_padding = egui::vec2(12.0, 7.0);
         s.spacing.interact_size.y = 32.0;
         s.text_styles
@@ -662,9 +662,9 @@ mod typography_tests {
                 .get_mut(&egui::ViewportId::ROOT)
                 .unwrap()
                 .native_pixels_per_point = Some(native_scale);
-            ctx.begin_frame(input);
+            ctx.begin_pass(input);
             let density = ctx.pixels_per_point();
-            let _ = ctx.end_frame();
+            ctx.end_pass().textures_delta.clear();
             density
         };
         frame(1.5);

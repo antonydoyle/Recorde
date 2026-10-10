@@ -138,7 +138,7 @@ impl StagingPanel {
             })
         .max(120.0);
         egui::ScrollArea::vertical()
-            .id_source("changes_file_list")
+            .id_salt("changes_file_list")
             .max_height(list_height)
             .auto_shrink([false; 2])
             .show(ui, |ui| {
@@ -202,15 +202,15 @@ impl StagingPanel {
                                 if ui.button("Resolve in Recorde...").clicked() {
                                     self.state.lock().unwrap().pending_conflict_editor =
                                         Some(cf.path.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Open Merge Tool").clicked() {
                                     do_open_mergetool = Some(cf.path.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Reveal in Folder").clicked() {
                                     reveal_in_folder(&cf.path, &repo_path);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                             if resp.clicked() {
@@ -262,7 +262,7 @@ impl StagingPanel {
                             resp.context_menu(|ui| {
                                 if ui.button("Show File History").clicked() {
                                     load_file_history(&f.path, self.state.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Blame").clicked() {
                                     {
@@ -271,21 +271,21 @@ impl StagingPanel {
                                         s.show_blame = true;
                                     }
                                     load_blame(&f.path, self.state.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 if ui.button("Stash This File").clicked() {
                                     do_stash_file = Some(f.path.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 if ui.button("Open in Editor").clicked() {
                                     open_file_in_editor(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Reveal in Folder").clicked() {
                                     reveal_in_folder(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                             if resp.clicked() {
@@ -335,11 +335,11 @@ impl StagingPanel {
                             resp.context_menu(|ui| {
                                 if ui.button("Open in Editor").clicked() {
                                     open_file_in_editor(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Reveal in Folder").clicked() {
                                     reveal_in_folder(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                             if resp.clicked() {
@@ -378,11 +378,11 @@ impl StagingPanel {
                             resp.context_menu(|ui| {
                                 if ui.button("Reveal in Folder").clicked() {
                                     reveal_in_folder(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Add to .gitignore").clicked() {
                                     do_ignore_file = Some(f.path.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                             if resp.clicked() {
@@ -396,7 +396,7 @@ impl StagingPanel {
                 ui.add(egui::Separator::default().spacing(0.0));
                 ui.add_space(8.0);
             });
-        egui::ScrollArea::vertical().id_source("commit_composer").auto_shrink([false; 2]).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("commit_composer").auto_shrink([false; 2]).show(ui, |ui| {
                 // Hint when a sequencing op is in progress but all conflicts resolved
                 if any_seq_in_progress && conflicted.is_empty() {
                     ui.horizontal(|ui| {
@@ -430,7 +430,7 @@ impl StagingPanel {
                         if ui.add(small_btn("Copy")).on_hover_text("Copy assembled commit message").clicked() {
                             let msg = build_message(&self.drafts.current.subject, &self.drafts.current.body, &self.drafts.current.co_authors,
                                 self.drafts.current.signoff_enabled, &repo_path);
-                            ui.output_mut(|o| o.copied_text = msg);
+                            ui.ctx().copy_text(msg);
                         }
                         ui.add_space(4.0);
                         let amend_color = if self.drafts.current.is_amend { theme::accent_yellow() } else { theme::text_muted() };
@@ -477,7 +477,7 @@ impl StagingPanel {
                     ui.add_space(12.0);
                 });
 
-                let options = egui::CollapsingHeader::new("Commit options").id_source("commit_options").show(ui, |ui| {
+                let options = egui::CollapsingHeader::new("Commit options").id_salt("commit_options").show(ui, |ui| {
                 // ── Co-author trailers ────────────────────────────────────
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -564,7 +564,7 @@ impl StagingPanel {
                 });
 
                 ui.add_space(6.0);
-                egui::CollapsingHeader::new("Undo last commit").id_source("reset_last_commit").show(ui, |ui| {
+                egui::CollapsingHeader::new("Undo last commit").id_salt("reset_last_commit").show(ui, |ui| {
                 // ── Reset last commit ─────────────────────────────────────
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {

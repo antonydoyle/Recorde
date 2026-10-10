@@ -123,7 +123,7 @@ impl BrowserLogin {
                 ));
                 ui.horizontal(|ui| {
                     if ui.button("Copy verification code").clicked() {
-                        ui.output_mut(|out| out.copied_text = code.clone());
+                        ui.ctx().copy_text(code.clone());
                     }
                     if ui.button("Open browser").clicked() {
                         if let Err(error) = crate::external::open_url(url) {
@@ -209,7 +209,7 @@ mod tests {
             ..Default::default()
         };
         let frame = |login: &mut BrowserLogin, events| {
-            ctx.begin_frame(egui::RawInput {
+            ctx.begin_pass(egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(900.0, 700.0),
@@ -218,12 +218,21 @@ mod tests {
                 ..Default::default()
             });
             let mut saved = None;
-            egui::CentralPanel::default().show(&ctx, |ui| {
-                saved = login
-                    .show(ui, &ProviderKind::GitHubCom, "github.com", None, false)
-                    .1;
-            });
-            (ctx.end_frame(), saved)
+            egui::CentralPanel::default().show(
+                &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("test_root"),
+                    egui::UiBuilder::new().max_rect(ctx.content_rect()),
+                ),
+                |ui| {
+                    saved = login
+                        .show(ui, &ProviderKind::GitHubCom, "github.com", None, false)
+                        .1;
+                },
+            );
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            (output, saved)
         };
         let pointer = |pos, pressed| egui::Event::PointerButton {
             pos,

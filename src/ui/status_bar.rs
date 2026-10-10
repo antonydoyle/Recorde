@@ -1,4 +1,4 @@
-use egui::{Context, RichText, Stroke};
+use egui::{RichText, Stroke};
 
 use crate::icons;
 use crate::state::SharedState;
@@ -13,11 +13,11 @@ impl StatusBar {
         Self { state }
     }
 
-    pub fn show(&self, ctx: &Context) {
-        egui::TopBottomPanel::bottom("status_bar")
-            .exact_height(28.0)
-            .frame(egui::Frame::none().fill(theme::bg_titlebar()))
-            .show(ctx, |ui| {
+    pub fn show(&self, root_ui: &mut egui::Ui) {
+        egui::Panel::bottom("status_bar")
+            .exact_size(28.0)
+            .frame(egui::Frame::NONE.fill(theme::bg_titlebar()))
+            .show(root_ui, |ui| {
                 let r = ui.max_rect();
                 ui.painter().line_segment(
                     [r.left_top(), r.right_top()],

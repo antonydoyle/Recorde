@@ -63,7 +63,7 @@ impl CommitSigning {
         if let Some(values) = &mut self.values {
             ui.add_enabled_ui(!busy, |ui| {
                 ui.checkbox(&mut values.enabled, "Sign commits");
-                egui::ComboBox::from_id_source("commit_signing_format")
+                egui::ComboBox::from_id_salt("commit_signing_format")
                     .selected_text(&values.format).show_ui(ui, |ui| {
                         for (value, label) in [("openpgp", "OpenPGP"), ("ssh", "SSH"), ("x509", "X.509")] {
                             ui.selectable_value(&mut values.format, value.into(), label);

@@ -306,7 +306,7 @@ pub fn text_input_has_focus(ctx: &egui::Context) -> bool {
         // Text selection needs drag sense. Automatic widget IDs can be reused
         // by a button after a view changes, while its old text state remains.
         ctx.read_response(id)
-            .is_none_or(|response| response.sense.drag)
+            .is_none_or(|response| response.sense.senses_drag())
             && egui::text_edit::TextEditState::load(ctx, id).is_some()
     })
 }
@@ -495,39 +495,39 @@ mod tests {
             events,
             ..Default::default()
         };
-        ctx.begin_frame(input(vec![event(false)]));
+        ctx.begin_pass(input(vec![event(false)]));
         assert_eq!(shortcuts.take_command(&ctx, true), None);
         assert_eq!(shortcuts.take_command(&ctx, false), Some(Command::Palette));
         assert_eq!(shortcuts.take_command(&ctx, false), None);
-        let _ = ctx.end_frame();
+        ctx.end_pass().textures_delta.clear();
         let mut release = event(false);
         if let egui::Event::Key { pressed, .. } = &mut release {
             *pressed = false;
         }
-        ctx.begin_frame(input(vec![release.clone()]));
+        ctx.begin_pass(input(vec![release.clone()]));
         let mut text = String::new();
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        egui::CentralPanel::default().show(&mut egui::Ui::new(ctx.clone(), egui::Id::new("test_root"), egui::UiBuilder::new().max_rect(ctx.content_rect())), |ui| {
             ui.text_edit_singleline(&mut text).request_focus();
         });
-        let _ = ctx.end_frame();
-        ctx.begin_frame(input(vec![event(false)]));
-        assert!(ctx.wants_keyboard_input());
+        ctx.end_pass().textures_delta.clear();
+        ctx.begin_pass(input(vec![event(false)]));
+        assert!(ctx.egui_wants_keyboard_input());
         assert!(text_input_has_focus(&ctx));
         assert_eq!(shortcuts.take_command(&ctx, false), None);
-        let _ = ctx.end_frame();
-        ctx.begin_frame(input(vec![release]));
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        ctx.end_pass().textures_delta.clear();
+        ctx.begin_pass(input(vec![release]));
+        egui::CentralPanel::default().show(&mut egui::Ui::new(ctx.clone(), egui::Id::new("test_root"), egui::UiBuilder::new().max_rect(ctx.content_rect())), |ui| {
             ui.button("Graph action").request_focus();
         });
-        let _ = ctx.end_frame();
-        ctx.begin_frame(input(vec![event(false)]));
+        ctx.end_pass().textures_delta.clear();
+        ctx.begin_pass(input(vec![event(false)]));
         assert!(
-            ctx.wants_keyboard_input(),
+            ctx.egui_wants_keyboard_input(),
             "buttons also take keyboard focus"
         );
         assert!(!text_input_has_focus(&ctx));
         assert_eq!(shortcuts.take_command(&ctx, false), Some(Command::Palette));
-        let _ = ctx.end_frame();
+        ctx.end_pass().textures_delta.clear();
         assert!(Shortcut::from_event(Key::Q, Modifiers::COMMAND).is_none());
         assert!(Shortcut::from_event(Key::K, Modifiers::NONE).is_none());
     }

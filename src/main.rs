@@ -34,7 +34,14 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Recorde",
         options,
-        Box::new(move |cc| Ok(Box::new(RecordeApp::new(cc, initial_repo)))),
+        Box::new(move |cc| {
+            // COSMIC/Wayland can wait indefinitely on the first eglSwapBuffers
+            // for a hidden window. Show before painting, using upstream's API.
+            if let Some(window) = cc.winit_window() {
+                window.set_visible(true);
+            }
+            Ok(Box::new(RecordeApp::new(cc, initial_repo)))
+        }),
     )
 }
 

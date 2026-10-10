@@ -88,5 +88,7 @@ current validation limits.
 - Toggleable sidebar, right panel, and diff panel.
 - Persisted graph column widths per repository.
 - Embedded Material Icons font for installed binaries.
-- Optional Noto Symbols fallback font when available on the system.
+- Embedded Noto Symbols and monochrome emoji fallbacks on every platform.
+- Native AccessKit accessibility with commit and branch labels, selected rows,
+  and keyboard focus.
 

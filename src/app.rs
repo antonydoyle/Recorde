@@ -380,7 +380,7 @@ impl RecordeApp {
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
-                ctx.output_mut(|o| o.copied_text = path_str);
+                ctx.copy_text(path_str);
             }
             ToolbarAction::Stash => {
                 self.repo_ui.stash_message_input = "WIP".into();
@@ -904,7 +904,7 @@ impl RecordeApp {
             }
             C::CopyCommit => {
                 if let Some(oid) = self.state.lock().unwrap().selected_commit.clone() {
-                    ctx.output_mut(|o| o.copied_text = oid);
+                    ctx.copy_text(oid);
                 }
                 None
             }
@@ -976,7 +976,7 @@ impl RecordeApp {
                             let label = format!("{}    {}", command.label(), shortcut);
                             let response = ui.add_enabled(
                                 reason.is_none(),
-                                egui::SelectableLabel::new(index == self.palette_selected, label),
+                                egui::Button::selectable(index == self.palette_selected, label),
                             );
                             if (up || down) && index == self.palette_selected {
                                 response.scroll_to_me(Some(egui::Align::Center));
@@ -1108,7 +1108,7 @@ impl RecordeApp {
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+            .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)))
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
                 ui.label(
@@ -1193,7 +1193,7 @@ impl RecordeApp {
             .resizable(true)
             .default_width(680.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(20.0)))
+            .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(20)))
             .show(ctx, |ui| {
                 ui.set_min_size(egui::vec2(520.0, 360.0));
                 ui.label(
@@ -1231,8 +1231,8 @@ impl RecordeApp {
                 ui.add_space(8.0);
 
                 egui::ScrollArea::vertical()
-                    .id_source(("settings_content", self.settings_tab as u8))
-                    .max_height((ctx.screen_rect().height() - 300.0).max(120.0))
+                    .id_salt(("settings_content", self.settings_tab as u8))
+                    .max_height((ctx.content_rect().height() - 300.0).max(120.0))
                     .show(ui, |ui| match self.settings_tab {
                         SettingsTab::App => self.render_app_settings(ui),
                         SettingsTab::Ui => self.render_ui_settings(ctx, ui),
@@ -1891,7 +1891,7 @@ impl RecordeApp {
             }
             let saved = crate::git::recovery::list(&path);
             if saved.is_empty() { ui.label(styled_muted("No recovery snapshots yet.")); }
-            egui::ScrollArea::vertical().id_source("recovery_snapshots").max_height(260.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("recovery_snapshots").max_height(260.0).show(ui, |ui| {
             for checkpoint in saved {
                 ui.horizontal(|ui| {
                     ui.label(format!("{} — {}", checkpoint.label, checkpoint.id));
@@ -2587,7 +2587,7 @@ impl RecordeApp {
 
                 ui.columns(2, |cols| {
                     // ── Left: PR list ─────────────────────────────────────
-                    egui::ScrollArea::vertical().id_source("pr_list").show(&mut cols[0], |ui| {
+                    egui::ScrollArea::vertical().id_salt("pr_list").show(&mut cols[0], |ui| {
                         if visible.is_empty() {
                             ui.label(RichText::new("No pull requests.").color(theme::text_muted()).size(13.0));
                         }
@@ -2596,7 +2596,7 @@ impl RecordeApp {
                             let bg = if is_sel { theme::bg_selected() } else { Color32::TRANSPARENT };
                             let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
                             ui.painter().rect_filled(row, 0.0, bg);
-                            ui.allocate_ui_at_rect(row, |ui| {
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
                                 ui.horizontal(|ui| {
                                     ui.add_space(8.0);
                                     // State dot
@@ -2672,7 +2672,7 @@ impl RecordeApp {
                             if pr.body.trim().is_empty() {
                                 cols[1].label(RichText::new("No description.").color(theme::text_muted()).size(13.0));
                             } else {
-                                egui::ScrollArea::vertical().id_source("pr_body").max_height(200.0).show(&mut cols[1], |ui| {
+                                egui::ScrollArea::vertical().id_salt("pr_body").max_height(200.0).show(&mut cols[1], |ui| {
                                     ui.label(RichText::new(pr.body.trim()).color(theme::text_secondary()).size(13.0));
                                 });
                             }
@@ -2775,7 +2775,9 @@ impl eframe::App for RecordeApp {
         self.save_config();
     }
 
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let context = root_ui.ctx().clone();
+        let ctx = &context;
         let ready = self.state.lock().unwrap().commit_graph.is_some();
         self.frame_metrics
             .observe(ctx, _frame.info().cpu_usage, ready);
@@ -2869,7 +2871,7 @@ impl eframe::App for RecordeApp {
         {
             self.browser_login.cancel();
         }
-        ctx.style_mut(theme::kill_debug);
+        ctx.global_style_mut(theme::kill_debug);
         ctx.options_mut(|o| o.warn_on_id_clash = false);
 
         let shortcuts = !crate::commands::text_input_has_focus(ctx)
@@ -2923,7 +2925,7 @@ impl eframe::App for RecordeApp {
         }
 
         // ── In-progress operation banner (rebase/merge/cherry-pick/revert) ─
-        self.show_in_progress_banner(ctx);
+        self.show_in_progress_banner(root_ui);
 
         // ── Pending actions from graph context menu ───────────────────────
         let pending_rebase = self.state.lock().unwrap().pending_open_rebase.take();
@@ -2942,7 +2944,9 @@ impl eframe::App for RecordeApp {
                 .collapsible(false)
                 .resizable(true)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+                .frame(
+                    egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)),
+                )
                 .show(ctx, |ui| {
                     if let Some(ref mut m) = self.repo_ui.rebase_modal {
                         match m.show(ui) {
@@ -2964,17 +2968,17 @@ impl eframe::App for RecordeApp {
         }
 
         // ── Panels ────────────────────────────────────────────────────────
-        self.status_bar.show(ctx);
+        self.status_bar.show(root_ui);
 
         // Title bar
-        egui::TopBottomPanel::top("title_bar")
-            .exact_height(40.0)
+        egui::Panel::top("title_bar")
+            .exact_size(40.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(theme::bg_titlebar())
-                    .inner_margin(egui::Margin::symmetric(12.0, 0.0)),
+                    .inner_margin(egui::Margin::symmetric(12, 0)),
             )
-            .show(ctx, |ui| {
+            .show(root_ui, |ui| {
                 let r = ui.max_rect();
                 ui.painter().line_segment(
                     [r.left_bottom(), r.right_bottom()],
@@ -3016,14 +3020,14 @@ impl eframe::App for RecordeApp {
                 });
             });
 
-        self.render_repo_tabs(ctx);
+        self.render_repo_tabs(root_ui);
 
         let has_workspace = {
             let state = self.state.lock().unwrap();
             state.repo_path.is_some() || state.repo_load_path.is_some()
         };
         if !has_workspace {
-            self.show_welcome(ctx);
+            self.show_welcome(root_ui);
             self.commit_graph_view
                 .show_action_confirmation(ctx, &self.config.protected_branches);
             self.show_operation_overlays(ctx);
@@ -3036,7 +3040,7 @@ impl eframe::App for RecordeApp {
             (s.search_active, s.show_all_branches)
         };
         let toolbar_action = self.toolbar.show(
-            ctx,
+            root_ui,
             &self.config.recent_repos,
             self.dark_theme,
             search_active,
@@ -3049,12 +3053,12 @@ impl eframe::App for RecordeApp {
 
         if self.config.show_sidebar {
             let sidebar_response =
-                egui::SidePanel::left(egui::Id::new(("sidebar", &self.observed_repo)))
+                egui::Panel::left(egui::Id::new(("sidebar", &self.observed_repo)))
                     .resizable(true)
-                    .default_width(self.config.sidebar_width.unwrap_or(216.0))
-                    .width_range(180.0..=360.0)
-                    .frame(egui::Frame::none())
-                    .show(ctx, |ui| {
+                    .default_size(self.config.sidebar_width.unwrap_or(216.0))
+                    .size_range(180.0..=360.0)
+                    .frame(egui::Frame::NONE)
+                    .show(root_ui, |ui| {
                         if self.commit_graph_view.has_pending_action() {
                             ui.disable();
                         }
@@ -3079,12 +3083,12 @@ impl eframe::App for RecordeApp {
 
         if self.config.show_right_panel {
             let right_response =
-                egui::SidePanel::right(egui::Id::new(("right_panel_v2", &self.observed_repo)))
+                egui::Panel::right(egui::Id::new(("right_panel_v2", &self.observed_repo)))
                     .resizable(true)
-                    .default_width(self.config.right_panel_width.unwrap_or(344.0))
-                    .width_range(300.0..=520.0)
-                    .frame(egui::Frame::none())
-                    .show(ctx, |ui| {
+                    .default_size(self.config.right_panel_width.unwrap_or(344.0))
+                    .size_range(300.0..=520.0)
+                    .frame(egui::Frame::NONE)
+                    .show(root_ui, |ui| {
                         if self.commit_graph_view.has_pending_action() {
                             ui.disable();
                         }
@@ -3115,7 +3119,7 @@ impl eframe::App for RecordeApp {
                             Stroke::new(1.0, theme::border()),
                         );
 
-                        ui.allocate_ui_at_rect(tab_rect, |ui| {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(tab_rect), |ui| {
                             ui.horizontal_centered(|ui| {
                                 ui.add_space(12.0);
                                 for (tab, lbl) in &[
@@ -3171,10 +3175,10 @@ impl eframe::App for RecordeApp {
                             ui.max_rect().max,
                         );
                         // Manual panel content keeps long labels from enlarging the resizable sidebar.
-                        let mut content = ui.child_ui(
-                            content_rect,
-                            egui::Layout::top_down(egui::Align::Min),
-                            None,
+                        let mut content = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(content_rect)
+                                .layout(egui::Layout::top_down(egui::Align::Min)),
                         );
                         content.set_clip_rect(content_rect);
                         match self.repo_ui.right_tab {
@@ -3199,12 +3203,12 @@ impl eframe::App for RecordeApp {
 
         if self.config.show_diff_panel {
             let diff_response =
-                egui::TopBottomPanel::bottom(egui::Id::new(("diff_panel", &self.observed_repo)))
+                egui::Panel::bottom(egui::Id::new(("diff_panel", &self.observed_repo)))
                     .resizable(true)
-                    .default_height(self.config.diff_panel_height.unwrap_or(300.0))
-                    .height_range(160.0..=480.0)
-                    .frame(egui::Frame::none().fill(theme::bg_app()))
-                    .show(ctx, |ui| {
+                    .default_size(self.config.diff_panel_height.unwrap_or(300.0))
+                    .size_range(160.0..=480.0)
+                    .frame(egui::Frame::NONE.fill(theme::bg_app()))
+                    .show(root_ui, |ui| {
                         let r = ui.max_rect();
                         ui.painter().line_segment(
                             [r.left_top(), r.right_top()],
@@ -3231,8 +3235,8 @@ impl eframe::App for RecordeApp {
 
         // Central panel — commit graph (always)
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(theme::bg_app()))
-            .show(ctx, |ui| {
+            .frame(egui::Frame::NONE.fill(theme::bg_app()))
+            .show(root_ui, |ui| {
                 self.commit_graph_view.show(ui);
                 if self.state.lock().unwrap().focused_pane == 2 {
                     focus_ring(ui);
@@ -3644,11 +3648,11 @@ impl RecordeApp {
                                     self.repo_ui.reflog_recover_oid = Some(entry.oid.clone());
                                     self.repo_ui.reflog_recover_input =
                                         format!("recover-{}", &entry.short_oid);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Copy SHA").clicked() {
-                                    ui.output_mut(|o| o.copied_text = entry.oid.clone());
-                                    ui.close_menu();
+                                    ui.ctx().copy_text(entry.oid.clone());
+                                    ui.close();
                                 }
                             });
                         }
@@ -3927,7 +3931,7 @@ impl RecordeApp {
                     );
                     cols[0].add_space(4.0);
                     egui::ScrollArea::vertical()
-                        .id_source("cmp_files")
+                        .id_salt("cmp_files")
                         .max_height(460.0)
                         .show(&mut cols[0], |ui| {
                             for file in &compare_files {
@@ -3969,7 +3973,7 @@ impl RecordeApp {
                         );
                         cols[1].add_space(4.0);
                         egui::ScrollArea::vertical()
-                            .id_source("cmp_diff")
+                            .id_salt("cmp_diff")
                             .max_height(460.0)
                             .show(&mut cols[1], |ui| {
                                 for hunk in &diff.hunks {
@@ -4071,7 +4075,7 @@ impl RecordeApp {
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+            .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)))
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
                 ui.label(
@@ -4120,7 +4124,7 @@ impl RecordeApp {
     }
 
     /// Persistent banner shown when a git sequencing operation is in progress.
-    fn show_in_progress_banner(&mut self, ctx: &Context) {
+    fn show_in_progress_banner(&mut self, root_ui: &mut egui::Ui) {
         let caps = { self.state.lock().unwrap().capabilities.clone() };
         let Some(caps) = caps else { return };
 
@@ -4141,14 +4145,14 @@ impl RecordeApp {
         let mut do_abort = false;
         let mut do_split = false;
 
-        egui::TopBottomPanel::top("in_progress_banner")
-            .exact_height(36.0)
+        egui::Panel::top("in_progress_banner")
+            .exact_size(36.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(Color32::from_rgb(0x4A, 0x32, 0x00))
-                    .inner_margin(egui::Margin::symmetric(16.0, 0.0)),
+                    .inner_margin(egui::Margin::symmetric(16, 0)),
             )
-            .show(ctx, |ui| {
+            .show(root_ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.label(RichText::new("⟳").color(theme::accent_yellow()).size(14.0));
                     ui.add_space(6.0);
@@ -4176,7 +4180,7 @@ impl RecordeApp {
                         .add(
                             Button::new(RichText::new("Continue").color(Color32::WHITE).size(13.0))
                                 .fill(theme::accent_teal())
-                                .rounding(5.0)
+                                .corner_radius(5.0)
                                 .min_size(egui::Vec2::new(72.0, 24.0)),
                         )
                         .clicked()
@@ -4194,7 +4198,7 @@ impl RecordeApp {
                                 )
                                 .fill(Color32::TRANSPARENT)
                                 .stroke(Stroke::new(1.0, theme::border()))
-                                .rounding(5.0)
+                                .corner_radius(5.0)
                                 .min_size(egui::Vec2::new(52.0, 24.0)),
                             )
                             .clicked()
@@ -4210,7 +4214,7 @@ impl RecordeApp {
                             )
                             .fill(Color32::TRANSPARENT)
                             .stroke(Stroke::new(1.0, theme::accent_red().gamma_multiply(0.5)))
-                            .rounding(5.0)
+                            .corner_radius(5.0)
                             .min_size(egui::Vec2::new(52.0, 24.0)),
                         )
                         .clicked()
@@ -4421,7 +4425,7 @@ impl RecordeApp {
         }
     }
 
-    fn render_repo_tabs(&mut self, ctx: &Context) {
+    fn render_repo_tabs(&mut self, root_ui: &mut egui::Ui) {
         let active = self.state.lock().unwrap().repo_path.clone();
         // A failed replacement load keeps the old repository usable and visible.
         if let Some(path) = &active {
@@ -4435,14 +4439,14 @@ impl RecordeApp {
         let mut open = None;
         let mut close = None;
         let mut workspace = None;
-        egui::TopBottomPanel::top("repository_tabs")
-            .exact_height(44.0)
+        egui::Panel::top("repository_tabs")
+            .exact_size(44.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(theme::bg_titlebar())
-                    .inner_margin(egui::Margin::symmetric(16.0, 6.0)),
+                    .inner_margin(egui::Margin::symmetric(16, 6)),
             )
-            .show(ctx, |ui| {
+            .show(root_ui, |ui| {
                 if self.commit_graph_view.has_pending_action() {
                     ui.disable();
                 }
@@ -4463,7 +4467,7 @@ impl RecordeApp {
                                 self.save_config();
                             }
                         }
-                        egui::ComboBox::from_id_source("repo_workspaces")
+                        egui::ComboBox::from_id_salt("repo_workspaces")
                             .selected_text("Workspaces")
                             .show_ui(ui, |ui| {
                                 ui.strong("Favorites");
@@ -4602,11 +4606,11 @@ impl RecordeApp {
                 .anchor(egui::Align2::CENTER_TOP, [0.0, y_offset])
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(theme::bg_elevated())
                         .stroke(Stroke::new(1.0, theme::accent_teal()))
-                        .rounding(8.0)
-                        .inner_margin(egui::Margin::symmetric(14.0, 10.0))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::symmetric(14, 10))
                         .show(ui, |ui| {
                             ui.horizontal_centered(|ui| {
                                 ui.spinner();
@@ -4634,11 +4638,11 @@ impl RecordeApp {
                 .anchor(egui::Align2::CENTER_TOP, [0.0, y_offset])
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(theme::bg_elevated())
                         .stroke(Stroke::new(1.0, theme::accent_teal()))
-                        .rounding(8.0)
-                        .inner_margin(egui::Margin::symmetric(14.0, 10.0))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::symmetric(14, 10))
                         .show(ui, |ui| {
                             ui.horizontal_centered(|ui| {
                                 ui.spinner();
@@ -4670,11 +4674,11 @@ impl RecordeApp {
                 .anchor(egui::Align2::CENTER_TOP, [0.0, y_off])
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(Color32::from_rgb(74, 24, 28))
                         .stroke(Stroke::new(1.5, theme::accent_red()))
-                        .rounding(8.0)
-                        .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::symmetric(16, 12))
                         .show(ui, |ui| {
                             ui.set_max_width(640.0);
                             ui.horizontal_centered(|ui| {
@@ -4712,11 +4716,11 @@ impl RecordeApp {
                 .anchor(egui::Align2::CENTER_TOP, [0.0, 146.0])
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(Color32::from_rgb(74, 24, 28))
                         .stroke(Stroke::new(1.5, theme::accent_red()))
-                        .rounding(8.0)
-                        .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::symmetric(16, 12))
                         .show(ui, |ui| {
                             ui.set_max_width(720.0);
                             ui.horizontal_centered(|ui| {
@@ -4738,11 +4742,13 @@ impl RecordeApp {
         }
     }
 
-    fn show_welcome(&mut self, ctx: &Context) {
+    fn show_welcome(&mut self, root_ui: &mut egui::Ui) {
+        let context = root_ui.ctx().clone();
+        let ctx = &context;
         let mut action = None;
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(theme::bg_app()))
-            .show(ctx, |ui| {
+            .frame(egui::Frame::NONE.fill(theme::bg_app()))
+            .show(root_ui, |ui| {
                 let width = 620.0_f32.min(ui.available_width() - 48.0);
                 let left = ui.max_rect().center().x - width / 2.0;
                 let top = ui.max_rect().top() + (ui.available_height() * 0.12).max(24.0);
@@ -4750,7 +4756,7 @@ impl RecordeApp {
                     egui::pos2(left, top),
                     egui::vec2(width, ui.available_height() - 40.0),
                 );
-                ui.allocate_ui_at_rect(rect, |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                     ui.label(
                         crate::icons::rich(crate::icons::SOURCE, 40.0).color(theme::accent_teal()),
                     );
@@ -4831,7 +4837,7 @@ impl RecordeApp {
             ui.disable();
         }
         let icon_texture = self.app_icon_texture.clone();
-        egui::menu::bar(ui, |ui| {
+        egui::MenuBar::new().ui(ui, |ui| {
             // App icon on the far left of the menu bar
             ui.add(egui::Image::new(egui::load::SizedTexture::new(
                 icon_texture.id(),
@@ -4851,15 +4857,15 @@ impl RecordeApp {
                         self.config.add_recent(path.clone());
                         load_repo(path, self.state.clone());
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Clone Repository…").clicked() {
                     self.state.lock().unwrap().modal = ModalKind::CloneRepo;
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Initialize Repository…").clicked() {
                     self.state.lock().unwrap().modal = ModalKind::InitRepo;
-                    ui.close_menu();
+                    ui.close();
                 }
                 let current_repo = self.state.lock().unwrap().repo_path.clone();
                 let selected = ui
@@ -4878,24 +4884,24 @@ impl RecordeApp {
                 ui.separator();
                 if ui.button("Settings").clicked() {
                     self.open_settings(SettingsTab::App);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Quit").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    ui.close_menu();
+                    ui.close();
                 }
             });
 
             ui.menu_button("Edit", |ui| {
                 if ui.button("Copy Selected Commit SHA").clicked() {
                     if let Some(oid) = self.state.lock().unwrap().selected_commit.clone() {
-                        ui.output_mut(|o| o.copied_text = oid);
+                        ui.ctx().copy_text(oid);
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Find Commits").clicked() {
                     self.state.lock().unwrap().search_active = true;
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Clear Selection").clicked() {
                     let mut s = self.state.lock().unwrap();
@@ -4903,7 +4909,7 @@ impl RecordeApp {
                     s.selected_commit_detail = None;
                     s.selected_file = None;
                     s.current_diff = None;
-                    ui.close_menu();
+                    ui.close();
                 }
             });
 
@@ -4918,11 +4924,11 @@ impl RecordeApp {
                     .clicked()
                 {
                     self.handle_toolbar(ctx, ToolbarAction::ToggleAllBranches);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Toggle Theme").clicked() {
                     self.handle_toolbar(ctx, ToolbarAction::ToggleTheme);
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if ui
@@ -4948,7 +4954,7 @@ impl RecordeApp {
                 }
                 if ui.button("Reset Layout").clicked() {
                     self.reset_layout();
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 for (label, pane) in [
@@ -4959,7 +4965,7 @@ impl RecordeApp {
                 ] {
                     if ui.button(label).clicked() {
                         self.focus_pane(pane);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             });
@@ -4976,7 +4982,7 @@ impl RecordeApp {
                     ) {
                         self.state.lock().unwrap().error = Some(e);
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui
                     .add_enabled(has_repo, Button::new("Open Terminal"))
@@ -4985,7 +4991,7 @@ impl RecordeApp {
                     if let Some(rp) = self.state.lock().unwrap().repo_path.clone() {
                         lifecycle::open_terminal(&rp);
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui
                     .add_enabled(has_repo, Button::new("Reveal in File Manager"))
@@ -4994,7 +5000,7 @@ impl RecordeApp {
                     if let Some(rp) = self.state.lock().unwrap().repo_path.clone() {
                         lifecycle::reveal_in_file_manager(&rp);
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.add_enabled(has_repo, Button::new("Copy Path")).clicked() {
                     let path_str = self
@@ -5005,34 +5011,34 @@ impl RecordeApp {
                         .as_ref()
                         .map(|p| p.display().to_string())
                         .unwrap_or_default();
-                    ctx.output_mut(|o| o.copied_text = path_str);
-                    ui.close_menu();
+                    ctx.copy_text(path_str);
+                    ui.close();
                 }
                 if ui
                     .add_enabled(has_repo, Button::new("Pull Requests…"))
                     .clicked()
                 {
                     self.repo_ui.pull_requests_open = true;
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if ui.add_enabled(has_repo, Button::new("Fetch")).clicked() {
                     remote::fetch_all(&mut self.runner, &self.state);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.add_enabled(has_repo, Button::new("Pull")).clicked() {
                     remote::pull_branch(&mut self.runner, &self.state);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.add_enabled(has_repo, Button::new("Push")).clicked() {
                     remote::push_branch(&mut self.runner, &self.state);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.add_enabled(has_repo, Button::new("Refresh")).clicked() {
                     if let Some(path) = self.state.lock().unwrap().repo_path.clone() {
                         load_repo(path, self.state.clone());
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 let has_diff = self.state.lock().unwrap().current_diff.is_some();
@@ -5053,7 +5059,7 @@ impl RecordeApp {
                             }
                         }
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui
                     .add_enabled(has_repo, Button::new("Apply Patch File…"))
@@ -5075,7 +5081,7 @@ impl RecordeApp {
                             );
                         }
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if ui
@@ -5083,7 +5089,7 @@ impl RecordeApp {
                     .clicked()
                 {
                     self.open_settings(SettingsTab::Repository);
-                    ui.close_menu();
+                    ui.close();
                 }
             });
 
@@ -5094,14 +5100,14 @@ impl RecordeApp {
                     .clicked()
                 {
                     self.branch_switcher_open = true;
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui
                     .add_enabled(has_repo, Button::new("New Branch..."))
                     .clicked()
                 {
                     self.state.lock().unwrap().modal = ModalKind::CreateBranch { from_oid: None };
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if ui
@@ -5109,14 +5115,14 @@ impl RecordeApp {
                     .clicked()
                 {
                     self.state.lock().unwrap().modal = ModalKind::MergeBranch;
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui
                     .add_enabled(has_repo, Button::new("Rebase Onto…"))
                     .clicked()
                 {
                     self.state.lock().unwrap().modal = ModalKind::RebaseOnto;
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if ui
@@ -5125,14 +5131,14 @@ impl RecordeApp {
                 {
                     self.repo_ui.stash_message_input = "WIP".into();
                     self.state.lock().unwrap().modal = ModalKind::StashWithMessage;
-                    ui.close_menu();
+                    ui.close();
                 }
             });
 
             ui.menu_button("Help", |ui| {
                 if ui.button("About Recorde").clicked() {
                     self.open_settings(SettingsTab::About);
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         });
@@ -5147,6 +5153,7 @@ fn focus_ring(ui: &egui::Ui) {
         ui.max_rect().shrink(1.0),
         0.0,
         egui::Stroke::new(1.5, theme::accent_teal().gamma_multiply(0.5)),
+        egui::StrokeKind::Middle,
     );
 }
 
@@ -5172,7 +5179,7 @@ fn panel_toggle(ui: &mut egui::Ui, visible: &mut bool, label: &str, tip: &str) -
                         theme::border()
                     },
                 ))
-                .rounding(5.0)
+                .corner_radius(5.0)
                 .min_size(egui::Vec2::new(0.0, 24.0)),
         )
         .on_hover_text(tip);
@@ -5189,7 +5196,7 @@ fn modal_window(ctx: &Context, title: &str, add_contents: impl FnOnce(&mut egui:
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
+        .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)))
         .show(ctx, |ui| {
             ui.set_min_width(300.0);
             ui.add_space(4.0);
@@ -5241,7 +5248,7 @@ impl RecordeApp {
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .default_size([820.0, 560.0])
-            .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(14.0)))
+            .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(14)))
             .show(ctx, |ui| {
                 // ── Tab bar ─────────────────────────────────────────────
                 ui.horizontal(|ui| {
@@ -5352,7 +5359,7 @@ impl RecordeApp {
                             .collect();
 
                         ui.columns(2, |cols| {
-                            egui::ScrollArea::vertical().id_source("iss_list").show(
+                            egui::ScrollArea::vertical().id_salt("iss_list").show(
                                 &mut cols[0],
                                 |ui| {
                                     if visible.is_empty() {
@@ -5374,7 +5381,7 @@ impl RecordeApp {
                                             egui::Sense::click(),
                                         );
                                         ui.painter().rect_filled(row, 0.0, bg);
-                                        ui.allocate_ui_at_rect(row, |ui| {
+                                        ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
                                             ui.horizontal(|ui| {
                                                 ui.add_space(8.0);
                                                 let dot_color = if issue.state
@@ -5478,7 +5485,7 @@ impl RecordeApp {
                                     cols[1].add_space(4.0);
                                     cols[1].separator();
                                     egui::ScrollArea::vertical()
-                                        .id_source("iss_body")
+                                        .id_salt("iss_body")
                                         .max_height(200.0)
                                         .show(&mut cols[1], |ui| {
                                             let body = if issue.body.trim().is_empty() {
@@ -5821,14 +5828,14 @@ fn slugify(s: &str) -> String {
 fn primary_btn(label: &str) -> Button<'_> {
     Button::new(RichText::new(label).color(Color32::WHITE).size(14.0))
         .fill(theme::primary_fill())
-        .rounding(7.0)
+        .corner_radius(7.0)
         .min_size(egui::Vec2::new(120.0, 28.0))
 }
 
 fn danger_btn(label: &str) -> Button<'_> {
     Button::new(RichText::new(label).color(Color32::WHITE))
         .fill(theme::accent_red())
-        .rounding(6.0)
+        .corner_radius(6.0)
         .min_size(egui::Vec2::new(0.0, 28.0))
 }
 
@@ -5836,7 +5843,7 @@ fn secondary_btn(label: &str) -> Button<'_> {
     Button::new(RichText::new(label).color(theme::text_secondary()))
         .fill(Color32::TRANSPARENT)
         .stroke(Stroke::new(1.0, theme::border()))
-        .rounding(6.0)
+        .corner_radius(6.0)
         .min_size(egui::Vec2::new(0.0, 28.0))
 }
 
@@ -5889,7 +5896,7 @@ fn settings_tab_button(ui: &mut egui::Ui, tab: &mut SettingsTab, value: Settings
                         theme::border()
                     },
                 ))
-                .rounding(6.0)
+                .corner_radius(6.0)
                 .min_size(egui::Vec2::new(0.0, 28.0)),
         )
         .clicked()

@@ -45,14 +45,10 @@ the appropriate Git workflow.
 
 ## Fonts Show Missing Symbols
 
-Recorde embeds Material Icons and attempts to load Noto Symbols from:
-
-```text
-/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf
-```
-
-If the system font is absent, some non-Material symbols may render differently.
-Install the Noto Symbols package for your platform if needed.
+Recorde embeds Inter, Material Icons, Noto Symbols and monochrome Noto Emoji.
+No system font installation is required. If a symbol is missing, include the
+symbol and a screenshot with the app version, platform and display scale in the
+bug report. The font coverage test checks the bundled UI symbol repertoire.
 
 ## External Tools Do Not Open
 

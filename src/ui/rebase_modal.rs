@@ -297,7 +297,7 @@ fn receive_drop(
     drop_at: &mut Option<usize>,
 ) {
     let (inner, payload) = ui.dnd_drop_zone::<usize, ()>(
-        egui::Frame::none().inner_margin(egui::Margin::symmetric(0.0, 2.0)),
+        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 2)),
         |ui| {
             if show_line {
                 let w = ui.available_width();

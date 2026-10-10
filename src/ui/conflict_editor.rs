@@ -116,7 +116,7 @@ impl ConflictEditor {
                 ui.columns(3, |columns| {
                     for (column, (label, text)) in columns.iter_mut().zip([("Base", &snapshot.base), ("Ours", &snapshot.ours), ("Theirs", &snapshot.theirs)]) {
                         column.label(label);
-                        egui::ScrollArea::both().id_source(label).max_height(220.0).show(column, |ui| {
+                        egui::ScrollArea::both().id_salt(label).max_height(220.0).show(column, |ui| {
                             ui.add(egui::TextEdit::multiline(&mut text.as_str()).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
                         });
                     }
@@ -127,7 +127,7 @@ impl ConflictEditor {
                     if ui.button("Reset result").clicked() { self.result = snapshot.result.clone(); }
                 });
                 ui.label("Result — edit to combine the versions, then remove every conflict marker.");
-                egui::ScrollArea::both().id_source("conflict_result").max_height(300.0).show(ui, |ui| {
+                egui::ScrollArea::both().id_salt("conflict_result").max_height(300.0).show(ui, |ui| {
                     ui.add(egui::TextEdit::multiline(&mut self.result).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).desired_rows(12));
                 });
                 save = ui.button("Save and mark resolved").clicked();

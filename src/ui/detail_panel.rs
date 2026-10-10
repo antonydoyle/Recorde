@@ -71,7 +71,7 @@ impl DetailPanel {
                         .small_button(RichText::new("Copy").color(theme::text_muted()).size(12.0))
                         .clicked()
                     {
-                        ui.output_mut(|o| o.copied_text = detail.oid.clone());
+                        ui.ctx().copy_text(detail.oid.clone());
                     }
                 });
 
@@ -93,8 +93,8 @@ impl DetailPanel {
                     .trim_start_matches('\n')
                     .trim_end();
 
-                egui::Frame::none()
-                    .inner_margin(egui::Margin::symmetric(12.0, 0.0))
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(12, 0))
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new(first_line)
@@ -106,8 +106,8 @@ impl DetailPanel {
 
                 if !rest.is_empty() {
                     ui.add_space(6.0);
-                    egui::Frame::none()
-                        .inner_margin(egui::Margin::symmetric(12.0, 0.0))
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin::symmetric(12, 0))
                         .show(ui, |ui| {
                             ui.label(
                                 RichText::new(rest)
@@ -174,7 +174,7 @@ impl DetailPanel {
                         ui.set_min_width(175.0);
                         if ui.button("Show File History").clicked() {
                             load_file_history(&file.path, self.state.clone());
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("Blame").clicked() {
                             {
@@ -183,7 +183,7 @@ impl DetailPanel {
                                 s.show_blame = true;
                             }
                             load_blame(&file.path, self.state.clone());
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
