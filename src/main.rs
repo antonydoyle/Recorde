@@ -3,6 +3,17 @@
 
 use recorde::{app::RecordeApp, auth, crash};
 
+#[cfg(feature = "ui-inspection")]
+fn validate_inspection_address(address: &str) -> Result<(), std::io::Error> {
+    match address.parse::<std::net::SocketAddr>() {
+        Ok(address) if address.ip().is_loopback() => Ok(()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Development UI inspection requires an explicit loopback address.",
+        )),
+    }
+}
+
 fn main() -> eframe::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("Recorde {}", env!("CARGO_PKG_VERSION"));
@@ -14,6 +25,11 @@ fn main() -> eframe::Result<()> {
     }
     crash::install();
     env_logger::init();
+    #[cfg(feature = "ui-inspection")]
+    if let Some(address) = egui_inspection::bind_addr_from_env() {
+        validate_inspection_address(&address)
+            .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?;
+    }
 
     let initial_repo = std::env::args().nth(1).map(std::path::PathBuf::from);
 
@@ -37,12 +53,32 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             // COSMIC/Wayland can wait indefinitely on the first eglSwapBuffers
             // for a hidden window. Show before painting, using upstream's API.
+            #[cfg(target_os = "linux")]
             if let Some(window) = cc.winit_window() {
                 window.set_visible(true);
             }
             Ok(Box::new(RecordeApp::new(cc, initial_repo)))
         }),
     )
+}
+
+#[cfg(all(test, feature = "ui-inspection"))]
+mod inspection_tests {
+    #[test]
+    fn inspection_cannot_bind_to_a_network_interface_or_resolve_a_host() {
+        for address in ["127.0.0.1:5719", "[::1]:5719"] {
+            assert!(super::validate_inspection_address(address).is_ok());
+        }
+        for address in [
+            "0.0.0.0:5719",
+            "[::]:5719",
+            "192.168.1.2:5719",
+            "localhost:5719",
+            "example.com:5719",
+        ] {
+            assert!(super::validate_inspection_address(address).is_err());
+        }
+    }
 }
 
 #[cfg(all(test, windows))]

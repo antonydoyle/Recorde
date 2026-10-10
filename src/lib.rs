@@ -1,3 +1,6 @@
+#[cfg(all(feature = "ui-inspection", not(debug_assertions)))]
+compile_error!("ui-inspection is development-only and must not be enabled in release builds");
+
 pub mod app;
 pub mod auth;
 pub mod config;
