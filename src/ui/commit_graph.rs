@@ -54,6 +54,7 @@ pub struct CommitGraphView {
     interactions_enabled: bool,
     confirmation_focus: bool,
     keyboard_row: Option<String>,
+    search_was_active: bool,
 }
 
 impl CommitGraphView {
@@ -84,6 +85,7 @@ impl CommitGraphView {
             interactions_enabled: true,
             confirmation_focus: true,
             keyboard_row: None,
+            search_was_active: false,
         }
     }
 
@@ -106,23 +108,37 @@ impl CommitGraphView {
     /// Keyboard equivalent of dropping a selected row onto HEAD, or dragging
     /// the current branch onto that row. Uses exactly the same preview and queue.
     pub fn preview_selected(&mut self, action: crate::git::graph_action::Action) {
+        let oid = self.state.lock().unwrap().selected_commit.clone();
+        if let Some(oid) = oid {
+            self.preview_endpoint(
+                crate::git::graph_action::Endpoint {
+                    oid,
+                    reference: None,
+                },
+                action,
+            );
+        }
+    }
+
+    // Both keyboard/chip actions and context menus use an explicit immutable
+    // endpoint. A menu never reads a potentially different current selection.
+    fn preview_endpoint(
+        &mut self,
+        selected: crate::git::graph_action::Endpoint,
+        action: crate::git::graph_action::Action,
+    ) {
         use crate::git::graph_action::{Action, Endpoint, Preview};
-        let (path, epoch, oid, head, branch) = {
+        let (path, epoch, head, branch) = {
             let s = self.state.lock().unwrap();
             (
                 s.repo_path.clone(),
                 s.repo_epoch,
-                s.selected_commit.clone(),
                 s.commit_graph.as_ref().and_then(|g| g.head_oid.clone()),
                 s.head_branch.clone(),
             )
         };
-        let (Some(path), Some(oid), Some(head), Some(branch)) = (path, oid, head, branch) else {
+        let (Some(path), Some(head), Some(branch)) = (path, head, branch) else {
             return;
-        };
-        let selected = Endpoint {
-            oid,
-            reference: None,
         };
         let current = Endpoint {
             oid: head,
@@ -133,18 +149,7 @@ impl CommitGraphView {
         } else {
             (selected, current)
         };
-        let result = Preview::capture(&path, epoch, source, destination).and_then(|mut preview| {
-            if !preview.allows(action) {
-                return Err(
-                    "This commit cannot be cherry-picked without choosing a mainline parent."
-                        .into(),
-                );
-            }
-            preview.action = action;
-            preview.validate(&path)?;
-            Ok(preview)
-        });
-        match result {
+        match Preview::capture_action(&path, epoch, source, destination, action) {
             Ok(preview) => {
                 self.pending_action = Some(preview);
                 self.confirmation_focus = true;
@@ -191,16 +196,16 @@ impl CommitGraphView {
                 ui.set_max_width(540.0);
                 ui.label(format!("Repository: {}", preview.path.display()));
                 ui.label(format!("From: {}", preview.source.label()));
-                ui.label(format!("Dropped onto: {}", preview.destination.label()));
+                ui.label(format!("Destination: {}", preview.destination.label()));
                 ui.horizontal(|ui| {
-                    for action in [Action::Merge, Action::Rebase, Action::CherryPick] {
+                    for action in [Action::Merge, Action::Rebase, Action::CherryPick, Action::Revert] {
                         ui.add_enabled_ui(preview.allows(action), |ui| { ui.radio_value(&mut preview.action, action, action.label()); });
                     }
                 });
                 ui.strong(preview.description());
                 ui.label(format!("Expected HEAD: {} ({})", preview.head_ref, &preview.head_oid[..7]));
-                if preview.source_is_merge { ui.label("Cherry-picking merge commits requires choosing a mainline parent; use Git for that operation."); }
-                ui.label("Branch protection prevents history rewriting by graph rebase; merges and cherry-picks remain available.");
+                if preview.source_is_merge { ui.label("Cherry-picking or reverting a merge commit requires choosing a mainline parent; use Git for that operation."); }
+                ui.label("Branch protection prevents history rewriting by graph rebase; merges, cherry-picks and reverts remain available.");
                 if preview.action == Action::Rebase { ui.colored_label(theme::accent_orange(), "Rebase rewrites commits on the current branch."); }
                 ui.label("A recovery snapshot preserves staged, unstaged and untracked work. Git may refuse if changes would be overwritten. Conflicts use the existing Continue / Abort controls. Repository, HEAD and both targets are checked again when the queued operation starts.");
                 ui.horizontal(|ui| {
@@ -334,6 +339,8 @@ impl CommitGraphView {
         let search_h = if search_active { 34.0 } else { 0.0 };
         let mut new_query = search_query.clone();
         let mut close_search = false;
+        let search_just_opened = search_active && !self.search_was_active;
+        self.search_was_active = search_active;
 
         if search_active {
             let bar_rect = Rect::from_min_size(ui.min_rect().min, Vec2::new(avail, search_h));
@@ -349,13 +356,13 @@ impl CommitGraphView {
                     ui.add_space(6.0);
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut new_query)
+                            .id(egui::Id::new("graph_search"))
                             .desired_width(300.0)
                             .margin(egui::Vec2::new(8.0, 5.0))
                             .hint_text("Search… (message, author:, sha:, after:YYYY-MM-DD, before:YYYY-MM-DD)")
                             .font(FontId::proportional(13.0)),
                     );
-                    r.request_focus();
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape)) { close_search = true; }
+                    if search_just_opened && self.interactions_enabled { r.request_focus(); }
                     if !new_query.is_empty() {
                         let q = new_query.to_lowercase();
                         let n = graph.nodes.iter().filter(|n| node_matches(n, &q)).count();
@@ -371,7 +378,11 @@ impl CommitGraphView {
             if new_query != search_query {
                 self.state.lock().unwrap().search_query = new_query.clone();
             }
-            if close_search || ui.input(|i| i.key_pressed(Key::Escape)) {
+            let escape = self.interactions_enabled
+                && self.pending_action.is_none()
+                && !egui::Popup::is_any_open(ui.ctx())
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
+            if close_search || escape {
                 let mut s = self.state.lock().unwrap();
                 s.search_active = false;
                 s.search_query.clear();
@@ -595,7 +606,9 @@ impl CommitGraphView {
                 ui.memory(|memory| memory.has_focus(egui::Id::new(("commit_row", oid))))
                     && graph.oid_to_row.contains_key(*oid)
             });
-            if (up || down)
+            if self.interactions_enabled
+                && ui.is_enabled()
+                && (up || down)
                 && (focused_row.is_some()
                     || (!ui.ctx().egui_wants_keyboard_input()
                         && self.state.lock().unwrap().focused_pane == 2))
@@ -820,7 +833,13 @@ impl CommitGraphView {
                     }
 
                     // ── Draw rows ─────────────────────────────────────
-                    for i in first..last {
+                    let mut interactive_rows: Vec<_> = (first..last).collect();
+                    if let Some(row) = self.keyboard_row.as_ref()
+                        .filter(|oid| ui.memory(|memory| memory.has_focus(egui::Id::new(("commit_row", oid)))))
+                        .and_then(|oid| graph.oid_to_row.get(oid)).copied() {
+                        if !(first..last).contains(&row) { interactive_rows.push(row); }
+                    }
+                    for i in interactive_rows {
                         let node = &nodes[i];
                         let row_top = origin.y + i as f32 * ROW_H;
                         let row_rect = Rect::from_min_size(
@@ -914,7 +933,7 @@ impl CommitGraphView {
                                 Pos2::new(time_start, row_top),
                                 Pos2::new(time_start + time_w, row_top + ROW_H),
                             ),
-                            egui::Id::new(("time_cell", i)),
+                            egui::Id::new(("time_cell", &node.oid)),
                             Sense::hover(),
                         )
                         .on_hover_text(theme::absolute_time(node.time));
@@ -924,7 +943,7 @@ impl CommitGraphView {
                         widgets::avatar(&painter, author_pos, 8.5, &node.author);
                         ui.interact(
                             Rect::from_center_size(author_pos, Vec2::splat(22.0)),
-                            egui::Id::new(("author_avatar", i)),
+                            egui::Id::new(("author_avatar", &node.oid)),
                             Sense::hover(),
                         )
                         .on_hover_text(&node.author);
@@ -956,17 +975,7 @@ impl CommitGraphView {
                                 }
                                 // Keyboard equivalent for dragging this branch onto HEAD.
                                 if response.clicked() {
-                                    let (path, epoch) = { let state = self.state.lock().unwrap(); (state.repo_path.clone(), state.repo_epoch) };
-                                    if let (Some(head), Some(path)) = (&graph.head_oid, path) {
-                                        if head != &node.oid {
-                                            let source = crate::git::graph_action::Endpoint { oid: node.oid.clone(), reference: Some(reference.clone()) };
-                                            let destination = crate::git::graph_action::Endpoint { oid: head.clone(), reference: None };
-                                            match crate::git::graph_action::Preview::capture(&path, epoch, source, destination) {
-                                                Ok(preview) => self.pending_action = Some(preview),
-                                                Err(error) => self.state.lock().unwrap().error = Some(error),
-                                            }
-                                        }
-                                    }
+                                    self.preview_endpoint(crate::git::graph_action::Endpoint { oid: node.oid.clone(), reference: Some(reference.clone()) }, crate::git::graph_action::Action::Merge);
                                 }
                                 response.on_hover_text(format!("{reference}: drag to a commit for a preview, or click to merge into HEAD"));
                             }
@@ -1012,11 +1021,14 @@ impl CommitGraphView {
                                     tc,
                                 );
                         }
-                    }
-
-                    // Context menu
-                    resp.context_menu(|ui| {
-                        if let Some(ref oid) = selected {
+                        if row_resp.secondary_clicked() {
+                            new_selection = Some(Some(node.oid.clone()));
+                            row_resp.request_focus();
+                            self.keyboard_row = Some(node.oid.clone());
+                            self.state.lock().unwrap().focused_pane = 2;
+                        }
+                        row_resp.context_menu(|ui| {
+                            let oid = &node.oid;
                             let short = &oid[..7.min(oid.len())];
                             if ui.button(format!("Copy SHA  {}", short)).clicked() {
                                 ui.ctx().copy_text(oid.clone());
@@ -1024,11 +1036,11 @@ impl CommitGraphView {
                             }
                             ui.separator();
                             if ui.button("Cherry-pick").clicked() {
-                                crate::git::branches::cherry_pick(oid, self.state.clone());
+                                self.preview_endpoint(crate::git::graph_action::Endpoint { oid: oid.clone(), reference: None }, crate::git::graph_action::Action::CherryPick);
                                 ui.close();
                             }
                             if ui.button("Revert Commit").clicked() {
-                                crate::git::branches::revert_commit(oid, self.state.clone());
+                                self.preview_endpoint(crate::git::graph_action::Endpoint { oid: oid.clone(), reference: None }, crate::git::graph_action::Action::Revert);
                                 ui.close();
                             }
                             if ui.button("Interactive Rebase from here…").clicked() {
@@ -1090,12 +1102,13 @@ impl CommitGraphView {
                                 ui.close();
                             }
                             ui.separator();
-                        }
                         if ui.button("Deselect").clicked() {
                             new_selection = Some(None);
                             ui.close();
                         }
                     });
+                    }
+
                 });
         });
 
@@ -1416,6 +1429,218 @@ fn draw_ref_column(
 mod interaction_tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+    fn frame(
+        ctx: &egui::Context,
+        view: &mut CommitGraphView,
+        events: Vec<egui::Event>,
+        enabled: bool,
+    ) -> egui::FullOutput {
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 400.0))),
+            events,
+            ..Default::default()
+        });
+        view.set_interactions_enabled(enabled && !view.has_pending_action());
+        egui::CentralPanel::default().show(
+            &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new("test_root"),
+                egui::UiBuilder::new().max_rect(ctx.content_rect()),
+            ),
+            |ui| view.show(ui),
+        );
+        view.show_action_confirmation(ctx, &[]);
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        output
+    }
+    fn key(key: Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+    fn pointer(pos: Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+    fn setup(repo: &TestRepo) -> (egui::Context, CommitGraphView) {
+        let state = crate::state::new_shared_state();
+        {
+            let mut s = state.lock().unwrap();
+            s.repo_path = Some(repo.path().canonicalize().unwrap());
+            s.head_branch = Some("main".into());
+            s.focused_pane = 2;
+            s.commit_graph = Some(std::sync::Arc::new(
+                crate::git::graph::CommitGraph::from_repo(&repo.open()).unwrap(),
+            ));
+        }
+        (egui::Context::default(), CommitGraphView::new(state))
+    }
+    fn text_position(output: &egui::FullOutput, label: &str) -> Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text: {label}"))
+    }
+
+    #[test]
+    fn context_menu_uses_clicked_oid_and_confirmation_keeps_it_after_selection_changes() {
+        use crate::git::graph_action::Action;
+        for (label, action) in [
+            ("Cherry-pick", Action::CherryPick),
+            ("Revert Commit", Action::Revert),
+        ] {
+            let repo = TestRepo::new();
+            let base = repo.commit("base", b"base");
+            repo.git_ok(&["checkout", "-b", "topic"]);
+            let topic = repo.commit("topic", b"topic");
+            repo.git_ok(&["checkout", "main"]);
+            let (ctx, mut view) = setup(&repo);
+            view.state.lock().unwrap().selected_commit = Some(base.to_string());
+            let index = std::fs::read(repo.path().join(".git/index")).unwrap();
+            frame(&ctx, &mut view, vec![], true);
+            let pos = ctx
+                .read_response(egui::Id::new(("commit_row", topic.to_string())))
+                .unwrap()
+                .rect
+                .center();
+            frame(
+                &ctx,
+                &mut view,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    pointer(pos, egui::PointerButton::Secondary, true),
+                ],
+                true,
+            );
+            frame(
+                &ctx,
+                &mut view,
+                vec![pointer(pos, egui::PointerButton::Secondary, false)],
+                true,
+            );
+            let output = frame(&ctx, &mut view, vec![], true);
+            let button = text_position(&output, label);
+            // Change selection even while the menu is open: its endpoint remains B.
+            view.state.lock().unwrap().selected_commit = Some(base.to_string());
+            frame(
+                &ctx,
+                &mut view,
+                vec![
+                    egui::Event::PointerMoved(button),
+                    pointer(button, egui::PointerButton::Primary, true),
+                ],
+                true,
+            );
+            frame(
+                &ctx,
+                &mut view,
+                vec![pointer(button, egui::PointerButton::Primary, false)],
+                true,
+            );
+            let preview = view
+                .pending_action
+                .as_ref()
+                .expect("menu action opens confirmation");
+            assert_eq!(preview.source.oid, topic.to_string());
+            assert_eq!(preview.action, action);
+            view.state.lock().unwrap().selected_commit = Some(base.to_string());
+            frame(&ctx, &mut view, vec![], true);
+            assert_eq!(
+                view.pending_action.as_ref().unwrap().source.oid,
+                topic.to_string()
+            );
+            assert_eq!(repo.head(), base);
+            assert!(!repo.path().join("topic").exists());
+            assert_eq!(
+                std::fs::read(repo.path().join(".git/index")).unwrap(),
+                index
+            );
+            assert!(view.state.lock().unwrap().local_jobs.is_empty());
+            frame(&ctx, &mut view, vec![key(Key::Escape)], true);
+            assert!(view.pending_action.is_none());
+            assert_eq!(repo.head(), base);
+        }
+    }
+
+    #[test]
+    fn search_focus_is_requested_once_and_escape_respects_confirmation() {
+        let repo = TestRepo::new();
+        repo.commit("base", b"base");
+        let head = repo.commit("change", b"change");
+        let (ctx, mut view) = setup(&repo);
+        view.state.lock().unwrap().search_active = true;
+        frame(&ctx, &mut view, vec![], true);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("graph_search"))
+        );
+        frame(&ctx, &mut view, vec![key(Key::Tab)], true);
+        frame(&ctx, &mut view, vec![], true);
+        assert_ne!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("graph_search"))
+        );
+        view.state.lock().unwrap().selected_commit = Some(head.to_string());
+        view.preview_selected(crate::git::graph_action::Action::Revert);
+        frame(&ctx, &mut view, vec![], true);
+        frame(&ctx, &mut view, vec![key(Key::Escape)], true);
+        assert!(view.pending_action.is_none());
+        assert!(
+            view.state.lock().unwrap().search_active,
+            "Escape cancels the topmost confirmation only"
+        );
+    }
+
+    #[test]
+    fn modal_blocks_graph_arrows_and_offscreen_keyboard_target_keeps_focus() {
+        let repo = TestRepo::new();
+        for i in 0..32 {
+            repo.commit(&format!("file-{i}"), b"data");
+        }
+        let (ctx, mut view) = setup(&repo);
+        frame(&ctx, &mut view, vec![], true);
+        frame(&ctx, &mut view, vec![key(Key::ArrowUp)], false);
+        assert!(view.state.lock().unwrap().selected_commit.is_none());
+        frame(&ctx, &mut view, vec![key(Key::ArrowUp)], true);
+        let oid = view.state.lock().unwrap().selected_commit.clone().unwrap();
+        let expected = view
+            .state
+            .lock()
+            .unwrap()
+            .commit_graph
+            .as_ref()
+            .unwrap()
+            .nodes
+            .last()
+            .unwrap()
+            .oid
+            .clone();
+        assert_eq!(oid, expected);
+        let id = egui::Id::new(("commit_row", &oid));
+        assert_eq!(ctx.memory(|m| m.focused()), Some(id));
+        frame(&ctx, &mut view, vec![], true);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(id),
+            "virtualization must retain a focused row during scrolling"
+        );
+    }
+
     #[test]
     fn drag_commit_previews_without_mutating_and_escape_cancels() {
         let repo = TestRepo::new();

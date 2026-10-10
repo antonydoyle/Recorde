@@ -36,6 +36,7 @@ pub enum Action {
     Merge,
     Rebase,
     CherryPick,
+    Revert,
 }
 impl Action {
     pub fn label(self) -> &'static str {
@@ -43,6 +44,7 @@ impl Action {
             Self::Merge => "Merge",
             Self::Rebase => "Rebase",
             Self::CherryPick => "Cherry-pick",
+            Self::Revert => "Revert",
         }
     }
 }
@@ -102,6 +104,26 @@ impl Preview {
         source: Endpoint,
         destination: Endpoint,
     ) -> Result<Self, String> {
+        Self::capture_with_action(path, epoch, source, destination, None)
+    }
+
+    pub fn capture_action(
+        path: &Path,
+        epoch: u64,
+        source: Endpoint,
+        destination: Endpoint,
+        action: Action,
+    ) -> Result<Self, String> {
+        Self::capture_with_action(path, epoch, source, destination, Some(action))
+    }
+
+    fn capture_with_action(
+        path: &Path,
+        epoch: u64,
+        source: Endpoint,
+        destination: Endpoint,
+        action: Option<Action>,
+    ) -> Result<Self, String> {
         let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
         let head = repo
             .head()
@@ -133,11 +155,14 @@ impl Preview {
         } else if result.source.reference.is_none() && !result.source_is_merge {
             result.action = Action::CherryPick;
         }
+        if let Some(action) = action {
+            result.action = action;
+        }
         result.validate(&result.path)?;
         Ok(result)
     }
     pub fn allows(&self, action: Action) -> bool {
-        if action == Action::CherryPick && self.source_is_merge {
+        if matches!(action, Action::CherryPick | Action::Revert) && self.source_is_merge {
             return false;
         }
         if action == Action::Rebase {
@@ -145,7 +170,7 @@ impl Preview {
                 && self.destination.oid != self.head_oid
         } else {
             self.destination.oid == self.head_oid
-                && self.source.oid != self.head_oid
+                && (action == Action::Revert || self.source.oid != self.head_oid)
                 && self
                     .destination
                     .reference
@@ -165,6 +190,10 @@ impl Preview {
                 &self.source.oid[..7]
             ),
             Action::CherryPick => format!("Apply commit {} to {branch}", &self.source.oid[..7]),
+            Action::Revert => format!(
+                "Create a new commit on {branch} reverting {}",
+                &self.source.oid[..7]
+            ),
             Action::Rebase => format!(
                 "Replay {branch} onto {} ({})",
                 self.destination.label(),
@@ -177,6 +206,15 @@ impl Preview {
             return Err("Repository changed. Drag again.".into());
         }
         let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+        if !super::replacement::refs(&repo)
+            .map_err(|error| error.to_string())?
+            .is_empty()
+        {
+            return Err("Graph operations are unavailable while replacement objects are active. Remove or disable replacements before reviewing this operation.".into());
+        }
+        if matches!(self.action, Action::CherryPick | Action::Revert) && self.source_is_merge {
+            return Err("This merge commit requires choosing a mainline parent before cherry-picking or reverting.".into());
+        }
         let head = repo.head().map_err(|e| e.to_string())?;
         if head.name().ok() != Some(self.head_ref.as_str())
             || head
@@ -220,6 +258,7 @@ impl Preview {
                 Action::Merge => ("merge", &self.source.oid),
                 Action::Rebase => ("rebase", &self.destination.oid),
                 Action::CherryPick => ("cherry-pick", &self.source.oid),
+                Action::Revert => ("revert", &self.source.oid),
             };
             let merge_message = self.source.reference.as_ref().map(|name| {
                 format!(
@@ -243,6 +282,7 @@ impl Preview {
                     oid,
                 ],
                 Action::CherryPick => vec![verb, "--", oid],
+                Action::Revert => vec![verb, "--no-edit", "--", oid],
             };
             super::merge::run_git_seq(path, &args).map_err(|e| e.user_message())
         })
@@ -327,6 +367,80 @@ mod tests {
         .unwrap();
         (repo, preview)
     }
+    #[test]
+    fn revert_head_is_previewed_and_creates_a_new_commit_only_on_execution() {
+        let repo = TestRepo::new();
+        let base = repo.commit("base", b"base");
+        let head = repo.commit("change", b"change");
+        let endpoint = Endpoint {
+            oid: head.to_string(),
+            reference: Some("refs/heads/main".into()),
+        };
+        let preview = Preview::capture_action(
+            repo.path(),
+            0,
+            Endpoint {
+                oid: head.to_string(),
+                reference: None,
+            },
+            endpoint,
+            Action::Revert,
+        )
+        .unwrap();
+        assert_eq!(repo.head(), head);
+        assert!(repo.path().join("change").exists());
+        preview.execute(repo.path()).unwrap();
+        let opened = repo.open();
+        let reverted = opened.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(reverted.parent_id(0).unwrap(), head);
+        assert_eq!(
+            reverted.tree_id(),
+            opened.find_commit(base).unwrap().tree_id()
+        );
+        assert!(!super::super::recovery::list(repo.path()).is_empty());
+    }
+
+    #[test]
+    fn replacement_added_after_preview_refuses_mutation_and_preserves_all_state() {
+        let (repo, preview) = fixture();
+        let head = repo.head();
+        repo.write("base", b"staged");
+        repo.git_ok(&["add", "base"]);
+        repo.write("base", b"unstaged");
+        repo.write("untracked", b"keep");
+        repo.git_ok(&["replace", &preview.source.oid, &head.to_string()]);
+        let index = std::fs::read(repo.path().join(".git/index")).unwrap();
+        for action in [Action::Merge, Action::CherryPick, Action::Revert] {
+            let mut candidate = preview.clone();
+            candidate.action = action;
+            assert!(candidate
+                .execute(repo.path())
+                .unwrap_err()
+                .contains("replacement objects"));
+            assert_eq!(repo.head(), head);
+            assert_eq!(
+                std::fs::read(repo.path().join(".git/index")).unwrap(),
+                index
+            );
+            assert_eq!(
+                std::fs::read(repo.path().join("base")).unwrap(),
+                b"unstaged"
+            );
+            assert_eq!(
+                std::fs::read(repo.path().join("untracked")).unwrap(),
+                b"keep"
+            );
+        }
+        assert!(Preview::capture_action(
+            repo.path(),
+            0,
+            preview.source,
+            preview.destination,
+            Action::CherryPick
+        )
+        .is_err());
+    }
+
     #[test]
     fn refuses_moved_refs_and_changed_head_even_at_same_commit() {
         let (repo, preview) = fixture();
@@ -513,6 +627,9 @@ mod tests {
             },
         )
         .unwrap();
+        assert!(!preview.allows(Action::Revert));
+        preview.action = Action::Revert;
+        assert!(preview.execute(repo.path()).is_err());
         assert!(!preview.allows(Action::CherryPick));
         preview.action = Action::CherryPick;
         assert!(preview.execute(repo.path()).is_err());
