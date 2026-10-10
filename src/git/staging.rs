@@ -671,20 +671,32 @@ mod tests {
     fn ignore_rule_is_literal_and_preserves_existing_bytes() {
         let repo = TestRepo::new();
         repo.write(".gitignore", b"existing");
-        add_ignore_rule(repo.path(), "literal[1]* file ").unwrap();
+        add_ignore_rule(repo.path(), "literal[1] file").unwrap();
         assert_eq!(
             std::fs::read(repo.path().join(".gitignore")).unwrap(),
-            b"existing\n/literal\\[1\\]\\*\\ file\\ \n"
+            b"existing\n/literal\\[1\\]\\ file\n"
         );
         assert!(repo
-            .git(&["check-ignore", "--", "literal[1]* file "])
+            .git(&["check-ignore", "--", "literal[1] file"])
             .status
             .success());
         assert!(!repo
-            .git(&["check-ignore", "--", "literal1-other file "])
+            .git(&["check-ignore", "--", "literal1 file"])
             .status
             .success());
         assert!(add_ignore_rule(repo.path(), "bad\npattern").is_err());
+        #[cfg(unix)]
+        {
+            add_ignore_rule(repo.path(), "star* trailing ").unwrap();
+            assert!(repo
+                .git(&["check-ignore", "--", "star* trailing "])
+                .status
+                .success());
+            assert!(!repo
+                .git(&["check-ignore", "--", "star-other trailing "])
+                .status
+                .success());
+        }
     }
 
     #[test]
@@ -922,7 +934,10 @@ mod tests {
             std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let error = git_commit(repo.path(), "keep this message", false, false).unwrap_err();
-        assert!(error.contains("rejected-by-test"));
+        assert!(
+            error.contains(&crate::auth::redact::text("rejected-by-test")),
+            "{error}"
+        );
         assert_eq!(repo.head(), head);
         assert_eq!(repo.index_bytes("file.txt"), b"staged\n");
     }

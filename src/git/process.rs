@@ -123,7 +123,24 @@ pub(crate) fn run_with_stdin(
     timeout: Duration,
     stdin: Stdio,
 ) -> Result<Output, GitError> {
-    run_inner(command, cancel, timeout, stdin, None)
+    run_inner(command, cancel, timeout, stdin, None, None)
+}
+
+/// Stream machine-readable listings into a private file without applying the
+/// diagnostic buffer limit. Cancellation and descendant cleanup remain shared.
+pub(crate) fn run_to_file(
+    command: &mut Command,
+    output: std::fs::File,
+    timeout: Duration,
+) -> Result<Output, GitError> {
+    run_inner(
+        command,
+        &AtomicBool::new(false),
+        timeout,
+        Stdio::null(),
+        None,
+        Some(output),
+    )
 }
 
 pub(crate) fn run_with_input(
@@ -137,6 +154,7 @@ pub(crate) fn run_with_input(
         timeout,
         Stdio::piped(),
         Some(input.to_vec()),
+        None,
     )
 }
 
@@ -146,6 +164,7 @@ fn run_inner(
     timeout: Duration,
     stdin: Stdio,
     input: Option<Vec<u8>>,
+    output_file: Option<std::fs::File>,
 ) -> Result<Output, GitError> {
     if cancelled(cancel) {
         return Err(GitError::Cancelled);
@@ -156,7 +175,7 @@ fn run_inner(
     };
     command
         .stdin(stdin)
-        .stdout(Stdio::piped())
+        .stdout(output_file.map_or_else(Stdio::piped, Stdio::from))
         .stderr(Stdio::piped());
     let mut group = command.group();
     // command-group replaces Command's creation flags when it creates the job.
@@ -178,9 +197,9 @@ fn run_inner(
             stdin.write_all(&bytes)
         })
     });
-    let stdout = child.inner().stdout.take().expect("piped stdout");
+    let stdout = child.inner().stdout.take();
     let stderr = child.inner().stderr.take().expect("piped stderr");
-    let out_reader = std::thread::spawn(move || drain(stdout));
+    let out_reader = stdout.map(|stdout| std::thread::spawn(move || drain(stdout)));
     let err_reader = std::thread::spawn(move || drain(stderr));
     let start = Instant::now();
     let mut interrupted = None;
@@ -217,10 +236,13 @@ fn run_inner(
             .join()
             .unwrap_or_else(|_| Err(std::io::Error::other("stdin writer stopped")))
     });
-    let (stdout, stdout_truncated) = out_reader
-        .join()
-        .map_err(|_| failure(std::io::Error::other("stdout reader stopped")))?
-        .map_err(failure)?;
+    let (stdout, stdout_truncated) = match out_reader {
+        Some(reader) => reader
+            .join()
+            .map_err(|_| failure(std::io::Error::other("stdout reader stopped")))?
+            .map_err(failure)?,
+        None => (Vec::new(), false),
+    };
     let (stderr, _) = err_reader
         .join()
         .map_err(|_| failure(std::io::Error::other("stderr reader stopped")))?

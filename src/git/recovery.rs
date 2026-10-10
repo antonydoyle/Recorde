@@ -108,13 +108,14 @@ struct SparseState {
 }
 
 fn sparse_state(repo: &git2::Repository) -> Result<Option<SparseState>, String> {
+    use std::io::BufRead;
     let config = repo.config().map_err(|e| e.to_string())?;
     if !config.get_bool("core.sparseCheckout").unwrap_or(false) {
         return Ok(None);
     }
     let patterns = std::fs::read(repo.path().join("info/sparse-checkout"))
         .map_err(|e| format!("Cannot verify sparse checkout patterns: {e}"))?;
-    let flags = super::process::git(
+    let flags = git_listing(
         repo.workdir()
             .ok_or("Sparse recovery requires a worktree.")?,
         &[
@@ -125,19 +126,20 @@ fn sparse_state(repo: &git2::Repository) -> Result<Option<SparseState>, String> 
             "--exclude-standard",
             "-z",
         ],
-        &AtomicBool::new(false),
-    )
-    .map_err(|e| e.user_message())?;
-    let skip_worktree = flags
-        .stdout
-        .split(|b| *b == 0)
-        .filter_map(|line| line.strip_prefix(b"S ").map(|p| p.to_vec()))
-        .collect();
+    )?;
+    let mut skip_worktree = Vec::new();
     let mut materialized = Vec::new();
     let root = repo
         .workdir()
         .ok_or("Sparse recovery requires a worktree.")?;
-    for record in flags.stdout.split(|b| *b == 0).filter(|r| r.len() > 2) {
+    for record in std::io::BufReader::new(flags.reopen().map_err(|e| e.to_string())?).split(0) {
+        let record = record.map_err(|e| e.to_string())?;
+        if record.len() <= 2 {
+            continue;
+        }
+        if let Some(file) = record.strip_prefix(b"S ") {
+            skip_worktree.push(file.to_vec());
+        }
         let file = &record[2..];
         let name =
             std::str::from_utf8(file).map_err(|_| "Sparse recovery requires UTF-8 file paths.")?;
@@ -154,6 +156,24 @@ fn sparse_state(repo: &git2::Repository) -> Result<Option<SparseState>, String> 
         skip_worktree,
         materialized,
     }))
+}
+
+fn git_listing(path: &Path, args: &[&str]) -> Result<tempfile::NamedTempFile, String> {
+    let output = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    let mut command = super::process::command(path);
+    command.arg("--no-replace-objects").args(args);
+    let result = super::process::run_to_file(
+        &mut command,
+        output.reopen().map_err(|e| e.to_string())?,
+        std::time::Duration::from_secs(600),
+    )
+    .map_err(|e| e.user_message())?;
+    if !result.status.success() {
+        return Err(crate::auth::redact::text(&String::from_utf8_lossy(
+            &result.stderr,
+        )));
+    }
+    Ok(output)
 }
 
 fn tracked_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, String> {
@@ -195,6 +215,7 @@ fn tracked_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, S
 // A separate index lets native Git apply attributes, modes and symlink rules
 // without changing the user's index or HEAD. Ignored files are never added.
 fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, String> {
+    let sparse = sparse_state(repo)?;
     let output = super::process::git(path, &["write-tree"], &AtomicBool::new(false))
         .map_err(|e| e.user_message())?;
     let index = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -226,12 +247,34 @@ fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, 
         run(&["read-tree", &index])?;
     }
     run(&["add", "--all", "--sparse", "--", "."])?;
+    // Explicit pathspecs include materialized files outside the sparse cone on
+    // Git versions where a directory pathspec still applies sparse filtering.
+    if let Some(sparse) = &sparse {
+        if !sparse.materialized.is_empty() {
+            use std::io::Write;
+            let mut files = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+            for name in &sparse.materialized {
+                files
+                    .write_all(name)
+                    .and_then(|_| files.write_all(&[0]))
+                    .map_err(|e| e.to_string())?;
+            }
+            files.flush().map_err(|e| e.to_string())?;
+            run(&[
+                "--literal-pathspecs",
+                "add",
+                "--sparse",
+                "--pathspec-file-nul",
+                &format!("--pathspec-from-file={}", files.path().to_string_lossy()),
+            ])?;
+        }
+    }
     let worktree = run(&["write-tree"])?;
     git2::Oid::from_str(&worktree).map_err(|e| e.to_string())?;
     Ok(TrackedState {
         index,
         worktree,
-        sparse: sparse_state(repo)?,
+        sparse,
     })
 }
 
@@ -595,6 +638,38 @@ pub fn restore(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
     protect(path, &label, || restore_contents(path, checkpoint))
 }
 
+fn verify_restore_state(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
+    // Taking the inverse checkpoint can run filters and take time. Recheck
+    // user edits and ignored collisions after that capture, before writing.
+    let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+    let (head, branch) = head_state(&repo)?;
+    let expected_branch = if checkpoint.head_target_changed {
+        &checkpoint.after_branch
+    } else {
+        &checkpoint.branch
+    };
+    if repo.state() != git2::RepositoryState::Clean
+        || head != checkpoint.after
+        || &branch != expected_branch
+    {
+        return Err("HEAD, branch or active operation changed while preparing recovery.".into());
+    }
+    if checkpoint.head_target_changed {
+        verify_switch_target(path, &repo, checkpoint)?;
+    }
+    if let Some(expected) = &checkpoint.after_state {
+        let actual = if checkpoint.before_state.is_some() {
+            complete_state(path, &repo)?
+        } else {
+            tracked_state(path, &repo)?
+        };
+        if &actual != expected {
+            return Err("Files or the index changed while preparing recovery. Preserve those edits before retrying.".into());
+        }
+    }
+    ensure_no_untracked_collisions(&repo, checkpoint)
+}
+
 fn ensure_no_untracked_collisions(
     repo: &git2::Repository,
     checkpoint: &Checkpoint,
@@ -634,7 +709,12 @@ fn ensure_no_untracked_collisions(
     }
     for tree in trees {
         let mut paths = Vec::new();
+        let mut invalid_name = false;
         tree.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
+            if entry.name().is_err() {
+                invalid_name = true;
+                return git2::TreeWalkResult::Skip;
+            }
             if entry.kind() != Some(git2::ObjectType::Tree) {
                 if let Ok(name) = entry.name() {
                     paths.push(format!("{prefix}{name}"));
@@ -643,6 +723,9 @@ fn ensure_no_untracked_collisions(
             git2::TreeWalkResult::Ok
         })
         .map_err(|e| e.to_string())?;
+        if invalid_name {
+            return Err("Recovery cannot safely check a non-UTF-8 tree path. Restore it using native Git after preserving untracked files.".into());
+        }
         for file in paths {
             let target = Path::new(&file);
             let mut candidate = Some(target);
@@ -674,6 +757,26 @@ fn restore_contents(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> 
                 .map(|_| ())
                 .map_err(|e| e.user_message())
         };
+        // Prepare the complete flag listing before the first index/worktree
+        // mutation. Large sparse indexes must not hit the diagnostic output cap.
+        let flag_files = if saved.sparse.is_some() {
+            let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+            let tree = repo
+                .find_tree(git2::Oid::from_str(&saved.worktree).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            for file in &saved.sparse.as_ref().unwrap().materialized {
+                let name = std::str::from_utf8(file)
+                    .map_err(|_| "Sparse recovery requires UTF-8 file paths.")?;
+                tree.get_path(Path::new(name)).map_err(|_| "The saved sparse snapshot is missing materialized files. Recovery was refused before changing files.")?;
+            }
+            Some(git_listing(
+                path,
+                &["ls-tree", "-r", "--name-only", "-z", &saved.index],
+            )?)
+        } else {
+            None
+        };
+        verify_restore_state(path, checkpoint)?;
         // Materialize only files included in the verified snapshot; ignored files
         // are excluded and collisions were checked before taking the inverse snapshot.
         run(&["read-tree", &current.worktree])?;
@@ -686,7 +789,7 @@ fn restore_contents(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> 
         // Restore the witnessed skip-worktree bitmap separately and atomically.
         run(&["read-tree", "--reset", &saved.index])?;
         if let Some(sparse) = &saved.sparse {
-            restore_sparse_flags(path, sparse)?;
+            restore_sparse_flags(path, sparse, flag_files.as_ref().unwrap())?;
         }
         let old = checkpoint
             .after
@@ -721,6 +824,7 @@ fn restore_contents(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> 
         }
         return Ok(());
     }
+    verify_restore_state(path, checkpoint)?;
     super::process::git(
         path,
         &[
@@ -791,7 +895,11 @@ fn restore_materialized(path: &Path, tree: &str, files: &[Vec<u8>]) -> Result<()
     Ok(())
 }
 
-fn restore_sparse_flags(path: &Path, sparse: &SparseState) -> Result<(), String> {
+fn restore_sparse_flags(
+    path: &Path,
+    sparse: &SparseState,
+    all: &tempfile::NamedTempFile,
+) -> Result<(), String> {
     use std::io::Write;
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
     let index = repo.path().join("index");
@@ -833,20 +941,15 @@ fn restore_sparse_flags(path: &Path, sparse: &SparseState) -> Result<(), String>
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let temp_index = temp.path().join("index");
     std::fs::copy(&index, &temp_index).map_err(|e| e.to_string())?;
-    let all = super::process::git(path, &["ls-files", "-z"], &AtomicBool::new(false))
-        .map_err(|e| e.user_message())?;
-    let mut skipped = Vec::new();
+    let mut skipped = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
     for file in &sparse.skip_worktree {
-        skipped.extend_from_slice(file);
-        skipped.push(0);
+        skipped
+            .write_all(file)
+            .and_then(|_| skipped.write_all(&[0]))
+            .map_err(|e| e.to_string())?;
     }
-    for (flag, bytes) in [
-        ("--no-skip-worktree", all.stdout.as_slice()),
-        ("--skip-worktree", skipped.as_slice()),
-    ] {
-        let mut input = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-        input.write_all(bytes).map_err(|e| e.to_string())?;
-        input.flush().map_err(|e| e.to_string())?;
+    skipped.flush().map_err(|e| e.to_string())?;
+    for (flag, input) in [("--no-skip-worktree", all), ("--skip-worktree", &skipped)] {
         let mut command = super::process::command(path);
         command
             .env("GIT_INDEX_FILE", &temp_index)
@@ -951,6 +1054,78 @@ pub fn remove(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn large_tree_listing_is_complete_beyond_diagnostic_limit() {
+        use std::io::Read;
+        let fixture = TestRepo::new();
+        let repo = fixture.open();
+        let blob = repo.blob(b"same content").unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        for n in 0..6000 {
+            builder
+                .insert(format!("{n:06}-{}", "x".repeat(190)), blob, 0o100644)
+                .unwrap();
+        }
+        let tree = builder.write().unwrap();
+        let file = git_listing(
+            fixture.path(),
+            &["ls-tree", "-r", "--name-only", "-z", &tree.to_string()],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        file.reopen().unwrap().read_to_end(&mut bytes).unwrap();
+        assert!(bytes.len() > 1024 * 1024);
+        assert_eq!(bytes.iter().filter(|b| **b == 0).count(), 6000);
+    }
+
+    #[test]
+    fn restore_recheck_preserves_edits_and_ignored_collisions_after_capture() {
+        let fixture = TestRepo::new();
+        fixture.commit("file", b"before\n");
+        protect(fixture.path(), "Remove", || {
+            fixture.git_ok(&["rm", "file"]);
+            fixture.git_ok(&["commit", "-m", "remove"]);
+            Ok(())
+        })
+        .unwrap();
+        let checkpoint = list(fixture.path()).remove(0);
+        verify_restore_state(fixture.path(), &checkpoint).unwrap();
+        std::fs::write(fixture.open().path().join("info/exclude"), "file\n").unwrap();
+        fixture.write("file", b"late ignored work\n");
+        assert!(verify_restore_state(fixture.path(), &checkpoint)
+            .unwrap_err()
+            .contains("ignored path"));
+        assert_eq!(
+            std::fs::read(fixture.path().join("file")).unwrap(),
+            b"late ignored work\n"
+        );
+        fixture.write("new-file", b"late untracked work\n");
+        assert!(verify_restore_state(fixture.path(), &checkpoint)
+            .unwrap_err()
+            .contains("changed"));
+    }
+
+    #[test]
+    fn recovery_refuses_non_utf8_tree_names_before_writing() {
+        let fixture = TestRepo::new();
+        fixture.commit("file", b"original\n");
+        let mut checkpoint = capture(fixture.path(), "Non UTF8 fixture")
+            .unwrap()
+            .unwrap();
+        checkpoint.after_state = checkpoint.before_state.clone();
+        let repo = fixture.open();
+        let blob = repo.blob(b"overwritten").unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert(&b"invalid\xff"[..], blob, 0o100644).unwrap();
+        checkpoint.before_state.as_mut().unwrap().worktree = builder.write().unwrap().to_string();
+        assert!(ensure_no_untracked_collisions(&repo, &checkpoint)
+            .unwrap_err()
+            .contains("non-UTF-8"));
+        assert_eq!(
+            std::fs::read(fixture.path().join("file")).unwrap(),
+            b"original\n"
+        );
+    }
     use crate::git::test_support::TestRepo;
 
     #[test]

@@ -190,10 +190,6 @@ impl ScopedFile {
     }
 }
 
-pub(crate) fn worktree_file(root: &Path, file: &str) -> Result<PathBuf, String> {
-    checked_entry(root, file, false)
-}
-
 pub(crate) fn worktree_entry(root: &Path, file: &str) -> Result<PathBuf, String> {
     checked_entry(root, file, true)
 }
@@ -399,9 +395,12 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("secret"), b"outside").unwrap();
         std::os::unix::fs::symlink(outside.path(), root.path().join("linked")).unwrap();
-        assert!(worktree_file(root.path(), "linked/secret").is_err());
-        assert!(worktree_file(root.path(), "linked/new-file").is_err());
+        assert!(ScopedFile::new(root.path(), "linked/secret").is_err());
+        assert!(ScopedFile::new(root.path(), "linked/new-file").is_err());
         std::fs::create_dir(root.path().join("directory")).unwrap();
-        assert!(worktree_file(root.path(), "directory").is_err());
+        assert!(ScopedFile::new(root.path(), "directory")
+            .unwrap()
+            .read(1024)
+            .is_err());
     }
 }
