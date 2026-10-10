@@ -165,6 +165,9 @@ impl Command {
         }
     }
     pub fn disabled_reason(self, s: &crate::state::AppState) -> Option<&'static str> {
+        if s.pending_discard.is_some() || !matches!(s.modal, crate::state::ModalKind::None) {
+            return Some("Finish or cancel the open confirmation first");
+        }
         if matches!(
             self,
             Self::Palette
@@ -289,22 +292,30 @@ impl Shortcut {
     pub fn key(&self) -> Option<Key> {
         Key::from_name(&self.key)
     }
-    pub fn from_event(key: Key, modifiers: Modifiers) -> Option<Self> {
-        if !modifiers.command
-            || (cfg!(target_os = "macos") && modifiers.ctrl)
-            || matches!(key, Key::Escape | Key::Enter | Key::Tab | Key::Q | Key::W)
-            || (modifiers.alt && key == Key::Delete)
+    /// The same validity rule applies to recording, saved overrides and dispatch.
+    pub fn valid_key(&self) -> Option<Key> {
+        let key = self.key()?;
+        if matches!(key, Key::Escape | Key::Enter | Key::Tab | Key::Q | Key::W)
+            || (self.alt && key == Key::Delete)
         {
+            None
+        } else {
+            Some(key)
+        }
+    }
+    pub fn from_event(key: Key, modifiers: Modifiers) -> Option<Self> {
+        if !modifiers.command || (cfg!(target_os = "macos") && modifiers.ctrl) {
             return None;
         }
-        Some(Self {
+        let binding = Self {
             key: key.name().into(),
             shift: modifiers.shift,
             alt: modifiers.alt,
-        })
+        };
+        binding.valid_key().map(|_| binding)
     }
     pub fn matches(&self, key: Key, modifiers: Modifiers) -> bool {
-        self.key() == Some(key)
+        self.valid_key() == Some(key)
             && modifiers.command
             && self.shift == modifiers.shift
             && self.alt == modifiers.alt
@@ -330,13 +341,23 @@ impl Shortcuts {
             .get(command.id())
             .cloned()
             .or_else(|| command.default_shortcut())
-            .filter(|b| b.key().is_some())
+            .and_then(|mut binding| {
+                binding.key = binding.valid_key()?.name().into();
+                Some(binding)
+            })
     }
     pub fn set(&mut self, command: Command, binding: Option<Shortcut>) -> Result<(), String> {
+        let binding = binding
+            .map(|mut binding| {
+                binding.key = binding
+                    .valid_key()
+                    .ok_or("Unknown or reserved keyboard combination")?
+                    .name()
+                    .into();
+                Ok::<_, String>(binding)
+            })
+            .transpose()?;
         if let Some(binding) = &binding {
-            if binding.key().is_none() {
-                return Err("Unknown key".into());
-            }
             if let Some(other) = Command::ALL
                 .iter()
                 .find(|&&other| other != command && self.get(other).as_ref() == Some(binding))
@@ -456,5 +477,50 @@ mod tests {
         let _ = ctx.end_frame();
         assert!(Shortcut::from_event(Key::Q, Modifiers::COMMAND).is_none());
         assert!(Shortcut::from_event(Key::K, Modifiers::NONE).is_none());
+    }
+    #[test]
+    fn reserved_bindings_in_saved_config_are_inert_and_set_rejects_them() {
+        for (key, alt) in [
+            (Key::Q, false),
+            (Key::W, false),
+            (Key::Enter, false),
+            (Key::Tab, false),
+            (Key::Escape, false),
+            (Key::Delete, true),
+        ] {
+            let binding = Shortcut {
+                key: key.name().into(),
+                shift: false,
+                alt,
+            };
+            let mut shortcuts = Shortcuts::default();
+            assert!(shortcuts.set(Command::Push, Some(binding.clone())).is_err());
+            shortcuts.0.insert(Command::Push.id().into(), binding);
+            let restored: Shortcuts =
+                toml::from_str(&toml::to_string(&shortcuts).unwrap()).unwrap();
+            assert!(restored.get(Command::Push).is_none());
+            let modifiers = if alt {
+                Modifiers::COMMAND | Modifiers::ALT
+            } else {
+                Modifiers::COMMAND
+            };
+            assert!(restored.command(key, modifiers).is_none());
+        }
+    }
+
+    #[test]
+    fn discard_confirmation_blocks_all_registry_dispatch() {
+        let mut state = crate::state::AppState::default();
+        state.repo_path = Some(std::path::PathBuf::from("repository"));
+        state.head_branch = Some("main".into());
+        assert!(Command::Fetch.available(&state));
+        state.pending_discard = Some(crate::state::PendingDiscard::ResetHard);
+        for command in Command::ALL {
+            assert!(
+                !command.available(&state),
+                "{} must respect the confirmation",
+                command.label()
+            );
+        }
     }
 }

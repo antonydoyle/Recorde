@@ -132,7 +132,7 @@ impl CommitGraphView {
             .show(ctx, |ui| {
                 ui.allocate_rect(ctx.screen_rect(), Sense::click_and_drag());
             });
-        egui::Window::new("Confirm graph operation").order(egui::Order::Foreground).collapsible(false).resizable(false)
+        let window = egui::Window::new("Confirm graph operation").order(egui::Order::Foreground).collapsible(false).resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
                 ui.set_max_width(540.0);
                 ui.label(format!("Repository: {}", preview.path.display()));
@@ -154,6 +154,9 @@ impl CommitGraphView {
                 });
                 cancel |= ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
             });
+        if let Some(window) = window {
+            ctx.move_to_top(window.response.layer_id);
+        }
         if confirm {
             self.pending_action = None;
             preview.submit(self.state.clone());

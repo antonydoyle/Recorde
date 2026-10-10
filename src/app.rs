@@ -340,6 +340,11 @@ impl RecordeApp {
     // ── Action handlers ───────────────────────────────────────────────────────
 
     fn handle_toolbar(&mut self, ctx: &Context, action: ToolbarAction) {
+        if self.commit_graph_view.has_pending_action()
+            || self.state.lock().unwrap().pending_discard.is_some()
+        {
+            return;
+        }
         match action {
             ToolbarAction::OpenRepo(path) => {
                 self.config.add_recent(path.clone());
@@ -437,6 +442,11 @@ impl RecordeApp {
     }
 
     fn handle_sidebar(&mut self, action: SidebarAction) {
+        if self.commit_graph_view.has_pending_action()
+            || self.state.lock().unwrap().pending_discard.is_some()
+        {
+            return;
+        }
         match action {
             SidebarAction::OpenRepository(path) => load_repo(path, self.state.clone()),
             SidebarAction::CheckoutBranch(n) => branches::checkout_branch(&n, self.state.clone()),
@@ -575,6 +585,9 @@ impl RecordeApp {
     // ── Modal rendering ───────────────────────────────────────────────────────
 
     fn render_modals(&mut self, ctx: &Context) {
+        if self.commit_graph_view.has_pending_action() {
+            return;
+        }
         let modal_kind = self.state.lock().unwrap().modal.clone();
         match modal_kind {
             ModalKind::None => {}
@@ -799,7 +812,9 @@ impl RecordeApp {
 
     fn dispatch_command(&mut self, ctx: &Context, command: crate::commands::Command) {
         use crate::commands::Command as C;
-        if !command.available(&self.state.lock().unwrap()) {
+        if self.commit_graph_view.has_pending_action()
+            || !command.available(&self.state.lock().unwrap())
+        {
             return;
         }
         let toolbar = match command {
@@ -2794,7 +2809,10 @@ impl eframe::App for RecordeApp {
             && !self.branch_switcher_open
             && !self.add_account_open
             && !self.commit_graph_view.has_pending_action()
-            && matches!(self.state.lock().unwrap().modal, ModalKind::None)
+            && {
+                let s = self.state.lock().unwrap();
+                matches!(s.modal, ModalKind::None) && s.pending_discard.is_none()
+            }
             && self.repo_ui.rebase_modal.is_none()
             && self.repo_ui.conflict_editor.is_none()
             && self.repo_ui.provider_editor.is_none();
@@ -2952,6 +2970,7 @@ impl eframe::App for RecordeApp {
             self.dark_theme,
             search_active,
             show_all_branches,
+            !self.commit_graph_view.has_pending_action(),
         );
         if let Some(a) = toolbar_action {
             self.handle_toolbar(ctx, a);
@@ -2965,6 +2984,7 @@ impl eframe::App for RecordeApp {
                     .width_range(180.0..=360.0)
                     .frame(egui::Frame::none())
                     .show(ctx, |ui| {
+                        ui.set_enabled(!self.commit_graph_view.has_pending_action());
                         let a = self.sidebar.show(ui);
                         if let Some(sa) = a {
                             self.handle_sidebar(sa);
@@ -2992,6 +3012,7 @@ impl eframe::App for RecordeApp {
                     .width_range(300.0..=520.0)
                     .frame(egui::Frame::none())
                     .show(ctx, |ui| {
+                        ui.set_enabled(!self.commit_graph_view.has_pending_action());
                         let selected_commit = self.state.lock().unwrap().selected_commit.clone();
                         let has_commit = selected_commit.is_some();
                         let has_dirty = self.state.lock().unwrap().dirty_count > 0;
@@ -3114,6 +3135,7 @@ impl eframe::App for RecordeApp {
                             [r.left_top(), r.right_top()],
                             Stroke::new(1.0, theme::border()),
                         );
+                        ui.set_enabled(!self.commit_graph_view.has_pending_action());
                         self.diff_view.show(ui);
                         if self.state.lock().unwrap().focused_pane == 4 {
                             focus_ring(ui);
@@ -4321,6 +4343,7 @@ impl RecordeApp {
                     .inner_margin(egui::Margin::symmetric(16.0, 6.0)),
             )
             .show(ctx, |ui| {
+                ui.set_enabled(!self.commit_graph_view.has_pending_action());
                 egui::ScrollArea::horizontal().show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if let Some(path) = &active {
@@ -4702,6 +4725,7 @@ impl RecordeApp {
     }
 
     fn show_menu_contents(&mut self, ctx: &Context, ui: &mut egui::Ui) {
+        ui.set_enabled(!self.commit_graph_view.has_pending_action());
         let icon_texture = self.app_icon_texture.clone();
         egui::menu::bar(ui, |ui| {
             // App icon on the far left of the menu bar

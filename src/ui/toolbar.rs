@@ -95,6 +95,7 @@ impl Toolbar {
         dark_theme: bool,
         search_active: bool,
         show_all_branches: bool,
+        enabled: bool,
     ) -> Option<ToolbarAction> {
         let mut action: Option<ToolbarAction> = None;
 
@@ -106,6 +107,7 @@ impl Toolbar {
                     .inner_margin(egui::Margin::symmetric(12.0, 0.0)),
             )
             .show(ctx, |ui| {
+                ui.set_enabled(enabled);
                 let r = ui.max_rect();
                 ui.painter().line_segment(
                     [r.left_bottom(), r.right_bottom()],

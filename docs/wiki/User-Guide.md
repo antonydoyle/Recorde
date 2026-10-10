@@ -140,7 +140,7 @@ configuration.
 
 Drag a commit row onto the checked-out branch's HEAD row to preview cherry-picking it. Drag a branch label onto HEAD to preview a merge. Drag the checked-out branch label onto another commit or branch label to preview rebasing the current branch onto that target. The confirmation shows the repository, both endpoints, the expected HEAD, and the direction of the change. Dropping alone never changes Git state; use Confirm to queue the operation or Escape to cancel.
 
-The current branch is the only branch these gestures modify. A changed repository, branch tip, or HEAD invalidates the operation, including changes while dragging or waiting in the queue. Rebasing a configured protected branch is disabled. Recovery snapshots preserve staged, unstaged, and untracked work; Git may refuse the operation when local changes would be overwritten. Conflicts use the normal Continue and Abort controls.
+The current branch is the only branch these gestures modify. A changed repository, branch tip, or HEAD invalidates the operation, including changes while dragging or waiting in the queue. Rebasing a configured protected branch is disabled. Graph rebase also refuses replay ranges containing merge commits, so topology and recorded resolutions cannot be silently flattened. Recovery snapshots preserve staged, unstaged, and untracked work; Git may refuse the operation when local changes would be overwritten. Conflicts use the normal Continue and Abort controls.
 
 Branch labels are focusable: activate one to open a merge preview into HEAD. The command palette also provides Merge branch, Rebase current branch, and Interactive rebase from selected commit for keyboard access. Existing context menus remain available.
 

@@ -192,6 +192,9 @@ impl Preview {
         }
         self.source.validate(&repo)?;
         self.destination.validate(&repo)?;
+        if self.action == Action::Rebase {
+            verify_linear_replay(&repo, &self.head_oid, &self.destination.oid)?;
+        }
         if !self.allows(self.action) {
             return Err("Drop a commit/branch onto the current branch to merge or cherry-pick, or drag the current branch onto a target to rebase.".into());
         }
@@ -253,6 +256,25 @@ impl Preview {
         });
     }
 }
+/// A plain rebase would drop merge commits and their recorded resolutions.
+/// Refuse those gestures until a merge-preserving plan is explicitly reviewed.
+fn verify_linear_replay(repo: &git2::Repository, head: &str, onto: &str) -> Result<(), String> {
+    let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
+    walk.push(git2::Oid::from_str(head).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    walk.hide(git2::Oid::from_str(onto).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    for oid in walk {
+        let commit = repo
+            .find_commit(oid.map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if commit.parent_count() > 1 {
+            return Err("Graph rebase is unavailable because the replay range contains merge commits. Use a reviewed merge-preserving rebase to retain topology and conflict resolutions.".into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +399,39 @@ mod tests {
         }
         assert!(state.lock().unwrap().local_jobs.is_empty());
         assert_eq!(repo.head(), original);
+    }
+    #[test]
+    fn graph_rebase_refuses_merge_topology_without_modifying_history() {
+        let repo = TestRepo::new();
+        let base = repo.commit("base", b"base");
+        repo.git_ok(&["checkout", "-b", "side"]);
+        repo.commit("side", b"side");
+        repo.git_ok(&["checkout", "main"]);
+        repo.commit("main", b"main");
+        repo.git_ok(&["merge", "--no-ff", "--no-edit", "side"]);
+        let head = repo.head();
+        let result = Preview::capture(
+            repo.path(),
+            0,
+            Endpoint {
+                oid: head.to_string(),
+                reference: Some("refs/heads/main".into()),
+            },
+            Endpoint {
+                oid: base.to_string(),
+                reference: None,
+            },
+        );
+        assert!(result.err().unwrap().contains("merge commits"));
+        assert_eq!(repo.head(), head);
+        assert_eq!(
+            repo.open()
+                .head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .parent_count(),
+            2
+        );
     }
 }
