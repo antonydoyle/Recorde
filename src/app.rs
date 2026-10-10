@@ -2683,13 +2683,13 @@ impl RecordeApp {
                                 if ui.add(primary_btn("Open in Browser")).clicked() {
                                     open_url_req = Some(pr.url.clone());
                                 }
-                                if ui.add(secondary_btn("Checkout Review")).clicked() {
+                                if ui.add_enabled(pr.head_oid.len() == 40, secondary_btn("Checkout Review")).on_hover_text("Load review details to resolve the full source commit.").clicked() {
                                     checkout_review = Some((pr.number, pr.head_oid.clone()));
                                 }
                                 if let Some(path) = &repo_path {
                                     let remote = self.state.lock().unwrap().pr_source.as_ref().map(|(remote, _, url)| (remote.clone(), url.clone()));
                                     let enabled = self.repo_ui.provider_editor.is_none() && matches!(pr.state, PrState::Open | PrState::Draft) && !pr.head_oid.is_empty();
-                                    if ui.add_enabled(enabled, secondary_btn("Review...")).clicked() {
+                                    if ui.add_enabled(enabled && pr.head_oid.len() == 40, secondary_btn("Review...")).clicked() {
                                         self.repo_ui.provider_editor = Some(crate::ui::provider_editor::ProviderEditor::new(path.clone(), remote.clone(),
                                             crate::providers::write::Action::Review { number: pr.number, head: pr.head_oid.clone(), target: pr.base_ref.clone(), body: String::new(), decision: crate::providers::write::Decision::Comment, inline: None }));
                                     }

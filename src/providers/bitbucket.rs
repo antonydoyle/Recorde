@@ -27,15 +27,64 @@ pub(crate) fn review_head(
     number: u32,
     auth: &str,
 ) -> Result<String, String> {
-    let body = object(
-        &format!("{}/pullrequests/{number}", base(owner, repo)),
+    let base = base(owner, repo);
+    let mut body = object(
+        &format!("{base}/pullrequests/{number}"),
         "Authorization",
         auth,
     )?;
-    body["source"]["commit"]["hash"]
+    resolve_head(&base, &mut body, auth)
+}
+
+// PR summaries may contain only an abbreviated hash. Resolve using the source
+// repository on the already trusted API origin, never an API-provided URL.
+pub(super) fn resolve_head(base: &str, body: &mut Value, auth: &str) -> Result<String, String> {
+    let prefix = body["source"]["commit"]["hash"]
         .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| "Missing review source commit.".into())
+        .ok_or("Missing review source commit.")?
+        .to_owned();
+    if !(7..=40).contains(&prefix.len()) || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Invalid review source commit.".into());
+    }
+    if prefix.len() == 40 {
+        return Ok(prefix);
+    }
+    let source = source_base(base, body)?;
+    let commit = object(&format!("{source}/commit/{prefix}"), "Authorization", auth)?;
+    let full = commit["hash"]
+        .as_str()
+        .ok_or("Missing resolved source commit.")?;
+    if full.len() != 40
+        || !full.bytes().all(|b| b.is_ascii_hexdigit())
+        || !full.starts_with(&prefix)
+    {
+        return Err("Resolved source commit does not match the review. Refresh details.".into());
+    }
+    body["source"]["commit"]["hash"] = Value::String(full.into());
+    Ok(full.into())
+}
+
+fn source_base(base: &str, body: &Value) -> Result<String, String> {
+    let name = body["source"]["repository"]["full_name"]
+        .as_str()
+        .ok_or("Missing source repository.")?;
+    let parts: Vec<_> = name.split('/').collect();
+    if parts.len() != 2
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || matches!(*p, "." | "..") || p.chars().any(char::is_control))
+    {
+        return Err("Invalid source repository.".into());
+    }
+    let root = base
+        .rsplit_once("/repositories/")
+        .ok_or("Invalid Bitbucket API URL.")?
+        .0;
+    Ok(format!(
+        "{root}/repositories/{}/{}",
+        component(parts[0]),
+        component(parts[1])
+    ))
 }
 
 pub fn list_prs(owner: &str, repo: &str, auth: &str, state: &str) -> Result<Vec<PrItem>, String> {
@@ -116,12 +165,24 @@ pub fn details(
     number: u32,
     auth: &str,
 ) -> Result<(PrItem, Vec<String>), String> {
-    let root = format!("{}/pullrequests/{number}", base(owner, repo));
-    let body = object(&root, "Authorization", auth)?;
+    details_from(&base(owner, repo), number, auth)
+}
+pub(super) fn details_from(
+    base: &str,
+    number: u32,
+    auth: &str,
+) -> Result<(PrItem, Vec<String>), String> {
+    let root = format!("{base}/pullrequests/{number}");
+    let mut body = object(&root, "Authorization", auth)?;
+    resolve_head(base, &mut body, auth)?;
     let mut item = parse_pr(&body).ok_or("Invalid Bitbucket pull request details.")?;
     let mut warnings = vec![];
     match list(
-        &format!("{root}/statuses?pagelen=100"),
+        &format!(
+            "{}/commit/{}/statuses?pagelen=100",
+            source_base(base, &body)?,
+            item.head_oid
+        ),
         "Authorization",
         auth,
         Some("values"),
@@ -133,7 +194,21 @@ pub fn details(
     Ok((item, warnings))
 }
 
-fn checks(values: &[Value]) -> Option<CheckState> {
+pub(super) fn checks(values: &[Value]) -> Option<CheckState> {
+    let mut latest = std::collections::HashMap::new();
+    for (index, value) in values.iter().enumerate() {
+        let key = value["key"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("missing-{index}"));
+        let entry = latest.entry(key).or_insert(value);
+        if value["updated_on"].as_str().unwrap_or_default()
+            > entry["updated_on"].as_str().unwrap_or_default()
+        {
+            *entry = value;
+        }
+    }
+    let values: Vec<_> = latest.into_values().collect();
     if values.is_empty() {
         return None;
     }
@@ -155,10 +230,19 @@ pub fn list_ci_runs(
     branch: &str,
     auth: &str,
 ) -> Result<Vec<CiRun>, String> {
+    list_ci_from(&base(owner, repo), owner, repo, branch, auth)
+}
+pub(super) fn list_ci_from(
+    api: &str,
+    owner: &str,
+    repo: &str,
+    branch: &str,
+    auth: &str,
+) -> Result<Vec<CiRun>, String> {
     let values = list(
         &format!(
             "{}/pipelines/?pagelen=50&sort=-created_on&target.ref_name={}",
-            base(owner, repo),
+            api,
             component(branch)
         ),
         "Authorization",
@@ -219,7 +303,8 @@ pub(crate) fn execute(
             (root.clone(), value)
         }
         Action::Review { number, head, target, body, decision, inline } => {
-            let current = send("GET", &format!("{root}/{number}"), None)?;
+            let mut current = send("GET", &format!("{root}/{number}"), None)?;
+            resolve_head(base, &mut current, auth)?;
             verify(&current, head, target)?;
             match decision {
                 Decision::Comment => {
@@ -251,8 +336,9 @@ pub(crate) fn execute(
             decision,
             ..
         } => {
-            let current = send("GET", &format!("{root}/{number}"), None)
+            let mut current = send("GET", &format!("{root}/{number}"), None)
                 .map_err(|_| "Review submitted, but its current head could not be verified. Refresh before further actions.")?;
+            resolve_head(base, &mut current, auth).map_err(|_| "Review submitted, but its source commit could not be resolved. Refresh before further actions.")?;
             verify(&current, head, target).map_err(|_| "Review was submitted, but the pull request changed during submission. Inspect the current review in Bitbucket.")?;
             let confirmed = match decision {
                 Decision::Comment => result["id"].is_number(),

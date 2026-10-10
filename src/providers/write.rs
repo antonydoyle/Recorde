@@ -716,6 +716,7 @@ pub(super) fn send(
     if !(200..300).contains(&status) {
         let detail = value["message"]
             .as_str()
+            .or_else(|| value["error"]["message"].as_str())
             .or_else(|| value["error"].as_str())
             .unwrap_or("");
         let hint = match status {

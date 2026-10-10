@@ -19,6 +19,9 @@ pub fn checkout(
     number: u32,
     expected: &str,
 ) -> Result<(), String> {
+    if expected.len() != 40 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Review has no full head commit; refresh its details.".into());
+    }
     let expected = git2::Oid::from_str(expected)
         .map_err(|_| "Review has no valid head commit; refresh its details.")?;
     let source = match provider {

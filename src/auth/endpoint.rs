@@ -95,7 +95,12 @@ pub fn parse(remote: &str, for_api: bool) -> Result<Endpoint, String> {
             [org, project, "_git", repo] => Some((org.to_string(), *project, *repo)),
             _ => return Err("Azure remote must use organization/project/_git/repository.".into()),
         }
-    } else if ssh && host == "ssh.dev.azure.com" {
+    } else if ssh
+        && matches!(
+            host.as_str(),
+            "ssh.dev.azure.com" | "vs-ssh.visualstudio.com"
+        )
+    {
         match parts.as_slice() {
             ["v3", org, project, repo] => Some((org.to_string(), *project, *repo)),
             _ => {
@@ -142,6 +147,14 @@ pub fn parse(remote: &str, for_api: bool) -> Result<Endpoint, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_azure_ssh_uses_v3_organization_and_project() {
+        let endpoint = parse("org@vs-ssh.visualstudio.com:v3/org/project/repo", true).unwrap();
+        assert_eq!(endpoint.host, "dev.azure.com");
+        assert_eq!(endpoint.namespace, "org/project");
+        assert_eq!(endpoint.project, "repo");
+        assert_eq!(endpoint.username, None);
+    }
     #[test]
     fn azure_cloud_https_legacy_and_ssh_resolve_the_same_project() {
         for url in [
