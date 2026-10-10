@@ -6,6 +6,7 @@ does not exercise a desktop polkit prompt: root supplies PKEXEC_UID to exercise
 the post-authorization boundary. No test key or bypass enters production source.
 """
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -149,7 +150,7 @@ def main():
 
     def helper(envelope, artifact, name, success=False):
         output, error = run([HELPER, '--envelope', envelope, '--artifact', artifact], name,
-                            timeout=1000, expected=0 if success else 1,
+                            timeout=1500, expected=0 if success else 1,
                             extra_env={'PKEXEC_UID': str(uid)})
         if STATE.exists() and not marker.exists():
             marker.write_text(token)
@@ -172,7 +173,9 @@ def main():
                             ignore=shutil.ignore_patterns('target'))
         (staged / 'packaging').mkdir()
         shutil.copyfile(temp / 'fixture-keys.json', staged / 'packaging/update-keys.json')
-        (staged / 'Cargo.toml').write_text(f'[package]\nname="recorde"\nversion={json.dumps(floor)}\n')
+        (staged / 'Cargo.toml').write_text(f'[package]\nname="recorde"\nedition="2021"\nversion={json.dumps(floor)}\n')
+        (staged / 'src').mkdir()
+        (staged / 'src/lib.rs').write_text('// Fixture package metadata; never linked into the helper.\n')
         for path in [staged, *staged.rglob('*')]:
             os.chown(path, uid, account.pw_gid)
         for original in (source / 'tools/update-installer/src').glob('*.rs'):
@@ -198,6 +201,13 @@ def main():
         invalid = temp / 'invalid.envelope.json'
         invalid.write_bytes(b'{}')
         helper(own_file(invalid), artifact, 'reject-invalid-envelope')
+        corrupted = json.loads(envelope.read_text())
+        signature = bytearray(base64.b64decode(corrupted['signature_base64']))
+        signature[0] ^= 1
+        corrupted['signature_base64'] = base64.b64encode(signature).decode()
+        bad_signature = temp / 'bad-signature.envelope.json'
+        bad_signature.write_text(json.dumps(corrupted))
+        helper(own_file(bad_signature), artifact, 'reject-invalid-signature')
         helper(signed(artifact, 'wrong-arch', {'arch': 'aarch64' if arch == 'x86_64' else 'x86_64'}), artifact, 'reject-target-architecture')
         helper(signed(artifact, 'expired', {'issued_at': int(time.time()) - 3600, 'expires_at': int(time.time()) - 1}), artifact, 'reject-expired')
         wrong_version = signed(artifact, 'wrong-version', {'version': '9999.0.0', 'channel': 'stable'})

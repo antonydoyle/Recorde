@@ -72,6 +72,19 @@ fn inputs_reject_symlink_ancestors_hardlinks_wrong_owner_and_special_files() {
 }
 
 #[test]
+fn caller_identity_restores_and_requires_owner_read_permission() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("input");
+    std::fs::write(&path, b"caller bytes").unwrap();
+    let uid = unsafe { libc::geteuid() };
+    let before = (unsafe { libc::setfsuid(!0) }, unsafe { libc::setfsgid(!0) });
+    assert_eq!(bounded(caller_file(&path, uid).unwrap(), 100).unwrap(), b"caller bytes");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(caller_file(&path, uid).is_err());
+    assert_eq!(before, (unsafe { libc::setfsuid(!0) }, unsafe { libc::setfsgid(!0) }));
+}
+
+#[test]
 fn no_downgrade_check_uses_debian_revision_ordering_read_only() {
     crate::process::enable_subreaper().unwrap();
     for (new, old, expected) in [("0.4.0-2", "0.4.0-1", true), ("0.4.0-1", "0.4.0-1", false), ("0.4.0~rc.1-1", "0.4.0-1", false)] {

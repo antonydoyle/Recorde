@@ -1,9 +1,10 @@
 use recorde_update_signing::{self as protocol, Checkpoint, Manifest, Target};
-use rustix::fs::{open, openat, mkdirat, Mode, OFlags};
+use rustix::fs::{open, openat, mkdirat, unlinkat, AtFlags, Mode, OFlags};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -42,6 +43,10 @@ fn metadata(file: &File, owner: u32, directory: bool, private: bool) -> Result<(
 /// Open every component relative to the retained previous directory. Never follow
 /// a symlink, including a symlink replaced concurrently in an untrusted home.
 fn open_path(path: &Path, owner: u32, trusted_parents: bool) -> Result<File, String> {
+    readable(open_handle(path, owner, trusted_parents)?, owner)
+}
+
+fn open_handle(path: &Path, owner: u32, trusted_parents: bool) -> Result<File, String> {
     if !path.is_absolute() { return Err("Expected an absolute path.".into()); }
     let mut current = File::from(open("/", OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(|_| "Cannot open filesystem root.")?);
     let parts: Vec<_> = path.components().collect();
@@ -49,12 +54,85 @@ fn open_path(path: &Path, owner: u32, trusted_parents: bool) -> Result<File, Str
         let Component::Normal(name) = part else { return Err("Non-canonical path components are refused.".into()); };
         if trusted_parents { metadata(&current, 0, true, false)?; }
         let final_part = index + 1 == parts.len();
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK
+        // O_PATH obtains only a handle: opening a device for read can have
+        // side effects even when a later fstat rejects it (e.g. watchdogs).
+        let flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC
             | if final_part { OFlags::empty() } else { OFlags::DIRECTORY };
-        current = File::from(openat(&current, name, flags, Mode::empty()).map_err(|_| "Cannot safely open update path.")?);
+        current = File::from(openat(&current, *name, flags, Mode::empty()).map_err(|_| "Cannot safely open update path.")?);
     }
     metadata(&current, owner, false, false)?;
     Ok(current)
+}
+
+fn readable(current: File, owner: u32) -> Result<File, String> {
+    // This is our retained descriptor, never a caller-selected proc pathname.
+    // Reopening cannot be redirected by renaming/replacing the original path.
+    let descriptor = format!("/proc/self/fd/{}", current.as_raw_fd());
+    let readable = File::from(open(descriptor.as_str(), OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK, Mode::empty()).map_err(|_| "Cannot read validated update file.")?);
+    metadata(&readable, owner, false, false)?;
+    let pinned = current.metadata().map_err(|_| "Cannot inspect retained update file.")?;
+    let opened = readable.metadata().map_err(|_| "Cannot inspect readable update file.")?;
+    if (pinned.dev(), pinned.ino()) != (opened.dev(), opened.ino()) { return Err("Retained update file identity changed.".into()); }
+    Ok(readable)
+}
+
+struct CallerFilesystem { uid: libc::uid_t, gid: libc::gid_t, groups: Option<Vec<libc::gid_t>> }
+impl Drop for CallerFilesystem {
+    fn drop(&mut self) {
+        unsafe { libc::setfsuid(self.uid); libc::setfsgid(self.gid); }
+        if let Some(groups) = &self.groups { unsafe { libc::setgroups(groups.len(), groups.as_ptr()); } }
+    }
+}
+
+fn groups() -> Result<Vec<libc::gid_t>, String> {
+    let size = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    if !(0..=65536).contains(&size) { return Err("Cannot inspect installer group identity.".into()); }
+    let mut groups = vec![0; size as usize];
+    if unsafe { libc::getgroups(size, groups.as_mut_ptr()) } != size { return Err("Cannot inspect installer group identity.".into()); }
+    Ok(groups)
+}
+
+fn caller_filesystem(uid: u32) -> Result<CallerFilesystem, String> {
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0u8; 64 * 1024];
+    if unsafe { libc::getpwuid_r(uid, &mut entry, buffer.as_mut_ptr().cast(), buffer.len(), &mut result) } != 0 || result.is_null() || entry.pw_uid != uid {
+        return Err("Cannot establish the authenticated caller's filesystem identity.".into());
+    }
+    // Single-threaded helper: restoring the guard cannot race another opener.
+    // fsuid applies the caller's access checks even though execution remains root.
+    // Root supplementary groups must not grant traversal the caller lacks.
+    let saved_groups = if unsafe { libc::geteuid() } == 0 {
+        let saved = groups()?;
+        if unsafe { libc::setgroups(0, std::ptr::null()) } != 0 { return Err("Cannot restrict installer group identity.".into()); }
+        Some(saved)
+    } else { None }; // Unprivileged unit fixtures already have caller groups.
+    let gid = unsafe { libc::setfsgid(entry.pw_gid) } as libc::gid_t;
+    let old_uid = unsafe { libc::setfsuid(uid) } as libc::uid_t;
+    let guard = CallerFilesystem { uid: old_uid, gid, groups: saved_groups };
+    if unsafe { libc::setfsuid(!0) } as u32 != uid || unsafe { libc::setfsgid(!0) } as u32 != entry.pw_gid {
+        return Err("Cannot establish the authenticated caller's filesystem identity.".into());
+    }
+    Ok(guard)
+}
+
+fn caller_file(path: &Path, uid: u32) -> Result<File, String> {
+    let identity = caller_filesystem(uid)?;
+    let previous = (identity.uid, identity.gid);
+    let previous_groups = identity.groups.clone();
+    let handle = open_handle(path, uid, false).and_then(|file| {
+        // ACL owner permissions are represented by S_IRUSR. The caller owns
+        // this regular file and can traverse its path; root never opens a
+        // device or reads a different user's file on the caller's behalf.
+        if file.metadata().map_err(|_| "Cannot inspect caller file.")?.mode() & 0o400 == 0 { return Err("Caller file is not readable by its owner.".into()); }
+        Ok(file)
+    });
+    drop(identity);
+    if (unsafe { libc::setfsuid(!0) } as u32, unsafe { libc::setfsgid(!0) } as u32) != previous { return Err("Cannot restore installer filesystem identity.".into()); }
+    if previous_groups.is_some_and(|expected| groups().ok().as_ref() != Some(&expected)) { return Err("Cannot restore installer group identity.".into()); }
+    // /proc/self/fd is owned by the root process. Restore only after the caller
+    // traversal and owner/read/type checks; then reopen this pinned descriptor.
+    handle.and_then(|file| readable(file, uid)).map_err(|_| "Cannot safely read the authenticated caller's update file.".into())
 }
 
 fn bounded(mut file: File, limit: usize) -> Result<Vec<u8>, String> {
@@ -107,9 +185,37 @@ fn checkpoint(directory: &File) -> Result<Option<Checkpoint>, String> {
     serde_json::from_slice(&bounded(file, 4096)?).map(Some).map_err(|_| "Protected rollback checkpoint is invalid; it was preserved.".into())
 }
 
+fn clean_stale(directory: &File) -> Result<(), String> {
+    let path = format!("/proc/self/fd/{}", directory.as_raw_fd());
+    for entry in std::fs::read_dir(path).map_err(|_| "Cannot inspect private staging state.")? {
+        let entry = entry.map_err(|_| "Cannot inspect private staging entry.")?;
+        let name = entry.file_name();
+        let Some(text) = name.to_str() else { continue; };
+        if text.starts_with("checkpoint-") {
+            let file = File::from(openat(directory, &name, OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(|_| "Unsafe stale checkpoint staging file was preserved.")?);
+            metadata(&file, 0, false, true)?;
+            unlinkat(directory, &name, AtFlags::empty()).map_err(|_| "Cannot remove stale checkpoint staging file.")?;
+        } else if text.starts_with("install-") {
+            let stage = File::from(openat(directory, &name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(|_| "Unsafe stale package staging directory was preserved.")?);
+            metadata(&stage, 0, true, true)?;
+            let path = format!("/proc/self/fd/{}", stage.as_raw_fd());
+            let entries = std::fs::read_dir(path).map_err(|_| "Cannot inspect stale package stage.")?.collect::<Result<Vec<_>, _>>().map_err(|_| "Cannot inspect stale package contents.")?;
+            // No recursive traversal: only the exact file this helper creates.
+            if entries.len() > 1 || entries.first().is_some_and(|e| e.file_name() != "recorde.deb") { return Err("Unexpected stale staging contents were preserved for administrator inspection.".into()); }
+            if !entries.is_empty() {
+                let file = File::from(openat(&stage, "recorde.deb", OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(|_| "Cannot inspect stale package file.")?);
+                metadata(&file, 0, false, true)?;
+                unlinkat(&stage, "recorde.deb", AtFlags::empty()).map_err(|_| "Cannot remove stale package file.")?;
+            }
+            unlinkat(directory, &name, AtFlags::REMOVEDIR).map_err(|_| "Cannot remove stale package directory.")?;
+        }
+    }
+    Ok(())
+}
+
 fn save_checkpoint(directory: &File, manifest: &Manifest) -> Result<(), String> {
     let bytes = serde_json::to_vec(&Checkpoint { version: manifest.version.clone(), issued_at: manifest.issued_at }).map_err(|_| "Cannot serialize update checkpoint.")?;
-    let mut temp = tempfile::NamedTempFile::new_in(STATE).map_err(|_| "Cannot prepare protected checkpoint.")?;
+    let mut temp = tempfile::Builder::new().prefix("checkpoint-").tempfile_in(STATE).map_err(|_| "Cannot prepare protected checkpoint.")?;
     temp.write_all(&bytes).and_then(|_| temp.as_file().sync_all()).map_err(|_| "Cannot flush protected checkpoint.")?;
     temp.persist(Path::new(STATE).join("checkpoint.json")).map_err(|_| "Cannot replace protected checkpoint.")?;
     directory.sync_all().map_err(|_| "Cannot flush protected update state.")
@@ -167,13 +273,14 @@ pub fn run(values: Vec<OsString>) -> Result<(), String> {
     open_path(Path::new(EXECUTABLE), 0, true)?;
     for tool in crate::process::Tool::ALL { open_path(Path::new(tool.path()), 0, true)?; }
     native_arch()?;
-    let envelope = bounded(open_path(&envelope_path, uid, false)?, protocol::MAX_ENVELOPE)?;
+    let envelope = bounded(caller_file(&envelope_path, uid)?, protocol::MAX_ENVELOPE)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| "System clock is invalid.")?.as_secs();
     verify(&envelope, now, None)?; // Before creating any privileged state.
-    let input = open_path(&artifact_path, uid, false)?;
+    let input = caller_file(&artifact_path, uid)?;
     let state = private_state()?;
     let _lock = lock_state(&state)?;
     let manifest = verify(&envelope, now, checkpoint(&state)?.as_ref())?;
+    clean_stale(&state)?;
     crate::process::enable_subreaper()?;
     let installed = crate::process::run(crate::process::Tool::Query, &[OsStr::new("--show"), OsStr::new("--showformat=${Package}\t${Version}\t${Architecture}\t${db:Status-Status}\n"), OsStr::new("recorde")], Duration::from_secs(20))?;
     if !installed.success { return Err("Recorde is not installed through dpkg; use verified download only.".into()); }
@@ -195,7 +302,7 @@ pub fn run(values: Vec<OsString>) -> Result<(), String> {
     // The dpkg lock is independent of ours. Refuse downgrades again inside dpkg
     // in case another package manager upgraded Recorde after our comparison.
     let outcome = crate::process::run(crate::process::Tool::Dpkg, &[OsStr::new("--refuse-downgrade"), OsStr::new("--skip-same-version"), OsStr::new("--force-confold"), OsStr::new("--install"), package.as_os_str()], Duration::from_secs(900))?;
-    if !outcome.success { return Err("dpkg did not complete installation. Inspect package-manager status before retrying; the rollback checkpoint was retained.".into()); }
+    if !outcome.success { return Err(format!("dpkg did not complete installation. Inspect package-manager status before retrying; the rollback checkpoint was retained. {}", outcome.diagnostic)); }
     let result = crate::process::run(crate::process::Tool::Query, &[OsStr::new("--show"), OsStr::new("--showformat=${Package}\t${Version}\t${Architecture}\t${db:Status-Status}\n"), OsStr::new("recorde")], Duration::from_secs(20))?;
     if !result.success || package_record(&result.stdout, true)?.0 != version { return Err("Installed package version did not confirm the requested update; refresh package-manager status.".into()); }
     Ok(())
