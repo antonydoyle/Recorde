@@ -2872,7 +2872,7 @@ impl eframe::App for RecordeApp {
         ctx.style_mut(theme::kill_debug);
         ctx.options_mut(|o| o.warn_on_id_clash = false);
 
-        let shortcuts = !ctx.wants_keyboard_input()
+        let shortcuts = !crate::commands::text_input_has_focus(ctx)
             && !self.settings_open
             && !self.command_palette_open
             && !self.branch_switcher_open

@@ -298,6 +298,19 @@ impl Command {
 /// defaults; an empty key disables a binding. Store strings for forward compatibility.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Shortcuts(pub BTreeMap<String, Shortcut>);
+
+/// Buttons and graph rows also take keyboard focus. Only text editors need to
+/// retain command-key input here; dialogs and shortcut recording have separate gates.
+pub fn text_input_has_focus(ctx: &egui::Context) -> bool {
+    ctx.memory(|memory| memory.focused()).is_some_and(|id| {
+        // Text selection needs drag sense. Automatic widget IDs can be reused
+        // by a button after a view changes, while its old text state remains.
+        ctx.read_response(id)
+            .is_none_or(|response| response.sense.drag)
+            && egui::text_edit::TextEditState::load(ctx, id).is_some()
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Shortcut {
@@ -396,7 +409,7 @@ impl Shortcuts {
         Ok(())
     }
     pub fn take_command(&self, ctx: &egui::Context, blocked: bool) -> Option<Command> {
-        if blocked || ctx.wants_keyboard_input() {
+        if blocked || text_input_has_focus(ctx) {
             return None;
         }
         for event in ctx.input(|i| i.events.clone()) {
@@ -496,6 +509,23 @@ mod tests {
         ctx.begin_frame(input(vec![event(false)]));
         assert!(ctx.wants_keyboard_input());
         assert_eq!(shortcuts.take_command(&ctx, false), None);
+        let _ = ctx.end_frame();
+        let mut release = event(false);
+        if let egui::Event::Key { pressed, .. } = &mut release {
+            *pressed = false;
+        }
+        ctx.begin_frame(input(vec![release]));
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            ui.button("Graph action").request_focus();
+        });
+        let _ = ctx.end_frame();
+        ctx.begin_frame(input(vec![event(false)]));
+        assert!(
+            ctx.wants_keyboard_input(),
+            "buttons also take keyboard focus"
+        );
+        assert!(!text_input_has_focus(&ctx));
+        assert_eq!(shortcuts.take_command(&ctx, false), Some(Command::Palette));
         let _ = ctx.end_frame();
         assert!(Shortcut::from_event(Key::Q, Modifiers::COMMAND).is_none());
         assert!(Shortcut::from_event(Key::K, Modifiers::NONE).is_none());
