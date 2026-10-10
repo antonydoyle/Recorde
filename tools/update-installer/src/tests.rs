@@ -75,7 +75,7 @@ fn package_identity_architecture_and_upstream_are_exact() {
         expected_upstream("0.4.0-rc.1").unwrap()
     );
     assert_eq!(
-        upstream("0.4.0~alpha-beta-1").unwrap(),
+        upstream("0.4.0-alpha-beta-1").unwrap(),
         expected_upstream("0.4.0-alpha-beta").unwrap()
     );
     assert_ne!(
@@ -103,6 +103,33 @@ fn package_identity_architecture_and_upstream_are_exact() {
         true
     )
     .is_err());
+}
+
+#[test]
+fn authenticated_upstream_matches_pinned_cargo_deb_conversion() {
+    // Literal outputs of cargo-deb 3.8.0's manifest_version_string, without
+    // its default -1 Debian revision. The build-metadata cases deliberately
+    // retain the packager's first-hyphen behavior rather than normalizing it.
+    for (manifest, debian_upstream) in [
+        ("0.4.0", "0.4.0"),
+        ("0.4.0-rc.1", "0.4.0~rc.1"),
+        ("0.4.0-alpha", "0.4.0-alpha"),
+        ("0.4.0-1", "0.4.0-1"),
+        ("0.4.0-alpha-beta", "0.4.0-alpha-beta"),
+        ("0.4.0-alpha-beta.2", "0.4.0~alpha-beta.2"),
+        ("0.4.0-1.2", "0.4.0~1.2"),
+        ("0.4.0-alpha+build.2", "0.4.0~alpha+build.2"),
+        ("0.4.0+build-rc.1", "0.4.0+build~rc.1"),
+        ("0.4.0+metadata", "0.4.0+metadata"),
+    ] {
+        assert_eq!(expected_upstream(manifest).unwrap(), debian_upstream);
+        assert_eq!(
+            upstream(&format!("{debian_upstream}-1")).unwrap(),
+            debian_upstream
+        );
+    }
+    assert!(expected_upstream("0.4.0-01").is_err());
+    assert!(expected_upstream("1:0.4.0").is_err());
 }
 
 #[test]

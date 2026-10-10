@@ -498,23 +498,18 @@ fn upstream(version: &str) -> Result<String, String> {
 }
 
 fn expected_upstream(version: &str) -> Result<String, String> {
-    let version = semver::Version::parse(version).map_err(|_| "Invalid authenticated version.")?;
-    Ok(format!(
-        "{}.{}.{}{}{}",
-        version.major,
-        version.minor,
-        version.patch,
-        if version.pre.is_empty() {
-            String::new()
-        } else {
-            format!("~{}", version.pre)
-        },
-        if version.build.is_empty() {
-            String::new()
-        } else {
-            format!("+{}", version.build)
+    semver::Version::parse(version).map_err(|_| "Invalid authenticated version.")?;
+    // Match the pinned cargo-deb 3.8.0 manifest_version_string conversion,
+    // before its separately checked Debian revision. It inspects everything
+    // after the first hyphen, including any build metadata, and preserves
+    // purely alphabetic or numeric suffixes rather than always inserting '~'.
+    if let Some((main, suffix)) = version.split_once('-') {
+        let bytes = suffix.as_bytes();
+        if bytes.iter().any(|c| !c.is_ascii_digit()) && bytes.iter().any(u8::is_ascii_digit) {
+            return Ok(format!("{main}~{suffix}"));
         }
-    ))
+    }
+    Ok(version.into())
 }
 
 fn package_record(bytes: &[u8], installed: bool) -> Result<(String, String), String> {

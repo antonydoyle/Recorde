@@ -52,10 +52,14 @@ overall, plus any separately bounded administrator prompt wait).
   private filename, never the user-controlled staging path. Source mutation
   either leaves the authenticated bytes unchanged or fails the digest check.
 - Package metadata must name `recorde` and the native DEB architecture. Its
-  upstream version must exactly match the signed SemVer, mapping prereleases to
-  Debian `~`; a legitimate Debian revision is permitted. Prerelease identifiers
-  containing a hyphen require an explicit Debian revision, as cargo-deb emits
-  (for example `1.0.0~rc-1-1`). Epochs are refused.
+  upstream version must exactly match the signed SemVer after the pinned
+  [cargo-deb 3.8.0 conversion](https://github.com/kornelski/cargo-deb/blob/v3.8.0/src/parse/manifest.rs#L82-L99):
+  the first `-` becomes `~` only when its suffix contains both a digit and a
+  nondigit. Thus `rc.1` becomes `~rc.1`, while `alpha` and `1` keep their hyphen;
+  the packager includes build metadata in that suffix check. Use a numbered
+  prerelease such as `rc.1` for Debian ordering before the final release.
+  A legitimate Debian revision is permitted and required when the upstream
+  string retains hyphens (for example `1.0.0-alpha-1`). Epochs are refused.
   `dpkg --compare-versions` checks against the actual installed package, and
   `--refuse-downgrade --skip-same-version` enforce policy again under dpkg's own
   lock if another package manager races the preflight.
