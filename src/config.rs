@@ -158,6 +158,9 @@ impl PullStrategy {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// A failed load must never turn into an overwrite with default settings.
+    #[serde(skip)]
+    pub load_error: Option<String>,
     #[serde(default)]
     pub shortcuts: crate::commands::Shortcuts,
     #[serde(default)]
@@ -258,12 +261,27 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        Self::try_load().unwrap_or_else(|_| toml::from_str("").unwrap_or_default())
+        Self::load_from(&config_path())
+    }
+
+    fn load_from(path: &Path) -> Self {
+        Self::try_load_from(path).unwrap_or_else(|error| {
+            let mut defaults: Self = toml::from_str("").unwrap_or_default();
+            defaults.load_error = Some(format!(
+                "{error} Your existing file is preserved; settings will not be saved. Repair {} and restart Recorde.",
+                path.display()
+            ));
+            defaults
+        })
     }
 
     /// Authentication must not silently ignore a corrupt account binding.
     pub fn try_load() -> Result<Self, String> {
-        match std::fs::read_to_string(config_path()) {
+        Self::try_load_from(&config_path())
+    }
+
+    fn try_load_from(path: &Path) -> Result<Self, String> {
+        match std::fs::read_to_string(path) {
             Ok(content) => toml::from_str(&content).map_err(|_| {
                 "Application configuration is invalid; account selection cannot be resolved.".into()
             }),
@@ -281,8 +299,16 @@ impl Config {
     }
 
     pub fn try_save(&self) -> Result<(), String> {
+        self.try_save_to(&config_path())
+    }
+
+    fn try_save_to(&self, path: &Path) -> Result<(), String> {
         use std::io::Write;
-        let path = config_path();
+        if let Some(error) = &self.load_error {
+            return Err(error.clone());
+        }
+        // Also protect a file edited into an invalid state after startup.
+        Self::try_load_from(path)?;
         let parent = path.parent().ok_or("Invalid configuration path.")?;
         std::fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory.")?;
         let content =
@@ -294,7 +320,7 @@ impl Config {
         temp.as_file()
             .sync_all()
             .map_err(|_| "Cannot sync configuration.")?;
-        temp.persist(&path)
+        temp.persist(path)
             .map_err(|_| "Cannot replace configuration.")?;
         Ok(())
     }
@@ -359,6 +385,27 @@ fn config_path() -> PathBuf {
 #[cfg(test)]
 mod session_tests {
     use super::*;
+    #[test]
+    fn corrupt_configuration_is_preserved_across_load_and_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "favorites = [\"important\"]\n[shortcuts\n";
+        std::fs::write(&path, original).unwrap();
+        let mut config = Config::load_from(&path);
+        assert!(config.load_error.is_some());
+        config.dark_theme = false;
+        assert!(config.try_save_to(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        std::fs::write(&path, "favorites = [\"important\"]\n").unwrap();
+        // Restart/reload is required to avoid overwriting repaired data with defaults.
+        assert!(config.try_save_to(&path).is_err());
+        let config = Config::load_from(&path);
+        config.try_save_to(&path).unwrap();
+        assert_eq!(Config::try_load_from(&path).unwrap().favorites, vec![PathBuf::from("important")]);
+        std::fs::write(&path, original).unwrap();
+        assert!(config.try_save_to(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
     #[test]
     fn navigation_round_trip_restores_selection_and_drops_stale_refs() {
         let repo = crate::git::test_support::TestRepo::new();

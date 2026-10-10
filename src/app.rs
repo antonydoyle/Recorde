@@ -1315,6 +1315,10 @@ impl RecordeApp {
     }
 
     fn render_app_settings(&mut self, ui: &mut egui::Ui) {
+        if let Some(error) = &self.config.load_error {
+            ui.colored_label(theme::accent_red(), error);
+            ui.separator();
+        }
         ui.add_space(8.0);
         ui.label(
             RichText::new("Default editor")
