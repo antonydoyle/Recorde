@@ -21,15 +21,15 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 function Read-MsiProperty([string]$file, [string]$property) {
     $database = $installer.OpenDatabase($file, 0)
     $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$property'")
-    $view.Execute()
+    [void]$view.Execute()
     $record = $view.Fetch()
     if ($null -eq $record) { throw "Missing MSI property $property" }
     $value = $record.StringData(1)
-    $view.Close()
+    [void]$view.Close()
     [void][Runtime.InteropServices.Marshal]::ReleaseComObject($record)
     [void][Runtime.InteropServices.Marshal]::ReleaseComObject($view)
     [void][Runtime.InteropServices.Marshal]::ReleaseComObject($database)
-    return $value
+    return [string]$value
 }
 function Invoke-Msi([string]$action, [string]$file, [string]$stage, [bool]$expectFailure = $false) {
     $arguments = @($action, ('"' + $file + '"'), '/qn', '/norestart', '/L*v', ('"' + "$root\$stage.log" + '"'))
