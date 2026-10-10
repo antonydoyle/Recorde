@@ -20,18 +20,22 @@ s.bind(('127.0.0.1', 0))
 s.listen()
 if sys.argv[2] == 'private': ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)
 pathlib.Path(sys.argv[1]).write_text(json.dumps({'pid': os.getpid(), 'port': s.getsockname()[1]}))
+if sys.argv[2] == 'zombie': sys.exit(0)
 time.sleep(60)
 ''')
         parent = root / 'parent.py'
-        parent.write_text('''import pathlib, subprocess, sys, time
+        parent.write_text('''import os, pathlib, subprocess, sys, time
 subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2], sys.argv[3]], start_new_session=True)
 deadline = time.monotonic() + 5
 while not pathlib.Path(sys.argv[2]).exists():
     if time.monotonic() > deadline: raise RuntimeError('Listener did not start')
     time.sleep(0.01)
 if sys.argv[3] == 'timeout': time.sleep(60)
+if sys.argv[3] == 'zombie':
+    time.sleep(0.2)
+    os._exit(0)  # Leave the exited child for the supervisor's subreaper.
 ''')
-        for mode in ('timeout', 'orphan', 'private'):
+        for mode in ('timeout', 'orphan', 'private', 'zombie'):
             marker = root / f'{mode}.json'
             logs = artifacts / mode
             before = set(logs.glob('*/result.json'))
@@ -48,9 +52,14 @@ if sys.argv[3] == 'timeout': time.sleep(60)
             assert not result['remaining_processes'] and not result['remaining_ports'], result
             process = json.loads(marker.read_text())
             recorded = json.loads(result_file.with_name('before-cleanup.json').read_text())
-            assert any(p['pid'] == process['pid'] and
-                       (p.get('port') == process['port'] or (mode == 'private' and 'inspection_error' in p))
-                       for p in recorded['ports'])
+            if mode == 'zombie':
+                assert recorded['processes'][str(process['pid'])]['state'] == 'Z'
+                assert not recorded['ports'], 'Exited children cannot retain listeners'
+                assert not Path(f'/proc/{process["pid"]}').exists(), 'Adopted zombie was not reaped'
+            else:
+                assert any(p['pid'] == process['pid'] and
+                           (p.get('port') == process['port'] or (mode == 'private' and 'inspection_error' in p))
+                           for p in recorded['ports'])
             with socket.socket() as probe:
                 assert probe.connect_ex(('127.0.0.1', process['port'])) != 0
             print(f'PASS: {mode} cleanup stopped separate-session grandchild and released its port')

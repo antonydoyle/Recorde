@@ -44,7 +44,9 @@ def descendants(snapshot):
 def ports(owned):
     sockets = {}
     unavailable = []
-    for pid in owned:
+    for pid, info in owned.items():
+        if info['state'] == 'Z':
+            continue  # Exited children have no open descriptors; reap them below.
         try:
             for fd in Path(f'/proc/{pid}/fd').iterdir():
                 try:
@@ -76,7 +78,9 @@ def stop(owned):
             handle = os.pidfd_open(pid)
             try:
                 current = processes().get(pid)
-                if current and current['start'] == info['start']:
+                # An adopted setuid child may already be a root-owned zombie.
+                # It needs waitpid, not a signal that this user cannot send.
+                if current and current['start'] == info['start'] and current['state'] != 'Z':
                     signal.pidfd_send_signal(handle, signal.SIGKILL)
             finally:
                 os.close(handle)

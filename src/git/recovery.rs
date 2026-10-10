@@ -871,6 +871,12 @@ fn restore_materialized(path: &Path, tree: &str, files: &[Vec<u8>]) -> Result<()
         .args([
             "--no-replace-objects",
             "--literal-pathspecs",
+            // Git 2.55 can skip a matching sparse-directory subtree before
+            // matching its children, even with --ignore-skip-worktree-bits.
+            // Expand this command's index in memory; --worktree with --source
+            // does not save it, and the repository's sparse config stays intact.
+            "-c",
+            "index.sparse=false",
             "restore",
             "--worktree",
             "--ignore-skip-worktree-bits",
@@ -1266,6 +1272,10 @@ mod tests {
         std::fs::create_dir_all(repo.path().join("excluded")).unwrap();
         repo.write("excluded/materialized", b"outside edit\n");
         repo.write("excluded/scratch", b"outside untracked\n");
+        let git_dir = repo.open().path().to_owned();
+        let patterns = std::fs::read(git_dir.join("info/sparse-checkout")).unwrap();
+        let config = std::fs::read(git_dir.join("config")).unwrap();
+        let worktree_config = std::fs::read(git_dir.join("config.worktree")).unwrap();
         protect(repo.path(), "Sparse discard", || {
             super::super::merge::run_git_seq(repo.path(), &["reset", "--hard", "HEAD"])
                 .map_err(|e| e.user_message())?;
@@ -1285,6 +1295,15 @@ mod tests {
             b"outside untracked\n"
         );
         assert!(!repo.path().join("excluded/absent").exists());
+        assert_eq!(
+            std::fs::read(git_dir.join("info/sparse-checkout")).unwrap(),
+            patterns
+        );
+        assert_eq!(std::fs::read(git_dir.join("config")).unwrap(), config);
+        assert_eq!(
+            std::fs::read(git_dir.join("config.worktree")).unwrap(),
+            worktree_config
+        );
         assert_eq!(
             repo.git(&["show", ":excluded/materialized"]).stdout,
             b"original\n"
