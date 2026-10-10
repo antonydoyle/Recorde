@@ -41,6 +41,8 @@ pub enum Command {
     NewTag,
     CopyCommit,
     InteractiveRebase,
+    PreviewCherryPick,
+    PreviewGraphRebase,
 }
 impl Command {
     pub const ALL: &'static [Self] = &[
@@ -81,6 +83,8 @@ impl Command {
         Self::NewTag,
         Self::CopyCommit,
         Self::InteractiveRebase,
+        Self::PreviewCherryPick,
+        Self::PreviewGraphRebase,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -121,6 +125,8 @@ impl Command {
             Self::NewTag => "NewTag",
             Self::CopyCommit => "CopyCommit",
             Self::InteractiveRebase => "InteractiveRebase",
+            Self::PreviewCherryPick => "PreviewCherryPick",
+            Self::PreviewGraphRebase => "PreviewGraphRebase",
         }
     }
     pub fn label(self) -> &'static str {
@@ -162,6 +168,8 @@ impl Command {
             Self::NewTag => "Create tag at selected commit",
             Self::CopyCommit => "Copy selected commit SHA",
             Self::InteractiveRebase => "Interactive rebase from selected commit",
+            Self::PreviewCherryPick => "Preview cherry-pick selected commit",
+            Self::PreviewGraphRebase => "Preview rebase onto selected commit",
         }
     }
     pub fn disabled_reason(self, s: &crate::state::AppState) -> Option<&'static str> {
@@ -189,7 +197,11 @@ impl Command {
         }
         if matches!(
             self,
-            Self::NewTag | Self::CopyCommit | Self::InteractiveRebase
+            Self::NewTag
+                | Self::CopyCommit
+                | Self::InteractiveRebase
+                | Self::PreviewCherryPick
+                | Self::PreviewGraphRebase
         ) && s.selected_commit.is_none()
         {
             return Some("Select a commit first");
@@ -219,6 +231,8 @@ impl Command {
                 | Self::Bisect
                 | Self::NewTag
                 | Self::InteractiveRebase
+                | Self::PreviewCherryPick
+                | Self::PreviewGraphRebase
         );
         if mutating && (!s.local_jobs.is_empty() || !s.active_ops.is_empty()) {
             return Some("Repository operation is queued or running");
@@ -245,6 +259,8 @@ impl Command {
                 | Self::Merge
                 | Self::Rebase
                 | Self::InteractiveRebase
+                | Self::PreviewCherryPick
+                | Self::PreviewGraphRebase
         ) && s.head_branch.is_none()
         {
             return Some("Check out a branch first");
@@ -283,6 +299,7 @@ impl Command {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Shortcuts(pub BTreeMap<String, Shortcut>);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Shortcut {
     pub key: String,
     pub shift: bool,
@@ -290,7 +307,12 @@ pub struct Shortcut {
 }
 impl Shortcut {
     pub fn key(&self) -> Option<Key> {
-        Key::from_name(&self.key)
+        Key::from_name(&self.key).or_else(|| {
+            Key::ALL
+                .iter()
+                .copied()
+                .find(|key| key.name().eq_ignore_ascii_case(&self.key))
+        })
     }
     /// The same validity rule applies to recording, saved overrides and dispatch.
     pub fn valid_key(&self) -> Option<Key> {
@@ -522,5 +544,16 @@ mod tests {
                 command.label()
             );
         }
+    }
+    #[test]
+    fn partial_saved_shortcuts_use_defaults_and_normalize_key_case() {
+        let shortcuts: Shortcuts = toml::from_str("[Fetch]\nkey = 'k'\nshift = true").unwrap();
+        let binding = shortcuts.get(Command::Fetch).unwrap();
+        assert_eq!(binding.key, "K");
+        assert!(!binding.alt);
+        assert_eq!(
+            shortcuts.command(Key::K, Modifiers::COMMAND | Modifiers::SHIFT),
+            Some(Command::Fetch)
+        );
     }
 }

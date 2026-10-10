@@ -818,6 +818,16 @@ impl RecordeApp {
             return;
         }
         let toolbar = match command {
+            C::PreviewCherryPick => {
+                self.commit_graph_view
+                    .preview_selected(crate::git::graph_action::Action::CherryPick);
+                None
+            }
+            C::PreviewGraphRebase => {
+                self.commit_graph_view
+                    .preview_selected(crate::git::graph_action::Action::Rebase);
+                None
+            }
             C::Palette => Some(ToolbarAction::OpenCommandPalette),
             C::Open => {
                 if let Some(path) = rfd::FileDialog::new().pick_folder() {
@@ -2831,7 +2841,9 @@ impl eframe::App for RecordeApp {
             && !self.commit_graph_view.has_pending_action()
             && {
                 let s = self.state.lock().unwrap();
-                matches!(s.modal, ModalKind::None) && s.pending_discard.is_none()
+                matches!(s.modal, ModalKind::None)
+                    && s.pending_discard.is_none()
+                    && s.repo_load_path.is_none()
             }
             && self.repo_ui.rebase_modal.is_none()
             && self.repo_ui.conflict_editor.is_none()

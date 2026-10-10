@@ -52,6 +52,7 @@ pub struct CommitGraphView {
     pending_action: Option<crate::git::graph_action::Preview>,
     viewport_anchor: Option<(String, usize, f32)>,
     interactions_enabled: bool,
+    confirmation_focus: bool,
 }
 
 impl CommitGraphView {
@@ -80,6 +81,7 @@ impl CommitGraphView {
             pending_action: None,
             viewport_anchor: None,
             interactions_enabled: true,
+            confirmation_focus: true,
         }
     }
 
@@ -96,6 +98,57 @@ impl CommitGraphView {
     pub fn cancel_action(&mut self) {
         self.drag = None;
         self.pending_action = None;
+        self.confirmation_focus = true;
+    }
+
+    /// Keyboard equivalent of dropping a selected row onto HEAD, or dragging
+    /// the current branch onto that row. Uses exactly the same preview and queue.
+    pub fn preview_selected(&mut self, action: crate::git::graph_action::Action) {
+        use crate::git::graph_action::{Action, Endpoint, Preview};
+        let (path, epoch, oid, head, branch) = {
+            let s = self.state.lock().unwrap();
+            (
+                s.repo_path.clone(),
+                s.repo_epoch,
+                s.selected_commit.clone(),
+                s.commit_graph.as_ref().and_then(|g| g.head_oid.clone()),
+                s.head_branch.clone(),
+            )
+        };
+        let (Some(path), Some(oid), Some(head), Some(branch)) = (path, oid, head, branch) else {
+            return;
+        };
+        let selected = Endpoint {
+            oid,
+            reference: None,
+        };
+        let current = Endpoint {
+            oid: head,
+            reference: Some(format!("refs/heads/{branch}")),
+        };
+        let (source, destination) = if action == Action::Rebase {
+            (current, selected)
+        } else {
+            (selected, current)
+        };
+        let result = Preview::capture(&path, epoch, source, destination).and_then(|mut preview| {
+            if !preview.allows(action) {
+                return Err(
+                    "This commit cannot be cherry-picked without choosing a mainline parent."
+                        .into(),
+                );
+            }
+            preview.action = action;
+            preview.validate(&path)?;
+            Ok(preview)
+        });
+        match result {
+            Ok(preview) => {
+                self.pending_action = Some(preview);
+                self.confirmation_focus = true;
+            }
+            Err(error) => self.state.lock().unwrap().error = Some(error),
+        }
     }
 
     /// Called by the app after all panels so confirmation remains visible even
@@ -108,12 +161,10 @@ impl CommitGraphView {
         let current = {
             let s = self.state.lock().unwrap();
             s.repo_epoch == preview.epoch
-                && s.repo_path
-                    .as_ref()
-                    .and_then(|p| p.canonicalize().ok())
-                    .as_ref()
-                    == Some(&preview.path)
+                && s.repo_path.as_ref() == Some(&preview.path)
                 && matches!(s.modal, crate::state::ModalKind::None)
+                && s.pending_discard.is_none()
+                && s.repo_load_path.is_none()
         };
         if !current {
             self.cancel_action();
@@ -130,7 +181,9 @@ impl CommitGraphView {
             .order(egui::Order::Foreground)
             .fixed_pos(ctx.screen_rect().min)
             .show(ctx, |ui| {
-                ui.allocate_rect(ctx.screen_rect(), Sense::click_and_drag());
+                let mut sense = Sense::click_and_drag();
+                sense.focusable = false;
+                ui.allocate_rect(ctx.screen_rect(), sense);
             });
         let window = egui::Window::new("Confirm graph operation").order(egui::Order::Foreground).collapsible(false).resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
@@ -145,12 +198,16 @@ impl CommitGraphView {
                 });
                 ui.strong(preview.description());
                 ui.label(format!("Expected HEAD: {} ({})", preview.head_ref, &preview.head_oid[..7]));
+                if preview.source_is_merge { ui.label("Cherry-picking merge commits requires choosing a mainline parent; use Git for that operation."); }
+                ui.label("Branch protection prevents history rewriting by graph rebase; merges and cherry-picks remain available.");
                 if preview.action == Action::Rebase { ui.colored_label(theme::accent_orange(), "Rebase rewrites commits on the current branch."); }
                 ui.label("A recovery snapshot preserves staged, unstaged and untracked work. Git may refuse if changes would be overwritten. Conflicts use the existing Continue / Abort controls. Repository, HEAD and both targets are checked again when the queued operation starts.");
                 ui.horizontal(|ui| {
                     confirm = ui.add_enabled(!protected, Button::new(format!("Confirm {}", preview.action.label()))).clicked();
                     if protected { ui.label("Protected branch: graph rebase is disabled"); }
-                    cancel = ui.button("Cancel").clicked();
+                    let cancel_button = ui.button("Cancel");
+                    if self.confirmation_focus { cancel_button.request_focus(); self.confirmation_focus = false; }
+                    cancel = cancel_button.clicked();
                 });
                 cancel |= ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
             });
@@ -159,6 +216,7 @@ impl CommitGraphView {
         }
         if confirm {
             self.pending_action = None;
+            self.confirmation_focus = true;
             preview.submit(self.state.clone());
         } else if cancel {
             self.cancel_action();
@@ -747,10 +805,12 @@ impl CommitGraphView {
                         row_resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, is_sel, format!("Commit {} by {}, {}. Drag onto HEAD to cherry-pick.", node.summary, node.author, node.oid)));
                         if row_resp.has_focus() { painter.rect_stroke(row_rect.shrink(1.0), 0.0, Stroke::new(1.5, theme::accent_blue())); }
                         if row_resp.drag_started() && self.pending_action.is_none() {
-                            let s = self.state.lock().unwrap();
+                            let mut s = self.state.lock().unwrap();
                             if matches!(s.modal, crate::state::ModalKind::None) {
                                 if let Some(path) = &s.repo_path {
-                                    self.drag = crate::git::graph_action::Drag::capture(path, s.repo_epoch, crate::git::graph_action::Endpoint { oid: node.oid.clone(), reference: None }).ok();
+                                    match crate::git::graph_action::Drag::capture(path, s.repo_epoch, crate::git::graph_action::Endpoint { oid: node.oid.clone(), reference: None }) {
+                                        Ok(drag) => self.drag = Some(drag), Err(error) => s.error = Some(error),
+                                    }
                                 }
                             }
                         }
@@ -853,9 +913,9 @@ impl CommitGraphView {
                                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Branch {reference}. Drag onto HEAD to merge; drag HEAD onto another commit to rebase.")));
                                 if response.has_focus() { painter.rect_stroke(rect.expand(2.0), 4.0, Stroke::new(1.5, theme::accent_blue())); }
                                 if response.drag_started() && self.pending_action.is_none() {
-                                    let s = self.state.lock().unwrap();
+                                    let mut s = self.state.lock().unwrap();
                                     if matches!(s.modal, crate::state::ModalKind::None) {
-                                        if let Some(path) = &s.repo_path { self.drag = crate::git::graph_action::Drag::capture(path, s.repo_epoch, crate::git::graph_action::Endpoint { oid: node.oid.clone(), reference: Some(reference.clone()) }).ok(); }
+                                        if let Some(path) = &s.repo_path { match crate::git::graph_action::Drag::capture(path, s.repo_epoch, crate::git::graph_action::Endpoint { oid: node.oid.clone(), reference: Some(reference.clone()) }) { Ok(drag) => self.drag = Some(drag), Err(error) => s.error = Some(error) } }
                                     }
                                 }
                                 // Keyboard equivalent for dragging this branch onto HEAD.
@@ -1339,6 +1399,7 @@ mod interaction_tests {
                 events,
                 ..Default::default()
             });
+            view.set_interactions_enabled(!view.has_pending_action());
             egui::CentralPanel::default().show(&ctx, |ui| view.show(ui));
             view.show_action_confirmation(&ctx, &[]);
             ctx.end_frame()
@@ -1390,5 +1451,57 @@ mod interaction_tests {
         );
         assert!(view.pending_action.is_none());
         assert_eq!(repo.head(), base);
+
+        // Keyboard invocation uses the same guarded preview and takes focus on
+        // Cancel, so Enter cannot activate whichever background widget had focus.
+        state.lock().unwrap().selected_commit = Some(topic.to_string());
+        view.preview_selected(crate::git::graph_action::Action::CherryPick);
+        let _ = frame(&mut view, vec![]);
+        let _ = frame(
+            &mut view,
+            vec![egui::Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(view.pending_action.is_none());
+        assert_eq!(repo.head(), base);
+
+        // Clicking the shield must not lift it above the window and prevent
+        // subsequent clicks on dialog buttons.
+        view.preview_selected(crate::git::graph_action::Action::CherryPick);
+        let _ = frame(&mut view, vec![]);
+        let outside = Pos2::new(5.0, 5.0);
+        let _ = frame(
+            &mut view,
+            vec![egui::Event::PointerMoved(outside), button(outside, true)],
+        );
+        let output = frame(&mut view, vec![button(outside, false)]);
+        assert!(view.pending_action.is_some());
+        let cancel = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Cancel" => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+            .expect("confirmation renders Cancel");
+        let _ = frame(
+            &mut view,
+            vec![egui::Event::PointerMoved(cancel), button(cancel, true)],
+        );
+        let _ = frame(&mut view, vec![button(cancel, false)]);
+        assert!(view.pending_action.is_none());
+        assert_eq!(repo.head(), base);
+
+        view.preview_selected(crate::git::graph_action::Action::CherryPick);
+        state.lock().unwrap().pending_discard = Some(crate::state::PendingDiscard::ResetHard);
+        let _ = frame(&mut view, vec![]);
+        assert!(view.pending_action.is_none());
     }
 }

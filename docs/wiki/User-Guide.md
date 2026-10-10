@@ -142,7 +142,7 @@ Drag a commit row onto the checked-out branch's HEAD row to preview cherry-picki
 
 The current branch is the only branch these gestures modify. A changed repository, branch tip, or HEAD invalidates the operation, including changes while dragging or waiting in the queue. Rebasing a configured protected branch is disabled. Graph rebase also refuses replay ranges containing merge commits, so topology and recorded resolutions cannot be silently flattened. Recovery snapshots preserve staged, unstaged, and untracked work; Git may refuse the operation when local changes would be overwritten. Conflicts use the normal Continue and Abort controls.
 
-Branch labels are focusable: activate one to open a merge preview into HEAD. The command palette also provides Merge branch, Rebase current branch, and Interactive rebase from selected commit for keyboard access. Existing context menus remain available.
+Branch labels are focusable: activate one to open a merge preview into HEAD. The command palette also provides Preview cherry-pick selected commit and Preview rebase onto selected commit, using the same guarded confirmation as dragging. Merge branch, Rebase current branch, and Interactive rebase from selected commit remain available. Existing context menus remain available.
 
 ## Commands and keyboard preferences
 

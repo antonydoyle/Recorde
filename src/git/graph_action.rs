@@ -93,6 +93,7 @@ pub struct Preview {
     pub destination: Endpoint,
     pub action: Action,
     pub protected_branches: Vec<String>,
+    pub source_is_merge: bool,
 }
 impl Preview {
     pub fn capture(
@@ -117,6 +118,11 @@ impl Preview {
                 .map_err(|e| e.to_string())?
                 .id()
                 .to_string(),
+            source_is_merge: repo
+                .find_commit(git2::Oid::from_str(&source.oid).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?
+                .parent_count()
+                > 1,
             source,
             destination,
             action: Action::Merge,
@@ -124,13 +130,16 @@ impl Preview {
         };
         if result.source.reference.as_deref() == Some(&result.head_ref) {
             result.action = Action::Rebase;
-        } else if result.source.reference.is_none() {
+        } else if result.source.reference.is_none() && !result.source_is_merge {
             result.action = Action::CherryPick;
         }
         result.validate(&result.path)?;
         Ok(result)
     }
     pub fn allows(&self, action: Action) -> bool {
+        if action == Action::CherryPick && self.source_is_merge {
+            return false;
+        }
         if action == Action::Rebase {
             self.source.reference.as_deref() == Some(&self.head_ref)
                 && self.destination.oid != self.head_oid
@@ -212,9 +221,27 @@ impl Preview {
                 Action::Rebase => ("rebase", &self.destination.oid),
                 Action::CherryPick => ("cherry-pick", &self.source.oid),
             };
+            let merge_message = self.source.reference.as_ref().map(|name| {
+                format!(
+                    "Merge branch '{}'",
+                    name.strip_prefix("refs/heads/")
+                        .or_else(|| name.strip_prefix("refs/remotes/"))
+                        .unwrap_or(name)
+                )
+            });
             let args: Vec<&str> = match self.action {
-                Action::Merge => vec![verb, "--no-edit", "--", oid],
-                Action::Rebase => vec![verb, "--no-autostash", "--", oid],
+                Action::Merge => match &merge_message {
+                    Some(message) => vec![verb, "--no-edit", "-m", message, "--", oid],
+                    None => vec![verb, "--no-edit", "--", oid],
+                },
+                Action::Rebase => vec![
+                    "-c",
+                    "rebase.updateRefs=false",
+                    verb,
+                    "--no-autostash",
+                    "--",
+                    oid,
+                ],
                 Action::CherryPick => vec![verb, "--", oid],
             };
             super::merge::run_git_seq(path, &args).map_err(|e| e.user_message())
@@ -433,5 +460,62 @@ mod tests {
                 .parent_count(),
             2
         );
+    }
+    #[test]
+    fn graph_rebase_never_updates_other_refs_even_when_git_config_enables_it() {
+        let repo = TestRepo::new();
+        repo.commit("base", b"base");
+        repo.git_ok(&["checkout", "-b", "upstream"]);
+        let onto = repo.commit("upstream", b"upstream");
+        repo.git_ok(&["checkout", "main"]);
+        let saved = repo.commit("first", b"first");
+        repo.git_ok(&["branch", "keep"]);
+        let head = repo.commit("second", b"second");
+        repo.git_ok(&["config", "rebase.updateRefs", "true"]);
+        let preview = Preview::capture(
+            repo.path(),
+            0,
+            Endpoint {
+                oid: head.to_string(),
+                reference: Some("refs/heads/main".into()),
+            },
+            Endpoint {
+                oid: onto.to_string(),
+                reference: Some("refs/heads/upstream".into()),
+            },
+        )
+        .unwrap();
+        preview.execute(repo.path()).unwrap();
+        assert_ne!(repo.head(), head);
+        assert_eq!(repo.open().refname_to_id("refs/heads/keep").unwrap(), saved);
+    }
+    #[test]
+    fn merge_commit_cannot_be_cherry_picked_without_mainline_choice() {
+        let repo = TestRepo::new();
+        let base = repo.commit("base", b"base");
+        repo.git_ok(&["checkout", "-b", "side"]);
+        repo.commit("side", b"side");
+        repo.git_ok(&["checkout", "main"]);
+        repo.commit("main", b"main");
+        repo.git_ok(&["merge", "--no-ff", "--no-edit", "side"]);
+        let merge = repo.head();
+        repo.git_ok(&["checkout", "-b", "destination", &base.to_string()]);
+        let mut preview = Preview::capture(
+            repo.path(),
+            0,
+            Endpoint {
+                oid: merge.to_string(),
+                reference: None,
+            },
+            Endpoint {
+                oid: base.to_string(),
+                reference: Some("refs/heads/destination".into()),
+            },
+        )
+        .unwrap();
+        assert!(!preview.allows(Action::CherryPick));
+        preview.action = Action::CherryPick;
+        assert!(preview.execute(repo.path()).is_err());
+        assert_eq!(repo.head(), base);
     }
 }
