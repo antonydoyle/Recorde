@@ -105,6 +105,9 @@ jobs:
       - name: LFS round trip
         if: runner.os == 'Linux'
         run: python3 scripts/linux_task.py --purpose 'CI LFS round trip' --artifacts "$RUNNER_TEMP/process-safety" --timeout 300 -- cargo test --locked --lib lfs_stage_push_clone_round_trip -- --ignored
+      - name: Authenticated LFS HTTP and failed downloads
+        if: runner.os == 'Linux'
+        run: python3 scripts/linux_task.py --purpose 'CI LFS network failures' --artifacts "$RUNNER_TEMP/process-safety" --timeout 300 -- cargo test --locked --lib authenticated_lfs_http_round_trip_and_failed_downloads -- --ignored
       - name: SSH commit signing round trip
         if: runner.os == 'Linux'
         run: python3 scripts/linux_task.py --purpose 'CI SSH signing' --artifacts "$RUNNER_TEMP/process-safety" --timeout 300 -- cargo test --locked --lib ssh_signed_commit_verifies_with_disposable_key -- --ignored
@@ -112,7 +115,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($fixture in @('lfs_stage_push_clone_round_trip', 'ssh_signed_commit_verifies_with_disposable_key', 'native_vault_round_trip')) {
+          foreach ($fixture in @('lfs_stage_push_clone_round_trip', 'authenticated_lfs_http_round_trip_and_failed_downloads', 'ssh_signed_commit_verifies_with_disposable_key', 'native_vault_round_trip')) {
             ./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--lib', $fixture, '--', '--ignored') -Purpose "CI $fixture" -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 300
           }
       - name: Windows GUI startup
