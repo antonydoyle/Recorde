@@ -57,6 +57,23 @@ pub struct CommitGraph {
     pub tag_names: std::collections::HashSet<String>,
 }
 
+// Native ancestry operators must use the same replacement-aware graph as rev-list.
+fn resolve_range_endpoint(
+    repo: &git2::Repository,
+    revision: &str,
+) -> Result<git2::Oid, git2::Error> {
+    let revision = format!("{revision}^{{commit}}");
+    let output = super::process::git(
+        repo.path(),
+        &["rev-parse", "--verify", "--end-of-options", &revision],
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .map_err(|error| git2::Error::from_str(&error.user_message()))?;
+    let text = std::str::from_utf8(&output.stdout)
+        .map_err(|_| git2::Error::from_str("Git returned a non-UTF-8 range endpoint."))?;
+    git2::Oid::from_str(text.trim())
+}
+
 impl CommitGraph {
     pub fn from_repo(repo: &git2::Repository) -> Result<Self, git2::Error> {
         Self::from_repo_limit(repo, usize::MAX)
@@ -116,8 +133,13 @@ impl CommitGraph {
             .and_then(|h| h.peel_to_commit().ok())
             .map(|c| c.id());
         if let Some((start, end)) = &filter.range {
-            roots.push(repo.revparse_single(end)?.peel_to_commit()?.id());
-            hidden.push(repo.revparse_single(start)?.peel_to_commit()?.id());
+            roots.push(resolve_range_endpoint(repo, end)?);
+            hidden.push(resolve_range_endpoint(repo, start)?);
+            if super::replacement::refs(repo)? != replacements {
+                return Err(git2::Error::from_str(
+                    "Replacement refs changed; reload history.",
+                ));
+            }
         } else if let Some(solo) = &filter.solo_ref {
             roots.push(repo.find_reference(solo)?.peel_to_commit()?.id());
         } else if head_only || repo.head_detached().unwrap_or(false) {
@@ -133,7 +155,8 @@ impl CommitGraph {
             })
             .and_then(|g| g.cursor.as_ref())
             .filter(|cursor| {
-                cursor.path == repo.path()
+                !cursor.has_failed()
+                    && cursor.path == repo.path()
                     && cursor.roots == roots
                     && cursor.hidden == hidden
                     && cursor.replacements == replacements
@@ -146,6 +169,7 @@ impl CommitGraph {
                     repo.path().to_path_buf(),
                     roots,
                     hidden,
+                    replacements.clone(),
                 ))
             });
         let ids = cursor.read(limit.saturating_add(1))?;
@@ -600,6 +624,121 @@ mod tests {
             CommitGraph::from_repo_page(&repo, 10, &GraphFilter::default(), true, Some(&effective))
                 .unwrap();
         assert_eq!(restored.nodes.len(), 3);
+    }
+
+    #[test]
+    fn replacement_ranges_resolve_both_ancestry_endpoints_like_native_git() {
+        let fixture = TestRepo::new();
+        let base = fixture.commit("file", b"base");
+        fixture.commit("file", b"middle");
+        let head = fixture.commit("file", b"head");
+        let repo = fixture.open();
+        let signature = repo.signature().unwrap();
+        let tree = repo.find_commit(head).unwrap().tree().unwrap();
+        let base_commit = repo.find_commit(base).unwrap();
+        let parent = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "effective parent",
+                &tree,
+                &[&base_commit],
+            )
+            .unwrap();
+        let replacement = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "effective merge",
+                &tree,
+                &[&repo.find_commit(parent).unwrap(), &base_commit],
+            )
+            .unwrap();
+        repo.reference(
+            &format!("refs/replace/{head}"),
+            replacement,
+            true,
+            "fixture",
+        )
+        .unwrap();
+        let index = std::fs::read(repo.path().join("index")).unwrap();
+        for (start, end, expected) in [
+            ("main~1".to_string(), "main", vec![head]),
+            (base.to_string(), "main^", vec![parent]),
+            ("main^2".to_string(), "main", vec![head, parent]),
+        ] {
+            let native = fixture.git(&["rev-list", &format!("{start}..{end}")]);
+            assert!(
+                native.status.success(),
+                "{}",
+                String::from_utf8_lossy(&native.stderr)
+            );
+            let native: std::collections::BTreeSet<_> = String::from_utf8(native.stdout)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            let graph = CommitGraph::from_repo_filtered(
+                &repo,
+                10,
+                &GraphFilter {
+                    range: Some((start, end.into())),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+            let actual: std::collections::BTreeSet<_> =
+                graph.nodes.iter().map(|node| node.oid.clone()).collect();
+            assert_eq!(actual, native);
+            assert_eq!(
+                actual,
+                expected.into_iter().map(|id| id.to_string()).collect()
+            );
+        }
+        assert!(resolve_range_endpoint(&repo, "--show-object-format").is_err());
+        assert_eq!(std::fs::read(repo.path().join("index")).unwrap(), index);
+        assert_eq!(fixture.head(), head);
+        assert_eq!(std::fs::read(fixture.path().join("file")).unwrap(), b"head");
+    }
+
+    #[test]
+    fn failed_history_cursor_is_recreated_without_moving_refs() {
+        let fixture = TestRepo::new();
+        for value in 0..5 {
+            fixture.commit("file", value.to_string().as_bytes());
+        }
+        let repo = fixture.open();
+        let first = CommitGraph::from_repo_limit(&repo, 1).unwrap();
+        let index = std::fs::read(repo.path().join("index")).unwrap();
+        // A temporary local configuration error makes native rev-list fail.
+        repo.config()
+            .unwrap()
+            .set_str("core.abbrev", "not-a-number")
+            .unwrap();
+        assert!(CommitGraph::from_repo_page(
+            &repo,
+            10,
+            &GraphFilter::default(),
+            false,
+            Some(&first)
+        )
+        .is_err());
+        assert!(first.cursor.as_ref().unwrap().has_failed());
+        repo.config().unwrap().remove("core.abbrev").unwrap();
+        let retried =
+            CommitGraph::from_repo_page(&repo, 10, &GraphFilter::default(), false, Some(&first))
+                .unwrap();
+        assert_eq!(retried.nodes.len(), 5);
+        assert_eq!(retried.ref_targets, first.ref_targets);
+        assert_eq!(retried.head_oid, first.head_oid);
+        assert!(!std::sync::Arc::ptr_eq(
+            first.cursor.as_ref().unwrap(),
+            retried.cursor.as_ref().unwrap()
+        ));
+        assert_eq!(std::fs::read(repo.path().join("index")).unwrap(), index);
     }
 
     #[test]

@@ -1,5 +1,8 @@
 //! Bounded native traversal with fixed roots and a retained page cache.
-use std::sync::{mpsc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Mutex,
+};
 
 type Request = (usize, mpsc::Sender<Result<Vec<git2::Oid>, String>>);
 
@@ -9,6 +12,7 @@ pub(super) struct Cursor {
     pub hidden: Vec<git2::Oid>,
     pub accelerated: bool,
     pub replacements: std::collections::BTreeMap<git2::Oid, git2::Oid>,
+    failed: AtomicBool,
     sender: Mutex<Option<mpsc::Sender<Request>>>,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -39,11 +43,13 @@ impl Cursor {
                     .is_file())
     }
 
-    pub fn new(path: std::path::PathBuf, roots: Vec<git2::Oid>, hidden: Vec<git2::Oid>) -> Self {
+    pub fn new(
+        path: std::path::PathBuf,
+        roots: Vec<git2::Oid>,
+        hidden: Vec<git2::Oid>,
+        replacements: std::collections::BTreeMap<git2::Oid, git2::Oid>,
+    ) -> Self {
         let accelerated = git2::Repository::open(&path).is_ok_and(|r| Self::can_accelerate(&r));
-        let replacements = git2::Repository::open(&path)
-            .and_then(|r| super::replacement::refs(&r))
-            .unwrap_or_default();
         let worker_replacements = replacements.clone();
         let (sender, receiver) = mpsc::channel::<Request>();
         let worker_roots = roots.clone();
@@ -73,24 +79,35 @@ impl Cursor {
             hidden,
             accelerated,
             replacements,
+            failed: AtomicBool::new(false),
             sender: Mutex::new(Some(sender)),
             worker: Mutex::new(Some(worker)),
         }
     }
 
+    pub fn has_failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+
     pub fn read(&self, count: usize) -> Result<Vec<git2::Oid>, git2::Error> {
-        let (reply, response) = mpsc::channel();
-        self.sender
-            .lock()
-            .unwrap()
-            .as_ref()
-            .ok_or_else(|| git2::Error::from_str("History cursor closed"))?
-            .send((count, reply))
-            .map_err(|_| git2::Error::from_str("History worker stopped"))?;
-        response
-            .recv()
-            .map_err(|_| git2::Error::from_str("History worker stopped"))?
-            .map_err(|e| git2::Error::from_str(&e))
+        let result = (|| {
+            let (reply, response) = mpsc::channel();
+            self.sender
+                .lock()
+                .unwrap()
+                .as_ref()
+                .ok_or_else(|| git2::Error::from_str("History cursor closed"))?
+                .send((count, reply))
+                .map_err(|_| git2::Error::from_str("History worker stopped"))?;
+            response
+                .recv()
+                .map_err(|_| git2::Error::from_str("History worker stopped"))?
+                .map_err(|e| git2::Error::from_str(&e))
+        })();
+        if result.is_err() {
+            self.failed.store(true, Ordering::Release);
+        }
+        result
     }
 }
 
@@ -234,5 +251,44 @@ impl Drop for Cursor {
         if let Some(worker) = self.worker.get_mut().unwrap().take() {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cursor_retains_the_callers_replacement_witness() {
+        let fixture = crate::git::test_support::TestRepo::new();
+        let head = fixture.commit("file", b"head");
+        let repo = fixture.open();
+        let signature = repo.signature().unwrap();
+        let replacement = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "replacement",
+                &repo.find_commit(head).unwrap().tree().unwrap(),
+                &[],
+            )
+            .unwrap();
+        // The view captured its empty replacement map before another process
+        // installed this ref. A cursor must reject, not silently recapture it.
+        repo.reference(
+            &format!("refs/replace/{head}"),
+            replacement,
+            true,
+            "fixture",
+        )
+        .unwrap();
+        let cursor = super::Cursor::new(repo.path().into(), vec![head], vec![], Default::default());
+        assert!(cursor
+            .read(2)
+            .unwrap_err()
+            .message()
+            .contains("Replacement refs changed"));
+        assert!(cursor.has_failed());
+        assert_eq!(fixture.head(), head);
+        assert_eq!(fixture.index_bytes("file"), b"head");
     }
 }
