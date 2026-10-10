@@ -1,0 +1,18 @@
+[package]
+name = "recorde-update-installer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+recorde-update-signing = { path = "../update-signing" }
+fs2 = "0.4"
+libc = "0.2"
+rustix = { version = "1", features = ["fs"] }
+semver = "1"
+serde_json = "1"
+tempfile = "3"
+
+[build-dependencies]
+toml = "0.8"
+
