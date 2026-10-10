@@ -324,6 +324,12 @@ jobs:
     needs: [validate-tag, validate-code, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: Build update signer before exposing its key
+        run: cargo build --manifest-path tools/update-signing/Cargo.toml --locked --release
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: dist
@@ -336,6 +342,12 @@ jobs:
       - name: Generate checksums
         working-directory: dist
         run: sha256sum -- *.tar.gz *.zip *.deb *.msi *.AppImage *.dmg *.exe recorde-*-linux-x86_64 > SHA256SUMS
+
+      - name: Sign and verify authenticated updates
+        env:
+          RECORDE_UPDATE_SIGNING_KEY: ${{ secrets.RECORDE_UPDATE_SIGNING_KEY }}
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: python3 scripts/sign_release_updates.py --signer tools/update-signing/target/release/recorde-update-signing --keys packaging/update-keys.json --key-id recorde-2026-01 --version "$VERSION" --artifacts dist
 
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
@@ -352,4 +364,5 @@ jobs:
             dist/*.dmg
             dist/*.exe
             dist/recorde-*-linux-x86_64
+            dist/recorde-update-*.json
             dist/SHA256SUMS
