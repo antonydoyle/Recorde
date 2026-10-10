@@ -320,74 +320,188 @@ pub(super) fn fixture_dir() -> tempfile::TempDir {
     }
 }
 
-/// Give test files a deterministic ACL instead of inheriting the runner's Temp ACL.
-/// This only changes fresh, empty fixture directories, never production paths.
-#[cfg(all(test, windows))]
-fn fixture_acl(path: &Path, allow_everyone: bool) {
-    use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+struct WindowsDescriptor(windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
+#[cfg(windows)]
+impl Drop for WindowsDescriptor {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::LocalFree(self.0) };
+    }
+}
+
+#[cfg(windows)]
+fn windows_directory_descriptor(extra_aces: &str) -> Result<WindowsDescriptor, String> {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, LocalFree},
         Security::{
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             },
-            GetTokenInformation, SetFileSecurityW, TokenUser, DACL_SECURITY_INFORMATION,
-            OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY,
-            TOKEN_USER,
+            GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
         },
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
     unsafe {
         let mut token = std::ptr::null_mut();
-        assert_ne!(
-            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token),
-            0
-        );
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err("Cannot identify the update storage owner.".into());
+        }
         let mut size = 0;
         GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
         let mut data = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
         let read = GetTokenInformation(token, TokenUser, data.as_mut_ptr().cast(), size, &mut size);
         CloseHandle(token);
-        assert_ne!(read, 0);
+        if read == 0 {
+            return Err("Cannot read the update storage owner.".into());
+        }
         let sid = (*(data.as_ptr().cast::<TOKEN_USER>())).User.Sid;
         let mut sid_text = std::ptr::null_mut();
-        assert_ne!(ConvertSidToStringSidW(sid, &mut sid_text), 0);
+        if ConvertSidToStringSidW(sid, &mut sid_text) == 0 {
+            return Err("Cannot encode the update storage owner.".into());
+        }
         let mut len = 0;
         while *sid_text.add(len) != 0 {
             len += 1;
         }
         let sid_string = String::from_utf16_lossy(std::slice::from_raw_parts(sid_text, len));
         LocalFree(sid_text.cast());
-        let extra = if allow_everyone {
-            "(A;OICI;FA;;;WD)"
-        } else {
-            ""
-        };
-        let sddl: Vec<u16> = format!("O:{sid_string}D:P(A;OICI;FA;;;{sid_string}){extra}")
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+        let sddl: Vec<u16> = format!(
+            "O:{sid_string}D:P(A;OICI;FA;;;{sid_string})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA){extra_aces}"
+        )
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
         let mut descriptor = std::ptr::null_mut();
-        assert_ne!(
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                sddl.as_ptr(),
-                1,
-                &mut descriptor,
-                std::ptr::null_mut()
-            ),
-            0
-        );
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        let applied = SetFileSecurityW(
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            return Err("Cannot construct private update storage permissions.".into());
+        }
+        Ok(WindowsDescriptor(descriptor))
+    }
+}
+
+/// Create with a protected ACL in the creation syscall. Never repair permissions
+/// on an existing directory or treat its untrusted state as a fresh checkpoint.
+#[cfg(windows)]
+pub fn create_private_directory(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
+        Security::SECURITY_ATTRIBUTES,
+        Storage::FileSystem::CreateDirectoryW,
+    };
+    if !path.is_absolute() {
+        return Err("Update storage path must be absolute.".into());
+    }
+    for ancestor in path.ancestors() {
+        reject_link(ancestor)?;
+    }
+    if let Some(parent) = path.parent() {
+        if !parent
+            .try_exists()
+            .map_err(|_| "Cannot inspect update storage parent.")?
+        {
+            create_private_directory(parent)?;
+        }
+    }
+    let descriptor = windows_directory_descriptor("")?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe { CreateDirectoryW(wide.as_ptr(), &attributes) } == 0
+        && unsafe { GetLastError() } != ERROR_ALREADY_EXISTS
+    {
+        return Err("Cannot create private update storage.".into());
+    }
+    owned_directory(path)
+        .map_err(|error| format!("{error} Existing update storage was left unchanged."))
+}
+
+/// Only changes fresh, empty test directories; never production paths.
+#[cfg(all(test, windows))]
+fn fixture_acl(path: &Path, allow_everyone: bool) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Security::{
+        SetFileSecurityW, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    let descriptor = windows_directory_descriptor(if allow_everyone {
+        "(A;OICI;FA;;;WD)"
+    } else {
+        ""
+    })
+    .unwrap();
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let applied = unsafe {
+        SetFileSecurityW(
             wide.as_ptr(),
             OWNER_SECURITY_INFORMATION
                 | DACL_SECURITY_INFORMATION
                 | PROTECTED_DACL_SECURITY_INFORMATION,
-            descriptor,
+            descriptor.0,
+        )
+    };
+    assert_ne!(applied, 0, "Cannot set the fixture directory ACL.");
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn private_creation_excludes_writable_parent_acl_and_preserves_existing_unsafe_state() {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Security::{
+        GetFileSecurityW, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    };
+    fn snapshot(path: &Path) -> Vec<u8> {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let flags = DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION;
+        let mut size = 0;
+        unsafe { GetFileSecurityW(wide.as_ptr(), flags, std::ptr::null_mut(), 0, &mut size) };
+        let mut bytes = vec![0u8; size as usize];
+        assert_ne!(
+            unsafe {
+                GetFileSecurityW(
+                    wide.as_ptr(),
+                    flags,
+                    bytes.as_mut_ptr().cast(),
+                    size,
+                    &mut size,
+                )
+            },
+            0
         );
-        LocalFree(descriptor);
-        assert_ne!(applied, 0, "Cannot set the fixture directory ACL.");
+        bytes
     }
+    let directory = fixture_dir();
+    fixture_acl(directory.path(), true);
+    let parent_acl = snapshot(directory.path());
+    let private = directory.path().join("recorde/updates");
+    create_private_directory(&private).unwrap();
+    owned_directory(&private).unwrap();
+    owned_directory(private.parent().unwrap()).unwrap();
+    let private_acl = snapshot(&private);
+    create_private_directory(&private).unwrap();
+    assert_eq!(snapshot(&private), private_acl);
+    assert_eq!(snapshot(directory.path()), parent_acl);
+    let staging = private_tempdir(&private, "release-").unwrap();
+    owned_directory(staging.path()).unwrap();
+    let unsafe_path = directory.path().join("existing-unsafe");
+    std::fs::create_dir(&unsafe_path).unwrap();
+    std::fs::write(unsafe_path.join("state.json"), b"untrusted checkpoint").unwrap();
+    let unsafe_acl = snapshot(&unsafe_path);
+    assert!(create_private_directory(&unsafe_path).is_err());
+    assert_eq!(snapshot(&unsafe_path), unsafe_acl);
+    assert_eq!(
+        std::fs::read(unsafe_path.join("state.json")).unwrap(),
+        b"untrusted checkpoint"
+    );
 }
 
 #[cfg(all(test, windows))]

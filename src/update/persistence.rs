@@ -37,16 +37,21 @@ pub fn root() -> Result<PathBuf, String> {
     for ancestor in path.ancestors() {
         super::security::reject_link(ancestor)?;
     }
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
+    #[cfg(windows)]
+    super::security::create_private_directory(&path)?;
+    #[cfg(not(windows))]
     {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&path)
+            .map_err(|_| "Cannot create private update storage.")?;
     }
-    builder
-        .create(&path)
-        .map_err(|_| "Cannot create private update storage.")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

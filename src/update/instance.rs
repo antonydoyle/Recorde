@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 pub struct InstanceGuard {
     _file: std::fs::File,
+    _pin: super::security::DirectoryPin,
     registration: Option<PathBuf>,
 }
 impl Drop for InstanceGuard {
@@ -20,8 +21,11 @@ fn lock_file(root: &Path) -> Result<std::fs::File, String> {
 }
 pub fn register() -> Result<InstanceGuard, String> {
     let root = super::persistence::root()?;
-    let _pin = super::security::pin_directory(&root)?;
-    let file = lock_file(&root)?;
+    register_at(&root)
+}
+fn register_at(root: &Path) -> Result<InstanceGuard, String> {
+    let pin = super::security::pin_directory(root)?;
+    let file = lock_file(root)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         match FileExt::try_lock_shared(&file) {
@@ -39,6 +43,7 @@ pub fn register() -> Result<InstanceGuard, String> {
     #[cfg(not(any(windows, target_os = "linux")))]
     return Ok(InstanceGuard {
         _file: file,
+        _pin: pin,
         registration: None,
     });
     #[cfg(any(windows, target_os = "linux"))]
@@ -59,6 +64,7 @@ pub fn register() -> Result<InstanceGuard, String> {
             .map_err(|_| "Cannot save application identity.")?;
         Ok(InstanceGuard {
             _file: file,
+            _pin: pin,
             registration: Some(path),
         })
     }
@@ -106,7 +112,7 @@ pub fn require_only_current() -> Result<(), String> {
 }
 pub fn exclusive() -> Result<InstanceGuard, String> {
     let root = super::persistence::root()?;
-    let _pin = super::security::pin_directory(&root)?;
+    let pin = super::security::pin_directory(&root)?;
     let file = lock_file(&root)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
@@ -114,6 +120,7 @@ pub fn exclusive() -> Result<InstanceGuard, String> {
     }
     Ok(InstanceGuard {
         _file: file,
+        _pin: pin,
         registration: None,
     })
 }
@@ -135,4 +142,20 @@ mod tests {
         drop(second);
         FileExt::try_lock_exclusive(&helper).unwrap();
     }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn instance_retains_parent_identity_until_guard_is_released() {
+    let directory = super::security::fixture_dir();
+    let parent = directory.path().join("recorde");
+    let root = parent.join("updates");
+    super::security::create_private_directory(&root).unwrap();
+    let guard = register_at(&root).unwrap();
+    let renamed_parent = directory.path().join("renamed");
+    assert!(std::fs::rename(&parent, &renamed_parent).is_err());
+    assert!(std::fs::rename(&root, parent.join("renamed-updates")).is_err());
+    drop(guard);
+    std::fs::rename(&parent, &renamed_parent).unwrap();
+    std::fs::rename(&renamed_parent, &parent).unwrap();
 }
