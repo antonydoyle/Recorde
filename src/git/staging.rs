@@ -561,11 +561,10 @@ pub(super) fn git_commit(
         let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
         let rebase = repo.path().join("rebase-merge");
         if rebase.join("recorde-split").is_file() {
-            let stopped =
-                std::fs::read_to_string(rebase.join("stopped-sha")).map_err(|e| e.to_string())?;
+            let split = super::rebase::split_state(&repo)?;
             let original = super::replacement::commit(
                 &repo,
-                git2::Oid::from_str(stopped.trim()).map_err(|e| e.to_string())?,
+                git2::Oid::from_str(&split.original).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
             let author = original.author();

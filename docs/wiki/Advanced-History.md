@@ -8,7 +8,8 @@ banner. Split moves HEAD to the parent and keeps the files in the working tree.
 Stage selected files, hunks or lines and commit each part. The parts retain the
 original author; normal commit hooks and repository signing settings apply.
 Continue becomes safe once at least one replacement commit exists and all
-remaining changes have been committed or preserved. The split marker survives
+remaining changes have been committed and the final tree exactly reproduces the
+original commit. Stashing or discarding part of the original change blocks Continue. The split marker survives
 restarting Recorde. Abort uses Git's native rebase recovery.
 
 ## Ranges containing merges

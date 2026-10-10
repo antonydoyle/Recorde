@@ -104,6 +104,19 @@ pub fn split_paused_commit(state: SharedState) {
     });
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct SplitState {
+    pub base: String,
+    pub original: String,
+    pub tree: String,
+}
+
+pub(super) fn split_state(repo: &git2::Repository) -> Result<SplitState, String> {
+    let text =
+        std::fs::read(repo.path().join("rebase-merge/recorde-split")).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&text).map_err(|e| e.to_string())
+}
+
 fn prepare_split(path: &Path) -> Result<(), String> {
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
     let dir = repo.path().join("rebase-merge");
@@ -126,19 +139,39 @@ fn prepare_split(path: &Path) -> Result<(), String> {
     ensure_clean_split(path)?;
     let base = head.parent_id(0).map_err(|e| e.to_string())?.to_string();
     // Persist before resetting so a cancelled reset still leaves explicit guidance.
-    std::fs::write(dir.join("recorde-split"), &base).map_err(|e| e.to_string())?;
+    let split = SplitState {
+        base: base.clone(),
+        original: head_oid.to_string(),
+        tree: super::replacement::resolve(
+            head.tree_id(),
+            &super::replacement::refs(&repo).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?
+        .to_string(),
+    };
+    std::fs::write(
+        dir.join("recorde-split"),
+        serde_json::to_vec(&split).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     run_git_seq(path, &["reset", "--mixed", &base]).map_err(|e| e.user_message())
 }
 
 fn ensure_clean_split(path: &Path) -> Result<(), String> {
     let status = super::process::git(
         path,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
         &std::sync::atomic::AtomicBool::new(false),
     )
     .map_err(|e| e.user_message())?;
     if !status.stdout.is_empty() {
-        return Err("Stage selected files or lines and commit each part. Commit or preserve all remaining changes before continuing.".into());
+        return Err("Stage selected files or lines and commit each part. Commit all remaining changes before continuing.".into());
     }
     Ok(())
 }
@@ -149,8 +182,8 @@ fn verify_split_complete(path: &Path) -> Result<(), String> {
     if !marker.exists() {
         return Ok(());
     }
-    let base = std::fs::read_to_string(&marker).map_err(|e| e.to_string())?;
-    let base = git2::Oid::from_str(base.trim()).map_err(|e| e.to_string())?;
+    let split = split_state(&repo)?;
+    let base = git2::Oid::from_str(&split.base).map_err(|e| e.to_string())?;
     let head = repo
         .head()
         .and_then(|h| h.peel_to_commit())
@@ -164,6 +197,15 @@ fn verify_split_complete(path: &Path) -> Result<(), String> {
         return Err("Create at least one replacement commit before continuing the split.".into());
     }
     ensure_clean_split(path)?;
+    let commit = super::replacement::commit(&repo, head).map_err(|e| e.to_string())?;
+    let tree = super::replacement::resolve(
+        commit.tree_id(),
+        &super::replacement::refs(&repo).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    if tree.to_string() != split.tree {
+        return Err("The split commits do not reproduce the original commit's files. Restore and commit every original change before continuing, or abort the rebase.".into());
+    }
     std::fs::remove_file(marker).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -262,6 +304,7 @@ fn verify_merge_entries(
                 &[
                     "show",
                     "--remerge-diff",
+                    "--ignore-submodules=none",
                     "--format=",
                     "--no-ext-diff",
                     "--no-textconv",
@@ -359,74 +402,53 @@ fn execute(repo_path: &Path, upstream_oid: &str, entries: &[RebaseEntry]) -> Res
         .map_err(|e| e.to_string())?;
     std::fs::write(tmp.path().join("recorde-owned"), b"1").map_err(|e| e.to_string())?;
     let mut edits = Vec::new();
-    let mut todo = String::new();
     for (index, entry) in entries.iter().enumerate() {
-        let verb = match entry.action {
-            RebaseAction::Pick | RebaseAction::Reword => "pick",
-            RebaseAction::Edit => "edit",
-            RebaseAction::Squash | RebaseAction::Fixup => "fixup",
-            RebaseAction::Drop => "drop",
-        };
-        todo.push_str(&format!("{verb} {}\n", entry.oid));
         if matches!(entry.action, RebaseAction::Reword | RebaseAction::Squash) {
             let file = tmp.path().join(format!("message-{index}"));
+            let witness = tmp.path().join(format!("head-{index}"));
             std::fs::write(&file, &entry.message).map_err(|e| e.to_string())?;
-            let command = format!(
-                "exec git -c core.editor=true commit --amend --file {}",
+            let witness = quote_shell(&git_path(&witness.to_string_lossy()));
+            // Skipping a conflicted pick/fixup/merge leaves HEAD at this witness.
+            // Its subsequent message edit must then be a no-op, including when
+            // the user runs native `git rebase --skip` outside Recorde.
+            let before = format!("exec git rev-parse --verify HEAD > {witness}");
+            let after = format!(
+                "exec before=$(cat {witness}) && current=$(git rev-parse --verify HEAD) && if test \"$before\" != \"$current\"; then git -c core.editor=true commit --amend --file {}; fi",
                 quote_shell(&git_path(&file.to_string_lossy()))
             );
-            edits.push((entry.oid.clone(), command.clone()));
-            todo.push_str(&format!("{command}\n"));
+            edits.push((entry.oid.clone(), before, after));
         }
     }
-    let todo_file = tmp.path().join("todo");
-    std::fs::write(&todo_file, &todo).map_err(|e| e.to_string())?;
+    let editor = tmp.path().join("editor.sh");
+    std::fs::write(
+        &editor,
+        sequence_editor(entries, &expected, &edits, preserve_merges),
+    )
+    .map_err(|e| e.to_string())?;
     let mut command = super::process::command(repo_path);
-    command.args(["-c", "rebase.updateRefs=false"]);
+    command.args([
+        "-c",
+        "rebase.updateRefs=false",
+        "-c",
+        "core.abbrev=40",
+        "-c",
+        "rebase.abbreviateCommands=false",
+        "rebase",
+        "-i",
+        "--no-autostash",
+        "--reapply-cherry-picks",
+        "--empty=keep",
+        "--reschedule-failed-exec",
+        "--no-update-refs",
+        "--no-autosquash",
+    ]);
     if preserve_merges {
-        let editor = tmp.path().join("editor.sh");
-        std::fs::write(&editor, topology_editor(entries, &expected, &edits))
-            .map_err(|e| e.to_string())?;
-        command
-            .args([
-                "-c",
-                "core.abbrev=40",
-                "-c",
-                "rebase.abbreviateCommands=false",
-                "rebase",
-                "-i",
-                "--rebase-merges",
-                "--no-autostash",
-                "--reapply-cherry-picks",
-                "--empty=keep",
-                "--reschedule-failed-exec",
-                "--no-update-refs",
-                "--no-autosquash",
-                &upstream.to_string(),
-            ])
-            .env(
-                "GIT_SEQUENCE_EDITOR",
-                format!("sh {}", quote_shell(&git_path(&editor.to_string_lossy()))),
-            );
-    } else {
-        command
-            .args([
-                "rebase",
-                "-i",
-                "--no-autostash",
-                "--reapply-cherry-picks",
-                "--empty=keep",
-                "--reschedule-failed-exec",
-                "--no-update-refs",
-                "--no-autosquash",
-                &upstream.to_string(),
-            ])
-            .env("GIT_SEQUENCE_EDITOR", "cp -- \"$RECORDE_REBASE_TODO\"")
-            .env(
-                "RECORDE_REBASE_TODO",
-                git_path(&todo_file.to_string_lossy()),
-            );
+        command.arg("--rebase-merges");
     }
+    command.arg(upstream.to_string()).env(
+        "GIT_SEQUENCE_EDITOR",
+        format!("sh {}", quote_shell(&git_path(&editor.to_string_lossy()))),
+    );
     let result = super::process::run(
         &mut command,
         &std::sync::atomic::AtomicBool::new(false),
@@ -496,9 +518,12 @@ fn cleanup_finished(path: &Path) {
                 let name = name.to_string_lossy();
                 file.file_type().is_ok_and(|t| t.is_file())
                     && (matches!(name.as_ref(), "todo" | "editor.sh" | "recorde-owned")
-                        || name.strip_prefix("message-").is_some_and(|s| {
-                            !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
-                        }))
+                        || name
+                            .strip_prefix("message-")
+                            .or_else(|| name.strip_prefix("head-"))
+                            .is_some_and(|s| {
+                                !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+                            }))
             })
         });
         if !safe {
@@ -514,10 +539,11 @@ fn cleanup_finished(path: &Path) {
 // Git owns the topology program. Only consecutive pick commands can be moved
 // or combined; labels/resets/merges are hard boundaries. Validate the complete
 // transformation before replacing Git's todo so rejection leaves HEAD untouched.
-fn topology_editor(
+fn sequence_editor(
     entries: &[RebaseEntry],
     expected: &[RebaseEntry],
-    edits: &[(String, String)],
+    edits: &[(String, String, String)],
+    preserve_segments: bool,
 ) -> String {
     fn awk(value: &str) -> String {
         format!(
@@ -528,7 +554,10 @@ fn topology_editor(
                 .replace('\n', "\\n")
         )
     }
-    let mut program = String::from("BEGIN {\n");
+    let mut program = format!(
+        "BEGIN {{\npreserve_segments={};\n",
+        u8::from(preserve_segments)
+    );
     for (rank, entry) in entries.iter().enumerate() {
         let verb = match entry.action {
             RebaseAction::Pick | RebaseAction::Reword => "pick",
@@ -547,8 +576,14 @@ fn topology_editor(
     for (rank, entry) in expected.iter().enumerate() {
         program.push_str(&format!("original[{}]={};\n", awk(&entry.oid), rank + 1));
     }
-    for (oid, command) in edits {
-        program.push_str(&format!("edit[{}]={};\n", awk(oid), awk(command)));
+    for (oid, before, after) in edits {
+        program.push_str(&format!(
+            "before[{}]={}; edit[{}]={};\n",
+            awk(oid),
+            awk(before),
+            awk(oid),
+            awk(after)
+        ));
     }
     program.push_str(r#"}
 function fail(message) { print message > "/dev/stderr"; failed=1 }
@@ -556,12 +591,14 @@ function fail(message) { print message > "/dev/stderr"; failed=1 }
   text[NR]=$0
   if ($1 == "pick") {
     if (!($2 in rank)) fail("History changed; reopen the rebase preview.")
-    seen[$2]=1; group[$2]=block; picks[block,++size[block]]=$2; oid[NR]=$2
+    if (seen[$2]++) fail("Git repeated a planned commit; reopen the rebase preview.")
+    group[$2]=block; picks[block,++size[block]]=$2; oid[NR]=$2
   } else {
     block++
     if ($1 == "merge") {
       if (!($3 in rank)) fail("History changed; reopen the rebase preview.")
-      seen[$3]=1; group[$3]=block; oid[NR]=$3
+      if (seen[$3]++) fail("Git repeated a planned commit; reopen the rebase preview.")
+      group[$3]=block; oid[NR]=$3
       if (verb[$3] != "pick") fail("Merge commits retain their topology: use Pick or Reword for a merge itself.")
     }
     block++
@@ -570,7 +607,7 @@ function fail(message) { print message > "/dev/stderr"; failed=1 }
 END {
   for (a in rank) if (!(a in seen)) fail("Git omitted a planned commit; reopen the rebase preview.")
   for (a in rank) for (b in rank)
-    if (original[a] < original[b] && rank[a] > rank[b] && group[a] != group[b])
+    if (preserve_segments && original[a] < original[b] && rank[a] > rank[b] && group[a] != group[b])
       fail("Reorder within one branch segment. Moving across a branch point or merge would change topology.")
   for (g in size) {
     for (i=1;i<=size[g];i++) for (j=i+1;j<=size[g];j++)
@@ -581,7 +618,7 @@ END {
       if (verb[a] == "fixup" && !retained) fail("Squash or fixup needs an earlier retained commit in the same branch segment.")
       if (verb[a] != "drop") retained=1
     }
-    if (!retained) fail("Retain a commit in each branch segment so dropping its tip cannot collapse merge topology.")
+    if (preserve_segments && !retained) fail("Retain a commit in each branch segment so dropping its tip cannot collapse merge topology.")
   }
   if (failed) exit 1
   for (line=1;line<=NR;line++) {
@@ -590,10 +627,12 @@ END {
       g=group[a]
       if (emitted[g]++) continue
       for (i=1;i<=size[g];i++) {
-        a=picks[g,i]; print verb[a] " " a
+        a=picks[g,i]; if (a in before) print before[a]
+        print verb[a] " " a
         if (a in edit) print edit[a]
       }
     } else {
+      if (a != "" && a in before) print before[a]
       print text[line]
       if (a != "" && a in edit) print edit[a]
     }
@@ -607,6 +646,259 @@ END {
 mod tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn native_skip_does_not_amend_upstream_or_previous_commit() {
+        for squash in [false, true] {
+            let repo = TestRepo::new();
+            let base = repo.commit("file", b"a\n");
+            repo.commit("file", b"b\n");
+            if squash {
+                repo.commit("retained", b"retain\n");
+            }
+            repo.commit("file", b"c\n");
+            let mut entries = load_rebase_entries(repo.path(), &base.to_string()).unwrap();
+            entries[0].action = RebaseAction::Drop;
+            let last = entries.last_mut().unwrap();
+            last.action = if squash {
+                RebaseAction::Squash
+            } else {
+                RebaseAction::Reword
+            };
+            last.message = "MUST NOT REWRITE PREVIOUS COMMIT".into();
+            assert!(execute(repo.path(), &base.to_string(), &entries).is_err());
+            assert!(repo.open().index().unwrap().has_conflicts());
+            let prior = repo.head();
+            let prior_tree = repo.open().find_commit(prior).unwrap().tree_id();
+            // Native skip is deliberately tested: safety must survive app restart
+            // and command-line continuation, not depend on intercepting a button.
+            run_git_seq(repo.path(), &["rebase", "--skip"]).unwrap();
+            assert_eq!(repo.head(), prior);
+            assert_eq!(
+                repo.open()
+                    .head()
+                    .unwrap()
+                    .peel_to_commit()
+                    .unwrap()
+                    .tree_id(),
+                prior_tree
+            );
+            assert_eq!(repo.index_bytes("file"), b"a\n");
+            if !squash {
+                assert_eq!(repo.head(), base);
+            }
+            cleanup_finished(repo.path());
+        }
+    }
+
+    #[test]
+    fn native_skip_reword_in_merge_segment_preserves_untouched_messages() {
+        let repo = TestRepo::new();
+        let base = repo.commit("file", b"a\n");
+        repo.git_ok(&["checkout", "-b", "side"]);
+        let dropped = repo.commit("file", b"b\n");
+        let reword = repo.commit("file", b"c\n");
+        repo.git_ok(&["checkout", "main"]);
+        repo.commit("main", b"main\n");
+        repo.git_ok(&["merge", "--no-ff", "side", "-m", "original merge"]);
+        let mut entries = load_rebase_entries(repo.path(), &base.to_string()).unwrap();
+        entries
+            .iter_mut()
+            .find(|e| e.oid == dropped.to_string())
+            .unwrap()
+            .action = RebaseAction::Drop;
+        let edit = entries
+            .iter_mut()
+            .find(|e| e.oid == reword.to_string())
+            .unwrap();
+        edit.action = RebaseAction::Reword;
+        edit.message = "UNRELATED MESSAGE".into();
+        assert!(execute(repo.path(), &base.to_string(), &entries).is_err());
+        assert!(repo.open().index().unwrap().has_conflicts());
+        run_git_seq(repo.path(), &["rebase", "--skip"]).unwrap();
+        let log = repo.git(&["log", "--format=%B", "HEAD"]);
+        assert!(!String::from_utf8_lossy(&log.stdout).contains("UNRELATED MESSAGE"));
+        assert!(repo.open().graph_descendant_of(repo.head(), base).unwrap());
+        assert_eq!(
+            repo.open()
+                .find_reference("refs/heads/side")
+                .unwrap()
+                .target(),
+            Some(reword)
+        );
+        assert_eq!(repo.index_bytes("file"), b"a\n");
+    }
+
+    #[test]
+    fn native_skip_conflicted_reworded_merge_does_not_amend_first_parent() {
+        let repo = TestRepo::new();
+        let base = repo.commit("file", b"a\n");
+        repo.git_ok(&["checkout", "-b", "side"]);
+        repo.commit("file", b"b\n");
+        let reverted = repo.commit("file", b"a\n");
+        repo.git_ok(&["checkout", "main"]);
+        let main = repo.commit("file", b"c\n");
+        repo.git_ok(&["merge", "--no-ff", "side", "-m", "original merge"]);
+        let merged = repo.head();
+        let mut entries = load_rebase_entries(repo.path(), &base.to_string()).unwrap();
+        entries
+            .iter_mut()
+            .find(|e| e.oid == reverted.to_string())
+            .unwrap()
+            .action = RebaseAction::Drop;
+        let edit = entries
+            .iter_mut()
+            .find(|e| e.oid == merged.to_string())
+            .unwrap();
+        edit.action = RebaseAction::Reword;
+        edit.message = "MUST NOT AMEND FIRST PARENT".into();
+        assert!(execute(repo.path(), &base.to_string(), &entries).is_err());
+        assert!(repo.open().index().unwrap().has_conflicts());
+        assert_eq!(repo.head(), main);
+        run_git_seq(repo.path(), &["rebase", "--skip"]).unwrap();
+        assert_eq!(repo.head(), main);
+        assert_eq!(repo.index_bytes("file"), b"c\n");
+        assert_eq!(
+            repo.open()
+                .find_reference("refs/heads/side")
+                .unwrap()
+                .target(),
+            Some(reverted)
+        );
+    }
+
+    #[test]
+    fn split_refuses_discarded_or_stashed_original_changes() {
+        for stash in [false, true] {
+            let repo = TestRepo::new();
+            let base = repo.commit("base", b"base\n");
+            repo.write("one", b"one\n");
+            repo.write("two", b"two\n");
+            repo.git_ok(&["add", "one", "two"]);
+            repo.git_ok(&["commit", "-m", "combined"]);
+            let original = repo.head();
+            let mut entries = load_rebase_entries(repo.path(), &base.to_string()).unwrap();
+            entries[0].action = RebaseAction::Edit;
+            execute(repo.path(), &base.to_string(), &entries).unwrap();
+            prepare_split(repo.path()).unwrap();
+            repo.git_ok(&["add", "one"]);
+            super::super::staging::git_commit(repo.path(), "first part", false, false).unwrap();
+            if stash {
+                repo.git_ok(&["stash", "push", "-u"]);
+            } else {
+                std::fs::remove_file(repo.path().join("two")).unwrap();
+            }
+            ensure_clean_split(repo.path()).unwrap();
+            let head = repo.head();
+            let index = std::fs::read(repo.open().path().join("index")).unwrap();
+            assert!(verify_split_complete(repo.path())
+                .unwrap_err()
+                .contains("do not reproduce"));
+            assert_eq!(repo.head(), head);
+            assert_eq!(
+                std::fs::read(repo.open().path().join("index")).unwrap(),
+                index
+            );
+            assert!(repo
+                .open()
+                .path()
+                .join("rebase-merge/recorde-split")
+                .exists());
+            repo.git_ok(&[
+                "restore",
+                "--source",
+                &original.to_string(),
+                "--worktree",
+                "--",
+                "two",
+            ]);
+            repo.git_ok(&["add", "two"]);
+            super::super::staging::git_commit(repo.path(), "restored part", false, false).unwrap();
+            verify_split_complete(repo.path()).unwrap();
+            run_git_seq(repo.path(), &["rebase", "--continue"]).unwrap();
+            assert_eq!(
+                repo.open()
+                    .head()
+                    .unwrap()
+                    .peel_to_commit()
+                    .unwrap()
+                    .tree_id(),
+                repo.open().find_commit(original).unwrap().tree_id()
+            );
+        }
+    }
+
+    #[test]
+    fn linear_editor_rejects_changed_native_source_set_without_replacing_todo() {
+        let repo = TestRepo::new();
+        let base = repo.commit("base", b"base\n");
+        let planned = repo.commit("planned", b"planned\n");
+        let entries = load_rebase_entries(repo.path(), &base.to_string()).unwrap();
+        let extra = repo.commit("extra", b"extra\n");
+        let script = repo.open().path().join("witness-editor.sh");
+        std::fs::write(&script, sequence_editor(&entries, &entries, &[], false)).unwrap();
+        let todo = repo.open().path().join("witness-todo");
+        for native in [
+            format!("pick {planned}\npick {extra}\n"),
+            format!("pick {extra}\n"),
+            format!("pick {planned}\npick {planned}\n"),
+        ] {
+            std::fs::write(&todo, &native).unwrap();
+            let index = std::fs::read(repo.open().path().join("index")).unwrap();
+            let result = repo.git(&[
+                "-c",
+                &format!(
+                    "alias.witness=!sh {}",
+                    quote_shell(&git_path(&script.to_string_lossy()))
+                ),
+                "witness",
+                &git_path(&todo.to_string_lossy()),
+            ]);
+            assert!(!result.status.success());
+            assert_eq!(std::fs::read_to_string(&todo).unwrap(), native);
+            assert_eq!(repo.head(), extra);
+            assert_eq!(
+                std::fs::read(repo.open().path().join("index")).unwrap(),
+                index
+            );
+        }
+    }
+
+    #[test]
+    fn manual_submodule_resolution_is_detected_despite_ignore_config() {
+        let repo = TestRepo::new();
+        let initial = repo.commit("base", b"base\n");
+        repo.git_ok(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{initial},module"),
+        ]);
+        repo.git_ok(&["commit", "-m", "submodule base"]);
+        let base = repo.head();
+        repo.git_ok(&["checkout", "-b", "side"]);
+        let side = repo.commit("side", b"side\n");
+        repo.git_ok(&["checkout", "main"]);
+        repo.commit("main", b"main\n");
+        repo.git_ok(&["merge", "--no-ff", "--no-commit", "side"]);
+        repo.git_ok(&[
+            "update-index",
+            "--cacheinfo",
+            &format!("160000,{side},module"),
+        ]);
+        repo.git_ok(&["commit", "-m", "manual gitlink resolution"]);
+        repo.git_ok(&["config", "diff.ignoreSubmodules", "all"]);
+        let head = repo.head();
+        let index = std::fs::read(repo.open().path().join("index")).unwrap();
+        assert!(verify_merge_resolutions(repo.path(), &base.to_string())
+            .unwrap_err()
+            .contains("manual resolution"));
+        assert_eq!(repo.head(), head);
+        assert_eq!(
+            std::fs::read(repo.open().path().join("index")).unwrap(),
+            index
+        );
+    }
 
     #[test]
     fn edit_split_survives_reload_and_refuses_uncommitted_parts() {
@@ -633,6 +925,12 @@ mod tests {
         super::super::recovery::continue_sequence(repo.path(), || prepare_split(repo.path()))
             .unwrap();
         assert_eq!(repo.head(), base);
+        // Git versions may abbreviate this file; authorship uses our pinned OID.
+        std::fs::write(
+            repo.open().path().join("rebase-merge/stopped-sha"),
+            &original.to_string()[..7],
+        )
+        .unwrap();
         assert_eq!(std::fs::read(repo.path().join("two")).unwrap(), b"two\n");
         assert!(prepare_split(repo.path()).is_err());
         assert!(verify_split_complete(repo.path()).is_err());
