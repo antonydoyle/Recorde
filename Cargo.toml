@@ -1,6 +1,6 @@
 [package]
 name = "recorde"
-version = "0.3.10"
+version = "0.4.0"
 edition = "2021"
 authors = ["Antony Doyle <antony@siege21.com>"]
 description = "A cross-platform desktop Git client built with Rust"
@@ -61,6 +61,7 @@ priority = "optional"
 depends = "$auto, git, libgl1, libgtk-3-0, libglib2.0-0, libfontconfig1, libfreetype6, libxkbcommon-x11-0"
 assets = [
     ["target/release/recorde",    "usr/bin/recorde",                                          "755"],
+    ["packaging/install-deb.json", "usr/bin/recorde-install.json", "644"],
     ["assets/icon.png",           "usr/share/icons/hicolor/256x256/apps/recorde.png",         "644"],
     ["packaging/recorde.desktop", "usr/share/applications/recorde.desktop",                   "644"],
     ["assets/fonts/*-*.txt", "usr/share/doc/recorde/licenses/", "644"],

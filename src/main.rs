@@ -4,6 +4,10 @@
 use recorde::{app::RecordeApp, auth, crash};
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("Recorde {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("--credential-helper") {
         auth::helper::run(&std::env::args().nth(2).unwrap_or_default());
         return Ok(());

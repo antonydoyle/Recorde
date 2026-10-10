@@ -21,7 +21,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Check tag format
         id: version
         shell: bash
@@ -52,7 +52,7 @@ jobs:
     env:
       VERSION: ${{ needs.validate-tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install system dependencies
         run: |
@@ -68,8 +68,8 @@ jobs:
             libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-0
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Build release binary
         run: cargo build --release --locked
@@ -79,6 +79,7 @@ jobs:
         run: |
           mkdir -p dist/recorde-${VERSION}-linux-x86_64
           cp target/release/recorde     dist/recorde-${VERSION}-linux-x86_64/
+          cp packaging/install-portable.json dist/recorde-${VERSION}-linux-x86_64/recorde-install.json
           cp README.md LICENSE          dist/recorde-${VERSION}-linux-x86_64/
           cp packaging/recorde.desktop  dist/recorde-${VERSION}-linux-x86_64/
           cp assets/icon.png            dist/recorde-${VERSION}-linux-x86_64/recorde.png
@@ -88,7 +89,7 @@ jobs:
 
       # ── .deb installer ────────────────────────────────────────────────────
       - name: Install cargo-deb
-        run: cargo install cargo-deb --locked
+        run: cargo install cargo-deb --version 3.8.0 --locked
 
       - name: Build .deb
         run: cargo deb --no-build
@@ -98,10 +99,29 @@ jobs:
           DEB=$(ls target/debian/*.deb | head -1)
           cp "$DEB" "dist/recorde_${VERSION}_amd64.deb"
 
+      - name: Download installer upgrade baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.3.10 --repo "$GITHUB_REPOSITORY" --pattern 'recorde_0.3.10_amd64.deb' --pattern SHA256SUMS --dir "$RUNNER_TEMP/installer-baseline"
+      - name: Verify DEB installation and upgrade
+        run: |
+          python3 scripts/check_process_safety.py
+          python3 scripts/linux_task.py --purpose 'Release DEB acceptance' --artifacts "$RUNNER_TEMP/process-safety" --timeout 900 -- python3 scripts/linux_installer_acceptance.py --previous "$RUNNER_TEMP/installer-baseline/recorde_0.3.10_amd64.deb" --checksums "$RUNNER_TEMP/installer-baseline/SHA256SUMS" --candidate "dist/recorde_${VERSION}_amd64.deb" --binary target/release/recorde --artifacts "$RUNNER_TEMP/installer-acceptance"
+      - name: Upload Linux installer evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: linux-installer-evidence
+          path: |
+            ${{ runner.temp }}/installer-acceptance
+            ${{ runner.temp }}/process-safety
+
       # ── AppImage ──────────────────────────────────────────────────────────
       - name: Build AppImage
         run: |
-          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool-x86_64.AppImage" | sha256sum --check --strict
           chmod +x appimagetool-x86_64.AppImage
 
           mkdir -p AppDir/usr/bin
@@ -122,7 +142,10 @@ jobs:
           ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run \
             AppDir "dist/Recorde-${VERSION}-x86_64.AppImage"
 
-      - uses: actions/upload-artifact@v7
+      - name: Stage portable update binary
+        run: cp target/release/recorde "dist/recorde-${VERSION}-linux-x86_64"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux-artifacts
           path: dist/
@@ -139,9 +162,9 @@ jobs:
     env:
       VERSION: ${{ needs.validate-tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Build release binary
         run: cargo build --release --locked
@@ -153,6 +176,7 @@ jobs:
           $dir = "dist\recorde-$env:VERSION-windows-x86_64"
           New-Item -ItemType Directory -Force -Path $dir
           Copy-Item target\release\recorde.exe $dir\
+          Copy-Item packaging\install-portable.json "$dir\recorde-install.json"
           Copy-Item README.md, LICENSE $dir\
           New-Item -ItemType Directory -Path "$dir\licenses"
           Copy-Item assets\fonts\*-*.txt "$dir\licenses\"
@@ -160,7 +184,7 @@ jobs:
 
       # ── MSI installer ─────────────────────────────────────────────────────
       - name: Install cargo-wix
-        run: cargo install cargo-wix --locked
+        run: cargo install cargo-wix --version 0.3.9 --locked
 
       - name: Build MSI
         run: cargo wix --no-build --nocapture
@@ -171,7 +195,29 @@ jobs:
           $msi = Get-ChildItem target\wix\*.msi | Select-Object -First 1
           Copy-Item $msi.FullName "dist\recorde-$env:VERSION-windows-x86_64.msi"
 
-      - uses: actions/upload-artifact@v7
+      - name: Download installer upgrade baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release download v0.3.10 --repo $env:GITHUB_REPOSITORY --pattern 'recorde-0.3.10-windows-x86_64.msi' --pattern SHA256SUMS --dir "$env:RUNNER_TEMP/installer-baseline"
+      - name: Verify MSI installation and upgrade
+        shell: pwsh
+        run: |
+          python scripts/check_process_safety.py
+          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_installer_acceptance.ps1', '-PreviousMsi', "$env:RUNNER_TEMP/installer-baseline/recorde-0.3.10-windows-x86_64.msi", '-PreviousChecksums', "$env:RUNNER_TEMP/installer-baseline/SHA256SUMS", '-CandidateMsi', "dist/recorde-$env:VERSION-windows-x86_64.msi", '-ExpectedBinary', 'target/release/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/installer-acceptance") -Purpose 'Release MSI acceptance' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 900
+      - name: Upload Windows installer evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-installer-evidence
+          path: |
+            ${{ runner.temp }}/installer-acceptance
+            ${{ runner.temp }}/process-safety
+      - name: Stage portable update binary
+        shell: pwsh
+        run: Copy-Item target/release/recorde.exe "dist/recorde-$env:VERSION-windows-x86_64.exe"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-artifacts
           path: dist/
@@ -188,16 +234,16 @@ jobs:
     env:
       VERSION: ${{ needs.validate-tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install cmake
         run: brew install cmake
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Build aarch64
         run: cargo build --release --locked --target aarch64-apple-darwin
@@ -263,7 +309,7 @@ jobs:
             "dist/Recorde-${VERSION}-macos-universal.dmg" \
             "Recorde.app"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-artifacts
           path: dist/
@@ -278,7 +324,7 @@ jobs:
     needs: [validate-tag, validate-code, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: dist
           pattern: '*-artifacts'
@@ -289,9 +335,9 @@ jobs:
 
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum -- *.tar.gz *.zip *.deb *.msi *.AppImage *.dmg > SHA256SUMS
+        run: sha256sum -- *.tar.gz *.zip *.deb *.msi *.AppImage *.dmg *.exe recorde-*-linux-x86_64 > SHA256SUMS
 
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: Recorde ${{ needs.validate-tag.outputs.version }}
           tag_name: ${{ github.ref_name }}
@@ -304,4 +350,6 @@ jobs:
             dist/*.msi
             dist/*.AppImage
             dist/*.dmg
+            dist/*.exe
+            dist/recorde-*-linux-x86_64
             dist/SHA256SUMS
