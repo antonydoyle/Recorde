@@ -54,6 +54,10 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -114,7 +118,7 @@ jobs:
       - name: Verify isolated privileged updater on disposable runner
         run: |
           cargo build --release --locked --manifest-path tools/update-signing/Cargo.toml
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,GITHUB_WORKSPACE,RUNNER_TEMP python3 scripts/linux_task.py --purpose 'Signed DEB helper acceptance' --artifacts "$RUNNER_TEMP/privileged-process-safety" --timeout 3600 -- python3 scripts/linux_update_installer_acceptance.py --previous "$RUNNER_TEMP/installer-baseline/recorde_0.3.10_amd64.deb" --checksums "$RUNNER_TEMP/installer-baseline/SHA256SUMS" --candidate "dist/recorde_${VERSION}_amd64.deb" --binary target/release/recorde --helper tools/update-installer/target/release/recorde-update-installer --signer tools/update-signing/target/release/recorde-update-signing --artifacts "$RUNNER_TEMP/privileged-installer-acceptance"
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,GITHUB_WORKSPACE,RUNNER_TEMP "$pythonLocation/bin/python3" scripts/linux_task.py --purpose 'Signed DEB helper acceptance' --artifacts "$RUNNER_TEMP/privileged-process-safety" --timeout 3600 -- "$pythonLocation/bin/python3" scripts/linux_update_installer_acceptance.py --previous "$RUNNER_TEMP/installer-baseline/recorde_0.3.10_amd64.deb" --checksums "$RUNNER_TEMP/installer-baseline/SHA256SUMS" --candidate "dist/recorde_${VERSION}_amd64.deb" --binary target/release/recorde --helper tools/update-installer/target/release/recorde-update-installer --signer tools/update-signing/target/release/recorde-update-signing --artifacts "$RUNNER_TEMP/privileged-installer-acceptance"
       - name: Make privileged acceptance ledgers readable for upload
         if: always()
         run: |

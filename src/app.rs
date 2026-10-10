@@ -812,6 +812,9 @@ impl RecordeApp {
         if self.settings_open {
             self.render_settings(ctx);
         }
+        if self.updater.applying || self.updater.ready_to_close {
+            return;
+        }
 
         if self.repo_ui.pull_requests_open {
             self.render_pull_requests(ctx);
@@ -1291,11 +1294,14 @@ impl RecordeApp {
         }
         if self.repo_ui.conflict_editor.is_some()
             || self.repo_ui.provider_editor.is_some()
+            || self.repo_ui.rebase_modal.is_some()
             || self.repo_sessions.values().any(|session| {
-                session.conflict_editor.is_some() || session.provider_editor.is_some()
+                session.conflict_editor.is_some()
+                    || session.provider_editor.is_some()
+                    || session.rebase_modal.is_some()
             })
         {
-            return Err("Close conflict and review editors before restarting; their unsent edits must be handled first.".into());
+            return Err("Close conflict editors, review editors and rebase plans before restarting; their unsaved edits must be handled first.".into());
         }
         let mut paths = self.config.open_repos.clone();
         if let Some(path) = self.state.lock().unwrap().repo_path.clone() {
@@ -3035,6 +3041,9 @@ impl eframe::App for RecordeApp {
 
         // ── Modals ────────────────────────────────────────────────────────
         self.render_modals(ctx);
+        if self.updater.applying || self.updater.ready_to_close {
+            return;
+        }
 
         // Interactive rebase window
         if self.repo_ui.rebase_modal.is_some() {
