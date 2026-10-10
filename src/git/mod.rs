@@ -10,6 +10,8 @@ pub mod graph;
 pub mod history;
 pub mod job;
 pub mod lfs;
+#[cfg(test)]
+mod lfs_http_tests;
 pub mod lifecycle;
 pub mod merge;
 pub(crate) mod mutation;
