@@ -161,6 +161,9 @@ pub struct Config {
     /// A failed load must never turn into an overwrite with default settings.
     #[serde(skip)]
     pub load_error: Option<String>,
+    /// Public registration metadata only. Tokens and refresh tokens live in the vault.
+    #[serde(default)]
+    pub oauth_clients: std::collections::BTreeMap<String, crate::auth::oauth::Client>,
     #[serde(default)]
     pub shortcuts: crate::commands::Shortcuts,
     #[serde(default)]

@@ -206,6 +206,7 @@ pub struct RecordeApp {
     // Phase 7: History/Review
     // Phase 13: Provider integrations
     // Phase 10: Auth & Accounts
+    browser_login: crate::ui::oauth_login::BrowserLogin,
     add_account_open: bool,
     add_account_provider: ProviderKind,
     add_account_host: String,
@@ -321,6 +322,7 @@ impl RecordeApp {
             clone_depth: 0,
             clone_dest: None,
             init_repo_path: None,
+            browser_login: Default::default(),
             add_account_open: false,
             add_account_provider: ProviderKind::GitHubCom,
             add_account_host: String::new(),
@@ -1664,6 +1666,20 @@ impl RecordeApp {
                 }
                 _ => {}
             }
+            let browser_host = crate::auth::endpoint::normalize_host(self.add_account_provider.effective_host(&self.add_account_host)).unwrap_or_default();
+            let (configured, session) = self.browser_login.show(ui, &self.add_account_provider, &browser_host, self.config.oauth_clients.get(&browser_host), self.account_task.is_some());
+            if let Some(client) = configured {
+                self.config.oauth_clients.insert(client.host.clone(), client);
+                self.save_config();
+            }
+            if let Some(session) = session {
+                self.account_task = Some(account_task(move || {
+                    crate::auth::store::save_oauth(&session)?;
+                    Ok(AccountChange::Saved(StoredAccount { provider: session.client.provider, host: session.client.host, username: session.username }))
+                }));
+            }
+            ui.separator();
+            ui.label("Or connect with a personal access token");
             settings_text_field(ui, "Username", &mut self.add_account_username);
             ui.horizontal(|ui| {
                 ui.set_min_height(28.0);
@@ -1716,6 +1732,7 @@ impl RecordeApp {
                 }
                 if ui.add(secondary_btn("Cancel")).clicked() {
                     self.add_account_open = false;
+                    self.browser_login.cancel();
                     self.add_account_username.clear();
                     self.add_account_token.clear();
                     self.add_account_error = None;
@@ -2829,6 +2846,9 @@ impl eframe::App for RecordeApp {
                     }
                 }
             }
+        }
+        if !self.settings_open || self.settings_tab != SettingsTab::Accounts || !self.add_account_open {
+            self.browser_login.cancel();
         }
         ctx.style_mut(theme::kill_debug);
         ctx.options_mut(|o| o.warn_on_id_clash = false);

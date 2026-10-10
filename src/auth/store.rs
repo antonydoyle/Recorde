@@ -157,6 +157,14 @@ impl<V: Vault> Store<V> {
         host: &str,
         username: Option<&str>,
     ) -> Result<Option<(String, String)>, String> {
+        self.lookup_with(host, username, super::oauth::resolve)
+    }
+    fn lookup_with(
+        &self,
+        host: &str,
+        username: Option<&str>,
+        resolve: impl FnOnce(&str, &str, &str) -> Result<(String, Option<String>), String>,
+    ) -> Result<Option<(String, String)>, String> {
         let file = self.migrate()?;
         let mut candidates: Vec<_> = file
             .tokens
@@ -171,9 +179,13 @@ impl<V: Vault> Store<V> {
         }
         match candidates.first() {
             Some(user) => {
-                let Some(saved) = self.vault.get(host, user)? else { return Ok(None); };
-                let (access, refreshed) = super::oauth::resolve(&saved, host, user)?;
-                if let Some(refreshed) = refreshed { self.verified_set(host, user, &refreshed)?; }
+                let Some(saved) = self.vault.get(host, user)? else {
+                    return Ok(None);
+                };
+                let (access, refreshed) = resolve(&saved, host, user)?;
+                if let Some(refreshed) = refreshed {
+                    self.verified_set(host, user, &refreshed)?;
+                }
                 Ok(Some(((*user).into(), access)))
             }
             None => Ok(None),
@@ -254,14 +266,19 @@ fn lookup(
             .get(&endpoint.host)
             .cloned()
     });
-    let username = selected_username(endpoint.username.as_deref(), binding.as_deref())?;
+    let username = remote_username(&endpoint, binding.as_deref(), &config.accounts)?;
     let result = with_store(|store| {
         let result = store.lookup(&endpoint.host, username)?;
-        if for_api { return Ok(result); }
+        if for_api {
+            return Ok(result);
+        }
         match result {
             Some((user, token)) => {
-                let saved = store.vault.get(&endpoint.host, &user)?.ok_or("Saved account disappeared; reconnect it.")?;
-                let git_user = super::oauth::git_username(&saved)?.map(str::to_string).unwrap_or(user);
+                let saved = store
+                    .vault
+                    .get(&endpoint.host, &user)?
+                    .ok_or("Saved account disappeared; reconnect it.")?;
+                let git_user = transport_username(&endpoint.host, &user, &saved, false)?;
                 Ok(Some((git_user, token)))
             }
             None => Ok(None),
@@ -274,6 +291,22 @@ fn lookup(
         super::redact::remember(token);
     }
     Ok(result)
+}
+
+fn remote_username<'a>(endpoint: &'a super::endpoint::Endpoint, binding: Option<&'a str>, accounts: &[super::StoredAccount]) -> Result<Option<&'a str>, String> {
+    // Bitbucket remote usernames are clone-protocol hints, whereas API token
+    // identities are Atlassian email addresses. A binding chooses the account;
+    // without one the store still rejects multiple matching identities.
+    let url_user = endpoint.username.as_deref().filter(|user| {
+        endpoint.host != "bitbucket.org" && !(*user == "oauth2" && accounts.iter().any(|account| account.host == endpoint.host && matches!(account.provider, super::ProviderKind::GitLabCom | super::ProviderKind::GitLabSelf)))
+    });
+    selected_username(url_user, binding)
+}
+
+fn transport_username(host: &str, user: &str, saved: &str, for_api: bool) -> Result<String, String> {
+    if for_api { return Ok(user.into()); }
+    if host == "bitbucket.org" { return Ok("x-bitbucket-api-token-auth".into()); }
+    Ok(super::oauth::git_username(saved)?.unwrap_or(user).into())
 }
 
 fn selected_username<'a>(

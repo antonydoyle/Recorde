@@ -17,3 +17,5 @@ pub mod binary_preview;
 pub mod button;
 pub(crate) mod frame_metrics;
 mod highlight;
+
+pub(crate) mod oauth_login;
