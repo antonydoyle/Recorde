@@ -8,7 +8,90 @@ pub(crate) fn relative(file: &str) -> Result<&Path, String> {
     }) {
         return Err("Expected a file path inside the repository worktree.".into());
     }
+    #[cfg(windows)]
+    for component in path.components() {
+        let name = component.as_os_str().to_string_lossy();
+        let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+        if name.contains(':') || name.ends_with(['.', ' '])
+            || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                && matches!(stem.as_bytes()[3], b'1'..=b'9')) {
+            return Err("Windows device names, alternate streams and ambiguous paths are not supported.".into());
+        }
+    }
     Ok(path)
+}
+
+/// Retain directory handles for application-owned file reads and replacements.
+/// Each component is opened without following links. A concurrent rename or
+/// junction substitution cannot redirect the later I/O to an outside directory.
+pub(crate) struct ScopedFile {
+    parent: cap_std::fs::Dir,
+    name: std::ffi::OsString,
+}
+
+impl ScopedFile {
+    pub fn new(root: &Path, file: &str) -> Result<Self, String> {
+        use cap_fs_ext::DirExt;
+        let relative = relative(file)?;
+        let mut parent = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())
+            .map_err(|e| e.to_string())?;
+        let mut parts = relative.components().peekable();
+        let mut name = None;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_some() {
+                parent = parent.open_dir_nofollow(part.as_os_str()).map_err(|_| {
+                    "Cannot open parent directory without following a link or reparse point.".to_string()
+                })?;
+            } else {
+                name = Some(part.as_os_str().to_os_string());
+            }
+        }
+        Ok(Self { parent, name: name.ok_or("Expected a file name.")? })
+    }
+
+    fn open_cap(&self) -> std::io::Result<cap_std::fs::File> {
+        use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No).nonblock(true);
+        let file = self.parent.open_with(&self.name, &options)?;
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::other("Expected a regular worktree file."));
+        }
+        Ok(file)
+    }
+
+    pub fn open(&self) -> std::io::Result<std::fs::File> {
+        self.open_cap().map(|file| file.into_std())
+    }
+
+    pub fn read(&self, limit: u64) -> Result<Option<Vec<u8>>, String> {
+        use std::io::Read;
+        let file = match self.open() {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        let mut bytes = Vec::new();
+        file.take(limit.saturating_add(1)).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > limit { return Err("File exceeds the editor size limit.".into()); }
+        Ok(Some(bytes))
+    }
+
+    pub fn replace(&self, expected: Option<&[u8]>, bytes: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        if self.read(expected.map_or(0, |data| data.len() as u64))?.as_deref() != expected {
+            return Err("The file changed while it was being edited. Refresh and retry.".into());
+        }
+        let permissions = self.open_cap().ok().and_then(|f| f.metadata().ok()).map(|m| m.permissions());
+        let mut temporary = cap_tempfile::TempFile::new(&self.parent).map_err(|e| e.to_string())?;
+        if let Some(permissions) = permissions {
+            temporary.as_file().set_permissions(permissions).map_err(|e| e.to_string())?;
+        }
+        temporary.write_all(bytes).map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        temporary.replace(&self.name).map_err(|e| e.to_string())
+    }
 }
 
 pub(crate) fn worktree_file(root: &Path, file: &str) -> Result<PathBuf, String> {
@@ -63,6 +146,48 @@ fn checked_entry(root: &Path, file: &str, allow_link: bool) -> Result<PathBuf, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scoped_replacement_rejects_concurrent_edits_and_preserves_missing_state() {
+        let root = tempfile::tempdir().unwrap();
+        let target = ScopedFile::new(root.path(), "file").unwrap();
+        assert!(target.read(100).unwrap().is_none());
+        target.replace(None, b"original").unwrap();
+        assert_eq!(target.read(100).unwrap().unwrap(), b"original");
+        assert!(target.replace(None, b"wrong missing assumption").is_err());
+        std::fs::write(root.path().join("file"), b"external edits").unwrap();
+        assert!(target.replace(Some(b"original"), b"overwrite").is_err());
+        assert_eq!(std::fs::read(root.path().join("file")).unwrap(), b"external edits");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_parent_cannot_be_redirected_by_a_concurrent_symlink_swap() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("folder")).unwrap();
+        std::fs::write(root.path().join("folder/file"), b"original").unwrap();
+        std::fs::write(outside.path().join("file"), b"outside secret").unwrap();
+        let target = ScopedFile::new(root.path(), "folder/file").unwrap();
+        std::fs::rename(root.path().join("folder"), root.path().join("parked")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("folder")).unwrap();
+        assert_eq!(target.read(100).unwrap().unwrap(), b"original");
+        target.replace(Some(b"original"), b"resolved").unwrap();
+        assert_eq!(std::fs::read(outside.path().join("file")).unwrap(), b"outside secret");
+        assert!(ScopedFile::new(root.path(), "folder/file").is_err());
+        std::fs::remove_file(root.path().join("parked/file")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("file"), root.path().join("parked/file")).unwrap();
+        assert!(target.read(100).is_err());
+        assert!(target.replace(Some(b"resolved"), b"overwrite").is_err());
+        assert_eq!(std::fs::read(outside.path().join("file")).unwrap(), b"outside secret");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_device_stream_and_ambiguous_names_are_rejected() {
+        for name in [".git./config", "file:stream", "NUL", "dir/COM1.txt", "LPT9", "dir/file.", "dir/file "] {
+            assert!(relative(name).is_err(), "{name}");
+        }
+    }
     #[test]
     fn rejects_traversal_absolute_and_git_metadata_paths() {
         for file in [

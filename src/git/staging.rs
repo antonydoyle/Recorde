@@ -32,26 +32,13 @@ pub fn ignore_file(file: &str, state: SharedState) {
 }
 
 fn add_ignore_rule(path: &Path, file: &str) -> Result<(), String> {
-    use std::io::{Read, Write};
     super::safe_path::relative(file)?;
     if file.contains(['\r', '\n']) {
         return Err("Git ignore rules cannot represent a filename containing a newline.".into());
     }
-    let target = super::safe_path::worktree_file(path, ".gitignore")?;
-    let mut content = Vec::new();
-    match std::fs::File::open(&target) {
-        Ok(input) => {
-            input
-                .take(1_048_577)
-                .read_to_end(&mut content)
-                .map_err(|e| e.to_string())?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.to_string()),
-    }
-    if content.len() > 1_048_576 {
-        return Err("Edit this large .gitignore file with an external editor.".into());
-    }
+    let target = super::safe_path::ScopedFile::new(path, ".gitignore")?;
+    let original = target.read(1_048_576)?;
+    let mut content = original.clone().unwrap_or_default();
     if !content.is_empty() && !content.ends_with(b"\n") {
         content.push(b'\n');
     }
@@ -64,12 +51,7 @@ fn add_ignore_rule(path: &Path, file: &str) -> Result<(), String> {
         content.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
     }
     content.push(b'\n');
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(target.parent().ok_or("Invalid ignore path")?)
-            .map_err(|e| e.to_string())?;
-    temporary.write_all(&content).map_err(|e| e.to_string())?;
-    temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-    temporary.persist(target).map_err(|e| e.to_string())?;
+    target.replace(original.as_deref(), &content)?;
     Ok(())
 }
 

@@ -20,10 +20,11 @@ pub fn blame_file(repo_path: &Path, file_path: &str) -> Vec<BlameLine> {
         None => return Vec::new(),
     };
 
-    let Ok(path) = super::safe_path::worktree_file(workdir, file_path) else {
+    let Ok(file) = super::safe_path::ScopedFile::new(workdir, file_path) else {
         return Vec::new();
     };
-    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let Some(content) = file.read(16 * 1024 * 1024).ok().flatten()
+        .and_then(|bytes| String::from_utf8(bytes).ok()) else { return Vec::new(); };
     let file_lines: Vec<&str> = content.lines().collect();
 
     let mut result = Vec::new();

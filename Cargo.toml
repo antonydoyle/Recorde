@@ -45,6 +45,9 @@ command-group = "5"
 notify = "8"
 
 tempfile = "3"
+cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
+cap-tempfile = "4.0.3"
 
 [patch.crates-io]
 eframe = { path = "vendor/eframe" }

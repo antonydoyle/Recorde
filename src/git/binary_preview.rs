@@ -1,6 +1,5 @@
 //! Bounded binary snapshots prepared on the diff worker, never during painting.
 use std::io::{Cursor, Read};
-use std::path::Path;
 
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_DIMENSION: u32 = 4096;
@@ -47,7 +46,7 @@ pub(crate) fn snapshot(
             Some((root, path)) => match path
                 .to_str()
                 .ok_or_else(|| "Path encoding is unsupported.".to_string())
-                .and_then(|file| super::safe_path::worktree_file(root, file))
+                .and_then(|file| super::safe_path::ScopedFile::new(root, file))
             {
                 Ok(path) => working_file(&path),
                 Err(error) => BinarySide::Unavailable(error),
@@ -75,15 +74,10 @@ fn blob(repo: &git2::Repository, oid: git2::Oid) -> BinarySide {
     result.unwrap_or_else(|e: git2::Error| BinarySide::Unavailable(e.message().into()))
 }
 
-fn working_file(path: &Path) -> BinarySide {
+fn working_file(path: &super::safe_path::ScopedFile) -> BinarySide {
     let result = (|| {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if !metadata.is_file() {
-            return Err(std::io::Error::other(
-                "Preview requires a regular working file.",
-            ));
-        }
-        let file = std::fs::File::open(path)?;
+        let file = path.open()?;
+        let metadata = file.metadata()?;
         let size = metadata.len();
         let mut bytes = Vec::new();
         // Large files get only a short hex prefix; file growth cannot exceed the cap.

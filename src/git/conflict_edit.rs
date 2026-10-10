@@ -133,22 +133,8 @@ pub fn load(path: &Path, file: &str) -> Result<Snapshot, String> {
     let workdir = repo
         .workdir()
         .ok_or("Conflict editing requires a worktree.")?;
-    let target = super::safe_path::worktree_file(workdir, file)?;
-    let original = match std::fs::File::open(&target) {
-        Ok(file) => {
-            use std::io::Read;
-            let mut bytes = Vec::new();
-            file.take(8 * 1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|e| e.to_string())?;
-            if bytes.len() > 8 * 1024 * 1024 {
-                return Err("Conflict editor supports files up to 8 MiB.".into());
-            }
-            bytes
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e.to_string()),
-    };
+    let original = super::safe_path::ScopedFile::new(workdir, file)?
+        .read(8 * 1024 * 1024)?.unwrap_or_default();
     let result = String::from_utf8(original.clone())
         .map_err(|_| "This encoding requires an external merge tool.".to_string())?;
     Ok(Snapshot {
@@ -164,7 +150,6 @@ pub fn load(path: &Path, file: &str) -> Result<Snapshot, String> {
 }
 
 pub fn save(snapshot: &Snapshot, result: &str) -> Result<(), String> {
-    use std::io::Write;
     if result.len() > 8 * 1024 * 1024 || result.contains('\0') {
         return Err(
             "Text conflict result must be UTF-8 text up to 8 MiB without NUL bytes.".into(),
@@ -180,18 +165,13 @@ pub fn save(snapshot: &Snapshot, result: &str) -> Result<(), String> {
         return Err("The file or index changed while the editor was open. Reopen it to load the latest versions.".into());
     }
     let repo = git2::Repository::open(&snapshot.repo).map_err(|e| e.to_string())?;
-    let path =
-        super::safe_path::worktree_file(repo.workdir().ok_or("No worktree.")?, &snapshot.file)?;
-    let parent = path.parent().ok_or("Invalid result path.")?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-    if let Ok(metadata) = std::fs::metadata(&path) {
-        temp.as_file()
-            .set_permissions(metadata.permissions())
-            .map_err(|e| e.to_string())?;
+    let target = super::safe_path::ScopedFile::new(
+        repo.workdir().ok_or("No worktree.")?, &snapshot.file)?;
+    let original = target.read(8 * 1024 * 1024)?;
+    if original.as_deref().unwrap_or_default() != snapshot.original {
+        return Err("The conflicted file changed before saving. Refresh and retry.".into());
     }
-    temp.write_all(result.as_bytes())
-        .map_err(|e| e.to_string())?;
-    temp.persist(path).map_err(|e| e.to_string())?;
+    target.replace(original.as_deref(), result.as_bytes())?;
     super::merge::run_git_seq(
         &snapshot.repo,
         &["--literal-pathspecs", "add", "--", &snapshot.file],

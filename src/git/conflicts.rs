@@ -101,7 +101,9 @@ pub(crate) fn version(path: &Path, file: &str) -> Result<Version, String> {
             if !metadata.is_file() {
                 return Err("Resolve directory conflicts using an external tool.".into());
             }
-            let mut input = std::fs::File::open(&target).map_err(|e| e.to_string())?;
+            let mut input = super::safe_path::ScopedFile::new(
+                repo.workdir().ok_or("Conflict resolution requires a worktree.")?, file)?
+                .open().map_err(|e| e.to_string())?;
             let mut hasher = Sha256::new();
             let mut buffer = [0u8; 65536];
             loop {
