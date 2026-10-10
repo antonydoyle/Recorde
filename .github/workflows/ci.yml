@@ -27,6 +27,15 @@ jobs:
         run: cargo audit --file tools/update-signing/Cargo.lock --deny unsound
       - name: Validate standalone signature protocol
         run: cargo test --manifest-path tools/update-signing/Cargo.toml --locked
+      - name: Audit privileged installer dependencies
+        run: cargo audit --file tools/update-installer/Cargo.lock --deny unsound
+      - name: Validate privileged installer without root
+        env:
+          CARGO_BUILD_JOBS: '1'
+          RUST_TEST_THREADS: '1'
+        run: |
+          cargo fmt --manifest-path tools/update-installer/Cargo.toml --all --check
+          python3 scripts/linux_task.py --purpose 'Privileged installer offline fixtures' --artifacts "$RUNNER_TEMP/process-safety" --timeout 600 -- cargo test --manifest-path tools/update-installer/Cargo.toml --locked
   test:
     name: Rust checks (${{ matrix.os }})
     strategy:

@@ -61,10 +61,12 @@ strip = true
 [package.metadata.deb]
 section = "devel"
 priority = "optional"
-depends = "$auto, git, libgl1, libgtk-3-0, libglib2.0-0, libfontconfig1, libfreetype6, libxkbcommon-x11-0"
+depends = "$auto, git, pkexec, libgl1, libgtk-3-0, libglib2.0-0, libfontconfig1, libfreetype6, libxkbcommon-x11-0"
 assets = [
     ["target/release/recorde",    "usr/bin/recorde",                                          "755"],
     ["packaging/install-deb.json", "usr/bin/recorde-install.json", "644"],
+    ["tools/update-installer/target/release/recorde-update-installer", "usr/lib/recorde/recorde-update-installer", "755"],
+    ["packaging/org.recorde.update.policy", "usr/share/polkit-1/actions/org.recorde.update.policy", "644"],
     ["assets/icon.png",           "usr/share/icons/hicolor/256x256/apps/recorde.png",         "644"],
     ["packaging/recorde.desktop", "usr/share/applications/recorde.desktop",                   "644"],
     ["assets/fonts/*-*.txt", "usr/share/doc/recorde/licenses/", "644"],

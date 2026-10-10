@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import stat
+import xml.etree.ElementTree as ET
 
 
 def main():
@@ -65,6 +67,17 @@ def main():
             raise RuntimeError('Installed executable differs from candidate')
         if json.loads(Path('/usr/bin/recorde-install.json').read_text())['kind'] != 'deb':
             raise RuntimeError('Installed update marker missing')
+        helper = Path('/usr/lib/recorde/recorde-update-installer')
+        policy = Path('/usr/share/polkit-1/actions/org.recorde.update.policy')
+        for target, mode in [(helper, 0o755), (policy, 0o644)]:
+            metadata = target.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_gid != 0 or stat.S_IMODE(metadata.st_mode) != mode:
+                raise RuntimeError(f'Unsafe installed helper ownership or permissions: {target}')
+        actions = ET.parse(policy).getroot().findall('action')
+        if len(actions) != 1 or actions[0].findtext('defaults/allow_active') != 'auth_admin':
+            raise RuntimeError('Installer policy must require fresh administrator authentication')
+        if actions[0].findtext("annotate[@key='org.freedesktop.policykit.exec.path']") != str(helper):
+            raise RuntimeError('Installer policy path does not bind the fixed helper')
         # Debian may append its own revision (e.g. 0.4.0-1).
         expected_version = run([str(args.binary.resolve()), '--version'], 'candidate-version')
         if not expected_version.startswith('Recorde ') or run([str(installed), '--version'], 'version') != expected_version:
@@ -72,8 +85,8 @@ def main():
         assert_userdata()
         run(['sudo', '-n', 'apt-get', 'remove', '-y', 'recorde'], 'uninstall')
         installed_package = False
-        if installed.exists():
-            raise RuntimeError('Uninstall left executable behind')
+        if any(target.exists() for target in [installed, helper, policy]):
+            raise RuntimeError('Uninstall left executables or privileged policy behind')
         assert_userdata()
         (args.artifacts / 'result.json').write_text(json.dumps({
             'baseline': old_version, 'candidate': new_version, 'upgrade': 'passed',
