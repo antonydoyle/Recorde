@@ -3,7 +3,8 @@
 Recorde is a native desktop Git client focused on common repository workflows:
 opening repositories, reviewing history, staging changes, committing, branching,
 syncing with remotes, resolving conflicts, and checking provider metadata from
-GitHub or GitLab.
+GitHub, GitLab, Bitbucket Cloud or Azure DevOps Services, within each adapter's
+documented limits.
 
 This wiki documents the application from both user and developer perspectives.
 
@@ -13,7 +14,7 @@ This wiki documents the application from both user and developer perspectives.
 - [Feature Reference](Feature-Reference.md): detailed capability map.
 - [Architecture](Architecture.md): module boundaries and runtime flow.
 - [Configuration](Configuration.md): persisted settings, accounts, and tokens.
-- [Provider Integrations](Provider-Integrations.md): GitHub and GitLab support.
+- [Provider Integrations](Provider-Integrations.md): provider capabilities and limits.
 - [Developer Guide](Developer-Guide.md): local setup, tests, and release process.
 - [Packaging](Packaging.md): Linux, macOS, and Windows packaging assets.
 - [Troubleshooting](Troubleshooting.md): common runtime and Git issues.
@@ -29,7 +30,7 @@ This wiki documents the application from both user and developer perspectives.
 | `src/git/` | Git operations, background jobs, graph loading, staging, remotes, history, conflicts. |
 | `src/ui/` | Reusable panels and widgets for toolbar, sidebar, graph, diff, staging, status. |
 | `src/auth/` | Provider account metadata, token storage, and SSH diagnostics. |
-| `src/providers/` | GitHub and GitLab API adapters. |
+| `src/providers/` | GitHub, GitLab, Bitbucket Cloud and Azure DevOps Services adapters. |
 | `src/config.rs` | User configuration loading and saving. |
 | `assets/` | Application icon and embedded Material Icons font. |
 | `packaging/` | Desktop integration and platform packaging metadata. |

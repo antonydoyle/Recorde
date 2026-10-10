@@ -125,8 +125,15 @@ metadata:
 - CI runs for the current branch.
 - Releases.
 
-GitHub, GitHub Enterprise, GitLab.com, and self-hosted GitLab are represented in
+GitHub, GitHub Enterprise, GitLab.com, self-hosted GitLab, Bitbucket Cloud and
+Azure DevOps Services are represented in
 the account model.
+
+Available panels and actions differ: Bitbucket issues/releases and in-app merge
+are unavailable, while Azure Boards and classic releases cover the whole project.
+See [Provider Integrations](Provider-Integrations.md) for the capability matrix.
+GitHub/GitLab also offer [browser sign-in](../browser-sign-in.md) with a registered
+public client ID; other providers use the token form.
 
 ## External Tools
 

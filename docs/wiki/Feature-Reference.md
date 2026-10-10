@@ -65,7 +65,7 @@
 
 ## Provider Metadata
 
-- Parse GitHub and GitLab remote URLs.
+- Parse GitHub, GitLab, Bitbucket Cloud and Azure DevOps Services remote URLs.
 - Load pull requests or merge requests.
 - Load issues.
 - Load CI runs.
@@ -73,6 +73,11 @@
 - Filter PRs/MRs and issues by open, closed, or all.
 - Model check state, review state, CI status, labels, comments, changed files,
   and timestamps.
+
+Capabilities differ by provider. Bitbucket issues/releases and in-app merge are
+unavailable; Azure Boards and classic releases cover the whole project. See
+[Provider Integrations](Provider-Integrations.md) for the action matrix and
+current validation limits.
 
 ## UI and Accessibility
 
