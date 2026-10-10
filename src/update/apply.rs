@@ -1080,18 +1080,19 @@ mod tests {
     #[test]
     fn living_parent_and_installer_failures_never_trigger_fallback_relaunch() {
         let directory = security::fixture_dir();
-        let file = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        let target = directory.path().join("recorde");
+        std::fs::write(&target, b"fixture executable").unwrap();
         let mut request = Request {
             schema: 1,
             parent: Witness::current().unwrap(),
-            target: file.path().to_owned(),
+            target: target.clone(),
             target_kind: Target {
                 platform: "linux".into(),
                 arch: "x86_64".into(),
                 package_kind: "portable".into(),
                 channel: "stable".into(),
             },
-            previous_sha256: digest(file.path()).unwrap(),
+            previous_sha256: digest(&target).unwrap(),
             helper_sha256: String::new(),
             envelope: vec![],
             nonce: "a".repeat(64),

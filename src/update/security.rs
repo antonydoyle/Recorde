@@ -287,9 +287,13 @@ pub fn private_tempdir(parent: &Path, prefix: &str) -> Result<tempfile::TempDir,
         use std::os::unix::fs::PermissionsExt;
         builder.permissions(std::fs::Permissions::from_mode(0o700));
     }
-    builder
+    let directory = builder
         .tempdir_in(parent)
-        .map_err(|_| "Cannot create private update staging directory.".into())
+        .map_err(|_| "Cannot create private update staging directory.")?;
+    // In particular, refuse an inherited writable Windows ACL before any
+    // download, handoff, or executable bytes are placed in this directory.
+    owned_directory(directory.path())?;
+    Ok(directory)
 }
 
 /// Resolve OS temporary-directory aliases (for example macOS /var) only in tests.
@@ -299,8 +303,104 @@ pub(super) fn fixture_dir() -> tempfile::TempDir {
     let parent = std::env::temp_dir()
         .canonicalize()
         .expect("Cannot resolve the test temporary directory.");
-    private_tempdir(&parent, "recorde-update-test-")
-        .expect("Cannot create a private update test directory.")
+    #[cfg(windows)]
+    {
+        let directory = tempfile::Builder::new()
+            .prefix("recorde-update-test-")
+            .tempdir_in(parent)
+            .expect("Cannot create an update test directory.");
+        fixture_acl(directory.path(), false);
+        owned_directory(directory.path()).expect("Update test directory must be private.");
+        directory
+    }
+    #[cfg(not(windows))]
+    {
+        private_tempdir(&parent, "recorde-update-test-")
+            .expect("Cannot create a private update test directory.")
+    }
+}
+
+/// Give test files a deterministic ACL instead of inheriting the runner's Temp ACL.
+/// This only changes fresh, empty fixture directories, never production paths.
+#[cfg(all(test, windows))]
+fn fixture_acl(path: &Path, allow_everyone: bool) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, LocalFree},
+        Security::{
+            Authorization::{
+                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            },
+            GetTokenInformation, SetFileSecurityW, TokenUser, DACL_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY,
+            TOKEN_USER,
+        },
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        assert_ne!(
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token),
+            0
+        );
+        let mut size = 0;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
+        let mut data = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        let read = GetTokenInformation(token, TokenUser, data.as_mut_ptr().cast(), size, &mut size);
+        CloseHandle(token);
+        assert_ne!(read, 0);
+        let sid = (*(data.as_ptr().cast::<TOKEN_USER>())).User.Sid;
+        let mut sid_text = std::ptr::null_mut();
+        assert_ne!(ConvertSidToStringSidW(sid, &mut sid_text), 0);
+        let mut len = 0;
+        while *sid_text.add(len) != 0 {
+            len += 1;
+        }
+        let sid_string = String::from_utf16_lossy(std::slice::from_raw_parts(sid_text, len));
+        LocalFree(sid_text.cast());
+        let extra = if allow_everyone {
+            "(A;OICI;FA;;;WD)"
+        } else {
+            ""
+        };
+        let sddl: Vec<u16> = format!("O:{sid_string}D:P(A;OICI;FA;;;{sid_string}){extra}")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut descriptor = std::ptr::null_mut();
+        assert_ne!(
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut descriptor,
+                std::ptr::null_mut()
+            ),
+            0
+        );
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let applied = SetFileSecurityW(
+            wide.as_ptr(),
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        );
+        LocalFree(descriptor);
+        assert_ne!(applied, 0, "Cannot set the fixture directory ACL.");
+    }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn private_staging_refuses_writable_inherited_acl_before_creating_payloads() {
+    let directory = fixture_dir();
+    let safe = private_tempdir(directory.path(), "safe-").unwrap();
+    owned_directory(safe.path()).unwrap();
+    drop(safe);
+    fixture_acl(directory.path(), true);
+    assert!(owned_directory(directory.path()).is_err());
+    assert!(private_tempdir(directory.path(), "unsafe-").is_err());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
 }
 
 pub fn open_lock(path: &Path) -> Result<std::fs::File, String> {
