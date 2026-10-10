@@ -5,10 +5,29 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $executable = (Resolve-Path -LiteralPath $Binary).Path
+$nativeUpdates = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'recorde\updates'
+$updateState = Join-Path $nativeUpdates 'state.json'
+if ((Test-Path -LiteralPath $updateState) -and (Get-Content -LiteralPath $updateState -Raw | ConvertFrom-Json).preferences.automatic_checks) {
+    throw 'Startup smoke requires automatic update checks to be disabled; preferences were not changed.'
+}
+if (Test-Path -LiteralPath (Join-Path (Split-Path $executable) '.recorde-update-pending.json')) {
+    throw 'Refusing startup smoke while this installation has a pending update recovery marker.'
+}
 $smokeRoot = Join-Path ([IO.Path]::GetFullPath($Artifacts)) ([Guid]::NewGuid().ToString('N'))
 $repo = Join-Path $smokeRoot 'repo'
-New-Item -ItemType Directory -Path $repo, "$smokeRoot\appdata", "$smokeRoot\localappdata" | Out-Null
-$environmentNames = @('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT', 'APPDATA', 'LOCALAPPDATA')
+New-Item -ItemType Directory -Path $smokeRoot | Out-Null
+# Artifact drives can grant write access to all authenticated users. The
+# isolated application-data fixture must model a private user profile so the
+# updater's ownership checks remain enabled during startup acceptance.
+$owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = New-Object Security.AccessControl.DirectorySecurity
+$acl.SetOwner($owner)
+$acl.SetAccessRuleProtection($true, $false)
+$rule = New-Object Security.AccessControl.FileSystemAccessRule($owner, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $smokeRoot -AclObject $acl
+New-Item -ItemType Directory -Path $repo, "$smokeRoot\appdata" | Out-Null
+$environmentNames = @('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT', 'APPDATA')
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $smokeProcess = $null
@@ -17,7 +36,8 @@ try {
     $env:GIT_CONFIG_NOSYSTEM = '1'
     $env:GIT_TERMINAL_PROMPT = '0'
     $env:APPDATA = "$smokeRoot\appdata"
-    $env:LOCALAPPDATA = "$smokeRoot\localappdata"
+    # Config/account metadata are isolated; OS-vault/repository/update locks
+    # intentionally keep their stable native per-user locations.
     git -C $repo init -b main *> "$smokeRoot\fixture.log"
     if ($LASTEXITCODE -ne 0) { throw 'Fixture initialization failed.' }
     git -C $repo config user.name 'Recorde Smoke'
@@ -69,7 +89,14 @@ try {
         @{ ProcessId=$smokeProcess.Id; ParentProcessId=$owned.ParentProcessId; CommandLine=$owned.CommandLine; Ports=$ports } |
             ConvertTo-Json -Depth 4 | Set-Content -LiteralPath "$smokeRoot\cleanup-ownership.json"
         if ($owned.ParentProcessId -eq $PID -and $owned.ExecutablePath -eq $executable -and $owned.CommandLine.Contains($repo)) {
-            Stop-Process -Id $smokeProcess.Id
+            try {
+                Stop-Process -InputObject $smokeProcess -ErrorAction Stop
+            } catch {
+                # The GUI can exit between the ownership check and cleanup.
+                # Only an already-exited owned process makes that race benign.
+                $smokeProcess.Refresh()
+                if (-not $smokeProcess.HasExited) { throw }
+            }
             $smokeProcess.WaitForExit(5000) | Out-Null
         } else {
             Write-Warning "Owned smoke process identity changed; leaving PID $($smokeProcess.Id) for supervisor review."

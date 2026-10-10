@@ -291,6 +291,14 @@ the app hidden, checks a native window exists, retains logs, and stops only its
 own process. CI runs this, LFS and the isolated Windows vault round trip. This
 verifies startup, not rendered pixels or interaction.
 
+On Windows, absolute `APPDATA` overrides relocate config, account metadata and
+crash reports. Native credential-vault, repository and updater coordination paths
+remain shared between profiles, so changing the override cannot bypass their
+cross-process locks. The startup smoke uses empty private profile storage, refuses
+enabled automatic update checks or pending update recovery, and does not exercise
+real provider accounts. It still opens native coordination locks; a separate OS
+user or disposable runner is required for complete isolation.
+
 History benchmarks accept `RECORDE_PERF_COMMITS=1000000` and report cold page,
 next-page, edge-query and graph UI+tessellation timings. Full native app/GPU
 latency is not measured by that fixture. No hosted CI run is claimed locally.

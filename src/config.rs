@@ -379,7 +379,7 @@ impl Config {
 }
 
 fn config_path() -> PathBuf {
-    dirs::config_dir()
+    crate::app_dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("recorde")
         .join("config.toml")

@@ -2,6 +2,7 @@
 compile_error!("ui-inspection is development-only and must not be enabled in release builds");
 
 pub mod app;
+pub mod app_dirs;
 pub mod auth;
 pub mod config;
 pub mod crash;

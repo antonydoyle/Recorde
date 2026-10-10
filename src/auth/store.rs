@@ -211,10 +211,17 @@ fn with_store<T>(
     let _guard = ACCESS
         .lock()
         .map_err(|_| "Credential store is busy; restart and retry.")?;
-    let directory = dirs::data_dir()
+    let directory = crate::app_dirs::data_dir()
         .ok_or("Cannot locate the application data directory.")?
         .join("recorde");
     std::fs::create_dir_all(&directory).map_err(|_| "Cannot create credential directory.")?;
+    // Profile overrides must not split the lock protecting shared OS-vault
+    // entries (including refresh-token rotation for the same provider account).
+    let lock_directory = dirs::data_dir()
+        .ok_or("Cannot locate the credential coordination directory.")?
+        .join("recorde");
+    std::fs::create_dir_all(&lock_directory)
+        .map_err(|_| "Cannot create credential coordination directory.")?;
     let mut options = std::fs::OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
@@ -223,7 +230,7 @@ fn with_store<T>(
         options.mode(0o600);
     }
     let lock = options
-        .open(directory.join("credentials.lock"))
+        .open(lock_directory.join("credentials.lock"))
         .map_err(|_| "Cannot lock credential index.")?;
     fs2::FileExt::lock_exclusive(&lock).map_err(|_| "Cannot lock credential index.")?;
     operation(&Store {
