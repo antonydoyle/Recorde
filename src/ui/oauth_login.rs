@@ -50,7 +50,10 @@ impl BrowserLogin {
         if let Some(result) = complete {
             self.login = None;
             self.verification = None;
-            match result {
+            match result.and_then(|session| {
+                crate::auth::store::validate_oauth_storage(&session)?;
+                Ok(session)
+            }) {
                 Ok(session) => self.ready = Some(session),
                 Err(error) => self.error = Some(error),
             }
@@ -144,7 +147,9 @@ impl BrowserLogin {
                 .add_enabled(!saving, egui::Button::new("Save signed-in account"))
                 .clicked()
             {
-                save = self.ready.take();
+                // Keep the verified grant for retry if the vault is locked.
+                // Successful saving closes this view, which clears it via cancel.
+                save = self.ready.clone();
             }
             if ui.button("Discard sign-in").clicked() {
                 self.cancel();
@@ -254,7 +259,14 @@ mod tests {
             assert!(saved.is_none());
             let (_, saved) = frame(&mut login, vec![pointer(position, false)]);
             assert_eq!(saved.is_some(), expect_saved);
-            assert!(login.ready.is_none());
+            assert_eq!(login.ready.is_some(), expect_saved);
+            if expect_saved {
+                // A failed save leaves the verified result available for retry.
+                assert!(frame(&mut login, vec![]).1.is_none());
+                assert!(login.ready.is_some());
+                login.cancel();
+                assert!(login.ready.is_none());
+            }
         }
     }
 }

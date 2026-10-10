@@ -324,3 +324,59 @@ fn supported_hosts_and_gitlab_username_are_exact() {
     assert_eq!(git_username(&encode(&s).unwrap()).unwrap(), Some("oauth2"));
     assert_eq!(git_username("test-pat").unwrap(), None);
 }
+
+#[test]
+fn successful_grant_near_deadline_can_finish_identity_but_still_honors_cancel() {
+    let clock = std::rc::Rc::new(FakeClock::default());
+    let network_clock = clock.clone();
+    let mut http = Mock::new(vec![device(5, 10), tokens(), user()]);
+    http.after = Some(Box::new(move |count| {
+        if count >= 2 {
+            network_clock
+                .elapsed
+                .set(Duration::from_secs(10 * count as u64));
+        }
+    }));
+    assert!(authorize_with(
+        &client(),
+        &AtomicBool::new(false),
+        &http,
+        clock.as_ref(),
+        |_, _, _| Ok(())
+    )
+    .is_ok());
+    assert_eq!(http.calls.borrow().len(), 3);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let network_stop = stop.clone();
+    let mut http = Mock::new(vec![device(5, 10), tokens(), user()]);
+    http.after = Some(Box::new(move |count| {
+        if count == 3 {
+            network_stop.store(true, Ordering::Relaxed);
+        }
+    }));
+    assert!(authorize_with(
+        &client(),
+        &stop,
+        &http,
+        &FakeClock::default(),
+        |_, _, _| Ok(())
+    )
+    .err()
+    .unwrap()
+    .contains("cancelled"));
+}
+
+#[test]
+fn renamed_refresh_account_has_a_specific_reconnect_diagnostic() {
+    let http = Mock::new(vec![tokens(), json!({"login":"renamed", "id":42})]);
+    let error = resolve_with(
+        &encode(&session()).unwrap(),
+        "github.com",
+        "fixture",
+        &http,
+        100,
+    )
+    .unwrap_err();
+    assert!(error.contains("renamed") && error.contains("reconnect"));
+}

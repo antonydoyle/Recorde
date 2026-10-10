@@ -413,7 +413,7 @@ fn authorize_with(
             ]),
             None,
         )?;
-        check_deadline(clock, deadline, stop)?;
+        check_cancel(stop)?;
         match response["error"].as_str() {
             Some("authorization_pending") => continue,
             Some("slow_down") => {
@@ -436,7 +436,7 @@ fn authorize_with(
         let (access_token, refresh_token, expires_at) = token_fields(&response, timestamp)?;
         let refresh_expires_at = expiration(&response, "refresh_token_expires_in", timestamp)?;
         let (username, identity) = identity(http, &endpoints.identity, &access_token)?;
-        check_deadline(clock, deadline, stop)?;
+        check_cancel(stop)?;
         return Ok(Session {
             client: client.clone(),
             username,
@@ -510,8 +510,13 @@ fn resolve_with(
         return Err("Renewed browser sign-in omitted its expiry; reconnect the account.".into());
     }
     let (account, id) = identity(http, &endpoints.identity, &access)?;
-    if account != username || id != session.identity {
+    if id != session.identity {
         return Err("Renewed browser sign-in changed identity; reconnect the account.".into());
+    }
+    if account != username {
+        return Err(
+            "The provider account was renamed; reconnect it to update the saved username.".into(),
+        );
     }
     session.access_token = access.clone();
     session.refresh_token = next_refresh.or(session.refresh_token);

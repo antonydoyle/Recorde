@@ -249,6 +249,47 @@ fn oauth_rotation_is_verified_in_vault_before_access_is_returned() {
         assert!(!index.contains("envelope") && !index.contains("test-new-access"));
     }
 }
+
+#[test]
+fn failed_vault_write_after_rotation_requires_reconnection() {
+    let (_dir, store) = fixture();
+    store
+        .save("github.com", "fixture", "old-refresh-envelope")
+        .unwrap();
+    let error = store
+        .lookup_with("github.com", Some("fixture"), |_, _, _| {
+            store.vault.fail_set.set(true);
+            Ok((
+                "new-access-secret".into(),
+                Some("new-refresh-secret".into()),
+            ))
+        })
+        .unwrap_err();
+    assert!(error.contains("reconnect") && error.contains("Renewed"));
+    assert!(!error.contains("secret"));
+    assert_eq!(
+        store.vault.get("github.com", "fixture").unwrap().as_deref(),
+        Some("old-refresh-envelope")
+    );
+}
+
+#[test]
+fn pat_input_cannot_inject_a_saved_oauth_session() {
+    let envelope = format!("{}{{}}", super::super::oauth::ENVELOPE);
+    assert!(validate_pat(&envelope).is_err());
+    // The public entry point rejects before consulting the real store or vault.
+    assert!(save("github.com", "fixture", &envelope).is_err());
+    assert!(validate_pat("ordinary-test-pat").is_ok());
+}
+
+#[test]
+fn windows_vault_capacity_counts_utf16_bytes_only_on_windows() {
+    assert!(validate_vault_password(&"a".repeat(1280), true).is_ok());
+    assert!(validate_vault_password(&"a".repeat(1281), true).is_err());
+    assert!(validate_vault_password(&"🦀".repeat(640), true).is_ok());
+    assert!(validate_vault_password(&"🦀".repeat(641), true).is_err());
+    assert!(validate_vault_password(&"a".repeat(16000), false).is_ok());
+}
 #[test]
 fn transport_usernames_keep_bitbucket_email_for_api_and_pat_identity_unchanged() {
     assert_eq!(

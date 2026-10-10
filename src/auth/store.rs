@@ -45,6 +45,7 @@ impl Vault for NativeVault {
         }
     }
     fn set(&self, host: &str, username: &str, token: &str) -> Result<(), String> {
+        validate_vault_password(token, cfg!(windows))?;
         entry(host, username)?
             .set_password(token)
             .map_err(vault_error)
@@ -184,7 +185,9 @@ impl<V: Vault> Store<V> {
                 };
                 let (access, refreshed) = resolve(&saved, host, user)?;
                 if let Some(refreshed) = refreshed {
-                    self.verified_set(host, user, &refreshed)?;
+                    self.verified_set(host, user, &refreshed).map_err(|_| {
+                        "Renewed sign-in could not be stored. The provider may have retired the old refresh token; reconnect this account.".to_string()
+                    })?;
                 }
                 Ok(Some(((*user).into(), access)))
             }
@@ -233,12 +236,34 @@ pub fn migrate() -> Result<(), String> {
     with_store(|store| store.migrate().map(|_| ()))
 }
 pub fn save(host: &str, username: &str, token: &str) -> Result<(), String> {
+    validate_pat(token)?;
     super::redact::remember(token);
     with_store(|store| store.save(host, username, token))
 }
+fn validate_pat(token: &str) -> Result<(), String> {
+    if token.starts_with(super::oauth::ENVELOPE) {
+        return Err(
+            "Enter a personal access token, or use Browser sign-in for an OAuth account.".into(),
+        );
+    }
+    Ok(())
+}
+fn validate_vault_password(value: &str, windows: bool) -> Result<(), String> {
+    // keyring 3.6 Windows set_password uses UTF-16, without a terminator;
+    // WinCred CRED_MAX_CREDENTIAL_BLOB_SIZE is 2560 bytes. Other backends
+    // are not subject to this Windows-specific capacity.
+    if windows && value.encode_utf16().count() > 2560 / 2 {
+        return Err("Credentials exceed the Windows credential store's 2560-byte capacity. Use a shorter personal access token for this account.".into());
+    }
+    Ok(())
+}
+pub(crate) fn validate_oauth_storage(session: &super::oauth::Session) -> Result<(), String> {
+    validate_vault_password(&super::oauth::encode(session)?, cfg!(windows))
+}
 pub(crate) fn save_oauth(session: &super::oauth::Session) -> Result<(), String> {
     let envelope = super::oauth::encode(session)?;
-    save(&session.client.host, &session.username, &envelope)
+    validate_vault_password(&envelope, cfg!(windows))?;
+    with_store(|store| store.save(&session.client.host, &session.username, &envelope))
 }
 pub fn remove(host: &str, username: &str) -> Result<(), String> {
     with_store(|store| store.remove(host, username))
