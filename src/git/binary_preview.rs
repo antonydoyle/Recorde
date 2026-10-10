@@ -61,6 +61,7 @@ pub(crate) fn snapshot(
 
 fn blob(repo: &git2::Repository, oid: git2::Oid) -> BinarySide {
     let result = (|| {
+        let oid = super::replacement::resolve(oid, &super::replacement::refs(repo)?)?;
         let (size, kind) = repo.odb()?.read_header(oid)?;
         if kind != git2::ObjectType::Blob {
             return Err(git2::Error::from_str("This Git object is not a file."));

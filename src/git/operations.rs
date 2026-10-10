@@ -575,6 +575,7 @@ fn collect_status(repo: &git2::Repository) -> Result<(usize, Vec<WorkingDirFile>
         .config()?
         .get_bool("core.sparseCheckout")
         .unwrap_or(false)
+        || !super::replacement::refs(repo)?.is_empty()
     {
         let output = super::process::git(
             repo.workdir().unwrap_or(repo.path()),
@@ -590,7 +591,7 @@ fn collect_status(repo: &git2::Repository) -> Result<(usize, Vec<WorkingDirFile>
         .map_err(|e| git2::Error::from_str(&e.user_message()))?;
         if output.stdout.len() >= 1024 * 1024 {
             return Err(git2::Error::from_str(
-                "Sparse status exceeds the display limit. Narrow the checkout or commit changes.",
+                "Git status exceeds the display limit. Narrow the checkout or commit changes.",
             ));
         }
         let mut records = output
@@ -722,6 +723,32 @@ pub(crate) fn compute_workdir_diff(
     staged: bool,
 ) -> Result<FileDiff, git2::Error> {
     let repo = git2::Repository::open(repo_path)?;
+    if !super::replacement::refs(&repo)?.is_empty()
+        && (staged || repo.index()?.get_path(Path::new(file_path), 0).is_some())
+    {
+        let mut args = vec![
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "-M",
+        ];
+        if staged {
+            args.push("--cached");
+        }
+        args.push("--");
+        let output =
+            super::process::git(repo_path, &args, &std::sync::atomic::AtomicBool::new(false))
+                .map_err(|e| git2::Error::from_str(&e.user_message()))?;
+        return parse_diff(
+            &repo,
+            git2::Diff::from_buffer(&output.stdout)?,
+            "",
+            file_path,
+            !staged,
+        );
+    }
     let mut opts = git2::DiffOptions::new();
     opts.show_binary(true).disable_pathspec_match(true);
     if !staged {
@@ -915,18 +942,29 @@ pub fn load_commit_detail(oid_str: &str, state: SharedState) {
 fn compute_commit_detail(path: &Path, oid_str: &str) -> Result<CommitDetail, git2::Error> {
     let repo = git2::Repository::open(path)?;
     let oid = git2::Oid::from_str(oid_str)?;
-    let commit = repo.find_commit(oid)?;
+    let commit = super::replacement::commit(&repo, oid)?;
 
     let tree = commit.tree()?;
-    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let parent_tree = commit
+        .parent_id(0)
+        .ok()
+        .and_then(|id| super::replacement::commit(&repo, id).ok())
+        .and_then(|p| p.tree().ok());
 
-    let mut diff = repo.diff_tree_to_tree(
-        parent_tree.as_ref(),
-        Some(&tree),
-        Some(git2::DiffOptions::new().ignore_whitespace_change(false)),
-    )?;
+    let mut diff = if super::replacement::refs(&repo)?.is_empty() {
+        repo.diff_tree_to_tree(
+            parent_tree.as_ref(),
+            Some(&tree),
+            Some(git2::DiffOptions::new().ignore_whitespace_change(false)),
+        )?
+    } else {
+        let parent = commit.parent_id(0).ok().map(|id| id.to_string());
+        super::replacement::diff(&repo, parent.as_deref(), oid_str)?
+    };
 
-    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    if super::replacement::refs(&repo)?.is_empty() {
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    }
     let mut changed_files: Vec<ChangedFile> = Vec::new();
 
     diff.foreach(
@@ -1016,16 +1054,27 @@ fn compute_diff(
 ) -> Result<FileDiff, git2::Error> {
     let repo = git2::Repository::open(repo_path)?;
     let oid = git2::Oid::from_str(commit_oid)?;
-    let commit = repo.find_commit(oid)?;
+    let commit = super::replacement::commit(&repo, oid)?;
     let tree = commit.tree()?;
-    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let parent_tree = commit
+        .parent_id(0)
+        .ok()
+        .and_then(|id| super::replacement::commit(&repo, id).ok())
+        .and_then(|p| p.tree().ok());
 
     let mut opts = git2::DiffOptions::new();
     opts.show_binary(true);
 
-    let mut diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+    let mut diff = if super::replacement::refs(&repo)?.is_empty() {
+        repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?
+    } else {
+        let parent = commit.parent_id(0).ok().map(|id| id.to_string());
+        super::replacement::diff(&repo, parent.as_deref(), commit_oid)?
+    };
 
-    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    if super::replacement::refs(&repo)?.is_empty() {
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    }
     parse_diff(&repo, diff, commit_oid, file_path, false)
 }
 
@@ -1101,8 +1150,14 @@ fn compute_compare_files(
     let repo = git2::Repository::open(repo_path)?;
     let base_tree = repo.find_commit(git2::Oid::from_str(base_oid)?)?.tree()?;
     let cmp_tree = repo.find_commit(git2::Oid::from_str(cmp_oid)?)?.tree()?;
-    let mut diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), None)?;
-    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    let mut diff = if super::replacement::refs(&repo)?.is_empty() {
+        repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), None)?
+    } else {
+        super::replacement::diff(&repo, Some(base_oid), cmp_oid)?
+    };
+    if super::replacement::refs(&repo)?.is_empty() {
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    }
     let mut files = Vec::new();
     diff.foreach(
         &mut |delta, _| {
@@ -1174,8 +1229,14 @@ fn compute_compare_diff(
     let cmp_tree = repo.find_commit(git2::Oid::from_str(cmp_oid)?)?.tree()?;
     let mut opts = git2::DiffOptions::new();
     opts.show_binary(true);
-    let mut diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), Some(&mut opts))?;
-    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    let mut diff = if super::replacement::refs(&repo)?.is_empty() {
+        repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), Some(&mut opts))?
+    } else {
+        super::replacement::diff(&repo, Some(base_oid), cmp_oid)?
+    };
+    if super::replacement::refs(&repo)?.is_empty() {
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    }
     parse_diff(&repo, diff, cmp_oid, file_path, false)
 }
 

@@ -37,8 +37,9 @@ pub struct GraphEdge {
 #[derive(Debug, Default, Clone)]
 pub struct CommitGraph {
     cursor: Option<std::sync::Arc<super::history_cursor::Cursor>>,
-    /// This graph deliberately shows stored objects, not replacement objects.
+    /// Effective history follows Git replacement refs.
     pub replacement_refs: bool,
+    pub order_may_refine: bool,
     pub filter: GraphFilter,
     pub ref_targets: std::collections::BTreeMap<String, String>,
     pub local_names: std::collections::HashSet<String>,
@@ -84,20 +85,18 @@ impl CommitGraph {
         let limit = limit.max(1);
         let mut roots = Vec::new();
         let mut hidden = Vec::new();
-        let mut replacement_refs = false;
+        let replacements = super::replacement::refs(repo)?;
+        let replacement_refs = !replacements.is_empty();
         let mut ref_targets = std::collections::BTreeMap::new();
         for reference in repo.references()? {
             let reference = reference?;
             let Some(name) = reference.name().ok() else {
                 continue;
             };
-            if name.starts_with("refs/replace/") {
-                replacement_refs = true;
-            }
             if reference.symbolic_target().ok().flatten().is_some() {
                 continue;
             }
-            if name.starts_with("refs/recorde/") || name.starts_with("refs/replace/") {
+            if name.starts_with("refs/recorde/") || super::replacement::is_ref(name) {
                 continue;
             }
             if let Ok(commit) = reference.peel_to_commit() {
@@ -137,6 +136,7 @@ impl CommitGraph {
                 cursor.path == repo.path()
                     && cursor.roots == roots
                     && cursor.hidden == hidden
+                    && cursor.replacements == replacements
                     && !repo.is_shallow()
                     && cursor.accelerated == super::history_cursor::Cursor::can_accelerate(repo)
             })
@@ -169,7 +169,7 @@ impl CommitGraph {
         for reference in repo.references()? {
             let reference = reference?;
             if reference.name().ok().is_some_and(|name| {
-                name.starts_with("refs/recorde/") || name.starts_with("refs/replace/")
+                name.starts_with("refs/recorde/") || super::replacement::is_ref(name)
             }) {
                 continue;
             }
@@ -220,7 +220,7 @@ impl CommitGraph {
             let mut node = if let Some(cached) = cached {
                 cached.clone()
             } else {
-                let commit = repo.find_commit(oid)?;
+                let commit = repo.find_commit(super::replacement::resolve(oid, &replacements)?)?;
                 let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
                 let body = commit
                     .message()
@@ -291,6 +291,7 @@ impl CommitGraph {
             .max()
             .unwrap_or(0);
         Ok(Self {
+            order_may_refine: !cursor.accelerated,
             cursor: Some(cursor),
             replacement_refs,
             filter: filter.clone(),
@@ -356,6 +357,7 @@ impl CommitGraph {
         Self {
             cursor: None,
             replacement_refs: self.replacement_refs,
+            order_may_refine: self.order_may_refine,
             filter: self.filter.clone(),
             ref_targets: self.ref_targets.clone(),
             has_more: self.has_more,
@@ -508,6 +510,99 @@ mod tests {
     }
 
     #[test]
+    fn cold_pages_topologically_refine_skewed_octopus_without_writes_or_omissions() {
+        let fixture = TestRepo::new();
+        fixture.commit("base", b"base");
+        let repo = fixture.open();
+        let base = repo.head().unwrap().peel_to_commit().unwrap();
+        let tree = base.tree().unwrap();
+        let create = |parents: &[&git2::Commit], seconds| {
+            let signature = git2::Signature::new(
+                "Fixture",
+                "fixture@example.com",
+                &git2::Time::new(seconds, 0),
+            )
+            .unwrap();
+            repo.commit(None, &signature, &signature, "skewed", &tree, parents)
+                .unwrap()
+        };
+        let a = repo.find_commit(create(&[&base], 1000)).unwrap();
+        let b = repo.find_commit(create(&[&base], 9000)).unwrap();
+        let c = repo.find_commit(create(&[&a], 2000)).unwrap();
+        let d = repo.find_commit(create(&[&b], 500)).unwrap();
+        let head = create(&[&c, &d, &base], 400);
+        repo.reference("refs/heads/main", head, true, "fixture")
+            .unwrap();
+        let original_index = std::fs::read(repo.path().join("index")).unwrap();
+        let mut graph = CommitGraph::from_repo_limit(&repo, 2).unwrap();
+        assert!(graph.order_may_refine);
+        for count in [3, 4, 8] {
+            graph = CommitGraph::from_repo_page(
+                &repo,
+                count,
+                &GraphFilter::default(),
+                false,
+                Some(&graph),
+            )
+            .unwrap();
+            assert!(graph.edges.iter().all(|e| e.from_row < e.to_row));
+        }
+        assert!(!graph.has_more);
+        assert_eq!(graph.nodes.len(), 6);
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .map(|n| &n.oid)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            6
+        );
+        assert_eq!(
+            std::fs::read(repo.path().join("index")).unwrap(),
+            original_index
+        );
+        assert!(!repo.path().join("objects/info/commit-graph").exists());
+    }
+
+    #[test]
+    fn replacement_history_uses_effective_parents_and_invalidates_cached_pages() {
+        let fixture = TestRepo::new();
+        let root = fixture.commit("root", b"root");
+        let middle = fixture.commit("middle", b"middle");
+        let head = fixture.commit("head", b"head");
+        let repo = fixture.open();
+        let head_commit = repo.find_commit(head).unwrap();
+        let signature = repo.signature().unwrap();
+        let replacement = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "replacement message",
+                &head_commit.tree().unwrap(),
+                &[&repo.find_commit(root).unwrap()],
+            )
+            .unwrap();
+        let original = CommitGraph::from_repo_limit(&repo, 2).unwrap();
+        fixture.git_ok(&["replace", &head.to_string(), &replacement.to_string()]);
+        let effective =
+            CommitGraph::from_repo_page(&repo, 10, &GraphFilter::default(), true, Some(&original))
+                .unwrap();
+        assert_eq!(effective.nodes.len(), 2);
+        assert_eq!(effective.nodes[0].oid, head.to_string());
+        assert_eq!(effective.nodes[0].summary, "replacement message");
+        assert_eq!(effective.nodes[0].parents, vec![root.to_string()]);
+        assert!(!effective.oid_to_row.contains_key(&middle.to_string()));
+        assert!(effective.replacement_refs);
+        fixture.git_ok(&["replace", "-d", &head.to_string()]);
+        let restored =
+            CommitGraph::from_repo_page(&repo, 10, &GraphFilter::default(), true, Some(&effective))
+                .unwrap();
+        assert_eq!(restored.nodes.len(), 3);
+    }
+
+    #[test]
     #[ignore = "manual 100k-commit performance fixture"]
     fn benchmark_large_history_first_page() {
         let fixture = TestRepo::new();
@@ -534,31 +629,6 @@ mod tests {
             super::super::lifecycle::optimize_history(fixture.path()).unwrap();
             eprintln!("Build native commit graph: {:?}", started.elapsed());
         }
-        let native_started = std::time::Instant::now();
-        let native = super::super::process::git(
-            fixture.path(),
-            &[
-                "--no-replace-objects",
-                "rev-list",
-                "--topo-order",
-                "--max-count=2001",
-                &oid.to_string(),
-            ],
-            &std::sync::atomic::AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(
-            native
-                .stdout
-                .split(|b| *b == b'\n')
-                .filter(|line| !line.is_empty())
-                .count(),
-            2001
-        );
-        eprintln!(
-            "Native Git first-page traversal: {:?}",
-            native_started.elapsed()
-        );
         let started = std::time::Instant::now();
         let graph = CommitGraph::from_repo_limit(&repo, 2000).unwrap();
         eprintln!(
@@ -575,7 +645,7 @@ mod tests {
             CommitGraph::from_repo_page(&repo, 4000, &GraphFilter::default(), false, Some(&graph))
                 .unwrap();
         eprintln!(
-            "Next 2000 nodes with retained revwalk: {:?}",
+            "Next 2000 nodes with retained cursor: {:?}",
             next_started.elapsed()
         );
         assert!(std::sync::Arc::ptr_eq(
@@ -603,6 +673,31 @@ mod tests {
             );
             assert!(expanded.edges.iter().all(|e| e.from_row < e.to_row));
         }
+        let native_started = std::time::Instant::now();
+        let native = super::super::process::git(
+            fixture.path(),
+            &[
+                "--no-replace-objects",
+                "rev-list",
+                "--topo-order",
+                "--max-count=2001",
+                &oid.to_string(),
+            ],
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            native
+                .stdout
+                .split(|b| *b == b'\n')
+                .filter(|line| !line.is_empty())
+                .count(),
+            2001
+        );
+        eprintln!(
+            "Native Git first-page traversal: {:?}",
+            native_started.elapsed()
+        );
         let started = std::time::Instant::now();
         for first in 0..1900 {
             std::hint::black_box(graph.visible_edges(first, first + 40));

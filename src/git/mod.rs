@@ -35,6 +35,7 @@ pub mod worktrees;
 pub mod binary_preview;
 
 mod history_cursor;
+mod replacement;
 pub(crate) mod safe_path;
 
 pub mod graph_action;

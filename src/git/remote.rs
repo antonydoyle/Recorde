@@ -70,7 +70,7 @@ pub fn run_pull_with_rebase(
     _id: JobId,
     _tx: &Sender<JobProgress>,
 ) -> Result<(), GitError> {
-    pull(path, cancel, "rebase")
+    super::process::with_cancellation(cancel.clone(), || pull(path, cancel, "rebase"))
 }
 pub fn run_pull_ff_only(
     path: &Path,
@@ -96,8 +96,19 @@ fn pull(path: &Path, cancel: &AtomicBool, strategy: &str) -> Result<(), GitError
         cancel,
         crate::config::Config::load().fetch_prune,
     )?;
+    if strategy == "rebase" {
+        super::rebase::verify_merge_resolutions(path, "@{upstream}")
+            .map_err(|e| git2::Error::from_str(&e))?;
+    }
     let args: &[&str] = match strategy {
-        "rebase" => &["rebase", "--no-autostash", "@{upstream}"],
+        "rebase" => &[
+            "-c",
+            "rebase.updateRefs=false",
+            "rebase",
+            "--rebase-merges",
+            "--no-autostash",
+            "@{upstream}",
+        ],
         "ff-only" => &["merge", "--ff-only", "@{upstream}"],
         _ => &["merge", "--no-edit", "@{upstream}"],
     };

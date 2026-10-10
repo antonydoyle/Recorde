@@ -214,7 +214,7 @@ fn submit_commit(
                     git_commit(&rp, &msg, amend, signoff)
                 })
             } else {
-                git_commit(&rp, &msg, amend, signoff)
+                super::recovery::continue_sequence(&rp, || git_commit(&rp, &msg, amend, signoff))
             }
         },
         move |result, state| {
@@ -542,7 +542,7 @@ fn do_unstage_all(repo_path: &Path) -> Result<(), git2::Error> {
 
 /// Shell out to `git commit -m <msg>` so hooks (pre-commit, commit-msg, post-commit) run.
 /// Returns combined stdout+stderr on success, Err(combined) on failure.
-fn git_commit(
+pub(super) fn git_commit(
     repo_path: &Path,
     message: &str,
     amend: bool,
@@ -556,6 +556,37 @@ fn git_commit(
     }
     if signoff {
         cmd.arg("--signoff");
+    }
+    if !amend {
+        let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
+        let rebase = repo.path().join("rebase-merge");
+        if rebase.join("recorde-split").is_file() {
+            let stopped =
+                std::fs::read_to_string(rebase.join("stopped-sha")).map_err(|e| e.to_string())?;
+            let original = super::replacement::commit(
+                &repo,
+                git2::Oid::from_str(stopped.trim()).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let author = original.author();
+            let time = author.when();
+            let offset = time.offset_minutes();
+            cmd.env("GIT_AUTHOR_NAME", author.name().map_err(|e| e.to_string())?)
+                .env(
+                    "GIT_AUTHOR_EMAIL",
+                    author.email().map_err(|e| e.to_string())?,
+                )
+                .env(
+                    "GIT_AUTHOR_DATE",
+                    format!(
+                        "{} {}{:02}{:02}",
+                        time.seconds(),
+                        if offset < 0 { "-" } else { "+" },
+                        offset.abs() / 60,
+                        offset.abs() % 60
+                    ),
+                );
+        }
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
 

@@ -453,7 +453,8 @@ impl CommitGraphView {
                 }
                 self.filter_menu(ui, &graph);
                 ui.label(format!("{} commits", graph.nodes.len()));
-                if graph.replacement_refs { ui.colored_label(theme::accent_yellow(), "Original object history").on_hover_text("This repository has replacement refs. The graph and commit detail show stored original objects; native Git operations may honor replacements. Review replacement refs in Git before editing this history."); }
+                if graph.order_may_refine && graph.has_more { ui.label("Progressive history").on_hover_text("History loads without writing an index. As more commits load, rows may move to keep children before parents when commit clocks differ. Optimize History builds Git's index for stable ordering."); }
+                if graph.replacement_refs { ui.colored_label(theme::accent_yellow(), "Replacement history").on_hover_text("This graph and commit detail honor Git replacement objects. Original commit IDs are retained; replacement metadata and ancestry are shown."); }
                 if graph.has_more && ui.add_enabled(!loading, Button::new("More...")).clicked() {
                     crate::git::operations::load_more_history(self.state.clone());
                 }

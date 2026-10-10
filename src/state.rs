@@ -74,6 +74,7 @@ pub struct StashEntry {
 pub enum RebaseAction {
     Pick,
     Reword,
+    Edit,
     Squash,
     Fixup,
     Drop,
@@ -84,6 +85,7 @@ impl RebaseAction {
         match self {
             Self::Pick => "pick",
             Self::Reword => "reword",
+            Self::Edit => "edit / split",
             Self::Squash => "squash",
             Self::Fixup => "fixup",
             Self::Drop => "drop",

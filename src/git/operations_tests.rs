@@ -3,6 +3,65 @@ use crate::git::test_support::TestRepo;
 use crate::state::AppState;
 
 #[test]
+fn replacement_details_and_diffs_follow_effective_commit_and_tree() {
+    let fixture = TestRepo::new();
+    let base = fixture.commit("file", b"base\n");
+    let original = fixture.commit("file", b"original\n");
+    fixture.git_ok(&["checkout", "--detach", &base.to_string()]);
+    fixture.commit("file", b"replacement\n");
+    fixture.git_ok(&["commit", "--amend", "-m", "effective message"]);
+    let replacement = fixture.head();
+    fixture.git_ok(&["checkout", "main"]);
+    fixture.git_ok(&["replace", &original.to_string(), &replacement.to_string()]);
+    let detail = compute_commit_detail(fixture.path(), &original.to_string()).unwrap();
+    assert_eq!(detail.oid, original.to_string());
+    assert_eq!(detail.message, "effective message\n");
+    assert_eq!(detail.changed_files.len(), 1);
+    let diff = compute_diff(fixture.path(), &original.to_string(), "file").unwrap();
+    assert!(diff
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .any(|l| l.origin == '+' && l.content.contains("replacement")));
+    assert_eq!(fixture.head(), original);
+    assert_eq!(fixture.index_bytes("file"), b"original\n");
+    let (_, status) = collect_status(&fixture.open()).unwrap();
+    assert!(status
+        .iter()
+        .any(|f| f.path == "file" && f.staged_status == Some('M')));
+    let staged = compute_workdir_diff(fixture.path(), "file", true).unwrap();
+    assert!(staged
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .any(|l| l.origin == '-' && l.content.contains("replacement")));
+    let repo = fixture.open();
+    let replaced_tree = repo.find_commit(replacement).unwrap().tree().unwrap();
+    let extra_blob = repo.blob(b"tree replacement\n").unwrap();
+    let mut builder = repo.treebuilder(Some(&replaced_tree)).unwrap();
+    builder.insert("tree-only", extra_blob, 0o100644).unwrap();
+    let tree = builder.write().unwrap();
+    fixture.git_ok(&[
+        "replace",
+        &replaced_tree.id().to_string(),
+        &tree.to_string(),
+    ]);
+    let detail = compute_commit_detail(fixture.path(), &original.to_string()).unwrap();
+    assert!(detail.changed_files.iter().any(|f| f.path == "tree-only"));
+    let file = replaced_tree.get_name("file").unwrap().id();
+    let blob = repo.blob(b"blob replacement\n").unwrap();
+    fixture.git_ok(&["replace", &file.to_string(), &blob.to_string()]);
+    let diff = compute_diff(fixture.path(), &original.to_string(), "file").unwrap();
+    assert!(diff
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .any(|l| l.origin == '+' && l.content.contains("blob replacement")));
+    assert_eq!(fixture.head(), original);
+    assert_eq!(fixture.index_bytes("file"), b"original\n");
+}
+
+#[test]
 fn rename_conflicts_report_every_path_and_its_available_sides() {
     let repo = TestRepo::new();
     repo.commit("original", b"base\n");

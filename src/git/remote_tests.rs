@@ -84,6 +84,8 @@ fn divergent_pull_strategies_merge_rebase_or_refuse_without_data_loss() {
         let upstream = peer.commit("peer.txt", b"peer\n");
         peer.git_ok(&["push", "upstream", "main:trunk"]);
         let before = local.commit("local.txt", b"local\n");
+        local.git_ok(&["config", "rebase.updateRefs", "true"]);
+        local.git_ok(&["branch", "unrelated", &before.to_string()]);
         let result = pull(local.path(), &AtomicBool::new(false), strategy);
         if strategy == "ff-only" {
             assert!(result.is_err());
@@ -105,6 +107,14 @@ fn divergent_pull_strategies_merge_rebase_or_refuse_without_data_loss() {
             }
         }
         assert_eq!(local.index_bytes("local.txt"), b"local\n");
+        assert_eq!(
+            local
+                .open()
+                .find_reference("refs/heads/unrelated")
+                .unwrap()
+                .target(),
+            Some(before)
+        );
         assert_eq!(
             std::fs::read(local.path().join("local.txt")).unwrap(),
             b"local\n"

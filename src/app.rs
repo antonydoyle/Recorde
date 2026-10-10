@@ -4114,6 +4114,7 @@ impl RecordeApp {
         let mut do_continue = false;
         let mut do_skip = false;
         let mut do_abort = false;
+        let mut do_split = false;
 
         egui::TopBottomPanel::top("in_progress_banner")
             .exact_height(36.0)
@@ -4133,7 +4134,18 @@ impl RecordeApp {
                             .strong(),
                     );
                     ui.add_space(16.0);
-                    ui.label(styled_muted("Resolve conflicts, stage changes, then:"));
+                    ui.label(styled_muted(if caps.rebase_split {
+                        "Stage files or lines, commit each part, then continue."
+                    } else if caps.rebase_edit {
+                        "Amend this commit, or split it into smaller commits."
+                    } else {
+                        "Resolve conflicts, stage changes, then:"
+                    }));
+                    if caps.rebase_edit && !caps.rebase_split {
+                        if ui.button("Split commit").on_hover_text("Uncommit this edit step, keep its files, then stage and commit each part in Changes.").clicked() {
+                            do_split = true;
+                        }
+                    }
                     ui.add_space(10.0);
                     if ui
                         .add(
@@ -4146,7 +4158,7 @@ impl RecordeApp {
                     {
                         do_continue = true;
                     }
-                    if show_skip {
+                    if show_skip && !caps.rebase_split {
                         ui.add_space(4.0);
                         if ui
                             .add(
@@ -4183,6 +4195,17 @@ impl RecordeApp {
                 });
             });
 
+        if do_split {
+            {
+                let mut state = self.state.lock().unwrap();
+                state.selected_commit = None;
+                state.selected_commit_detail = None;
+                state.selected_file = None;
+                state.current_diff = None;
+                state.focused_pane = 3;
+            }
+            rebase::split_paused_commit(self.state.clone());
+        }
         if do_continue {
             if caps.rebase_in_progress {
                 rebase::continue_rebase(self.state.clone());
