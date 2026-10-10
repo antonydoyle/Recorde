@@ -75,6 +75,7 @@ try {
     Invoke-Msi '/i' $candidate 'upgrade'
     $newInstalled = $true
     $oldInstalled = $false
+    if ($installer.ProductState($oldProduct) -ne -1 -or $installer.ProductState($newProduct) -ne 5) { throw 'Upgrade did not replace the registered product.' }
     if ((Get-FileHash -LiteralPath $installed).Hash -ne (Get-FileHash -LiteralPath $expected).Hash) { throw 'Installed executable differs from the candidate build.' }
     if ((Get-Content (Join-Path (Split-Path $installed) 'recorde-install.json') -Raw | ConvertFrom-Json).kind -ne 'msi') { throw 'Installed update marker missing.' }
     $probe = Start-Process -FilePath $installed -ArgumentList '--version' -WindowStyle Hidden -PassThru -RedirectStandardOutput "$root\version.txt" -RedirectStandardError "$root\version-error.txt"
@@ -87,6 +88,10 @@ try {
     Invoke-Msi '/x' $newProduct 'uninstall'
     $newInstalled = $false
     if (Test-Path -LiteralPath $installed) { throw 'Uninstall left executable behind.' }
+    if ($installer.ProductState($newProduct) -ne -1) { throw 'Uninstall left product registration behind.' }
+    foreach ($programs in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms'))) {
+        if (Test-Path -LiteralPath (Join-Path $programs 'Recorde\Recorde.lnk')) { throw 'Uninstall left a Start Menu shortcut behind.' }
+    }
     Assert-UserData
     [pscustomobject]@{baseline=$oldVersion; candidate=$newVersion; upgrade='passed'; downgrade='rejected'; uninstall='passed'; userdata='preserved'} |
         ConvertTo-Json | Set-Content "$root\result.json"

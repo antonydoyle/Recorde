@@ -65,7 +65,9 @@ def main():
             raise RuntimeError('Installed executable differs from candidate')
         if json.loads(Path('/usr/bin/recorde-install.json').read_text())['kind'] != 'deb':
             raise RuntimeError('Installed update marker missing')
-        if run([str(installed), '--version'], 'version') != f'Recorde {new_version}':
+        # Debian may append its own revision (e.g. 0.4.0-1).
+        expected_version = run([str(args.binary.resolve()), '--version'], 'candidate-version')
+        if not expected_version.startswith('Recorde ') or run([str(installed), '--version'], 'version') != expected_version:
             raise RuntimeError('Installed executable version mismatch')
         assert_userdata()
         run(['sudo', '-n', 'apt-get', 'remove', '-y', 'recorde'], 'uninstall')
