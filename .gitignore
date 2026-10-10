@@ -1,5 +1,6 @@
 # Compiled output
 /target/
+/tools/*/target/
 /debug/
 **/*.rs.bk
 *.pdb
