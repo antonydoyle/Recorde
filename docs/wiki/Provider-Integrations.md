@@ -1,7 +1,7 @@
 # Provider Integrations
 
 Recorde has provider-neutral models for repository metadata and provider-specific
-adapters for GitHub and GitLab.
+adapters for GitHub, GitLab, Bitbucket Cloud and Azure DevOps.
 
 ## Supported Providers
 
@@ -9,6 +9,43 @@ adapters for GitHub and GitLab.
 - GitHub Enterprise.
 - GitLab.com.
 - Self-hosted GitLab.
+- Bitbucket Cloud.
+- Azure DevOps Services.
+
+## Browser sign-in
+
+GitHub and GitLab support device authorization from **Accounts & SSH**. Register
+an application with the provider, enter its public client ID, then start sign-in.
+Recorde displays a short code and opens the provider's verification page. Check
+the account and requested permissions there. After authorization, Recorde shows
+the verified account; choose **Save** to store it or **Discard** to cancel.
+
+Client IDs are public configuration. Access and refresh tokens stay in the OS
+credential vault. Recorde does not embed or request a client secret. Existing
+personal access token accounts remain supported. Refresh failures require
+signing in again; Recorde does not silently switch accounts.
+
+For a GitHub OAuth application:
+
+1. Open [New OAuth application](https://github.com/settings/applications/new)
+   while signed in to the account that should own it.
+2. Use **Recorde** as the name and the project's repository URL as its homepage.
+3. GitHub requires a callback URL even for device authorization. A loopback URL
+   such as `http://127.0.0.1:42813/oauth/callback` can fill that registration field;
+   this device flow does not start a callback listener.
+4. Enable **Device Flow** and copy the public **Client ID** into Recorde. Do not
+   copy a client secret into Recorde, source control or support messages.
+
+GitLab requires a registered public application and a server that supports its
+device authorization endpoints. Recorde requests `api`, `read_user` and
+`write_repository`; GitHub requests `repo`, `read:user` and `offline_access`.
+Self-hosted services use their own application registration and exact host/port.
+Bitbucket and Azure currently use token accounts rather than browser sign-in.
+
+Registration does not create accounts on other providers. Live acceptance of
+these flows requires the relevant account and a registered application; mocked
+protocol tests do not establish that a particular enterprise deployment enables
+device authorization.
 
 The account model stores provider kind, host, and username. Tokens are retrieved
 from the OS credential vault when provider panels or native Git HTTPS operations
