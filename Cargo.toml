@@ -47,6 +47,8 @@ sha2 = "0.10"
 regex = "1"
 command-group = "5"
 notify = "8"
+semver = "1"
+recorde-update-signing = { path = "tools/update-signing" }
 
 tempfile = "3"
 cap-std = "4.0.3"
@@ -86,3 +88,9 @@ upgrade-guid = "F8B2C4E6-A3D5-4F7E-9B2C-6E8A1C3F5B7D"
 path-guid    = "A9C1E3F5-B7D9-4E6F-8A2C-1B3D5E7F9A2C"
 license      = false
 eula         = false
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }

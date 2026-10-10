@@ -73,10 +73,7 @@ impl Target {
         )
     }
     pub fn checkpoint_key(&self) -> String {
-        format!(
-            "{}/{}/{}/{}",
-            self.channel, self.platform, self.arch, self.package_kind
-        )
+        format!("{}/{}/{}", self.platform, self.arch, self.package_kind)
     }
 }
 
@@ -90,6 +87,34 @@ pub fn release_url(version: &str, name: &str) -> Result<String, String> {
         || matches!(name, "." | "..")
     {
         return Err("Invalid release artifact name.".into());
+    }
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    if name.ends_with('.')
+        || matches!(
+            name.to_ascii_lowercase().as_str(),
+            "apply.json"
+                | "envelope.json"
+                | "ready"
+                | "healthy"
+                | "continue"
+                | "outcome.txt"
+                | "helper-process.json"
+                | "helper-identity.json"
+                | ".recorde-update-pending.json"
+                | "recorde-update-helper"
+                | "recorde-update-helper.exe"
+                | "recorde-install.json"
+        )
+        || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err("Reserved update artifact name.".into());
     }
     let mut url =
         url::Url::parse("https://github.com/antonydoyle/Recorde/releases/download/").unwrap();
@@ -176,6 +201,9 @@ pub fn validate_shape(manifest: &Manifest) -> Result<(), String> {
         "macos" => matches!(manifest.package_kind.as_str(), "portable" | "dmg"),
         _ => false,
     };
+    if manifest.arch == "universal" && manifest.platform != "macos" {
+        return Err("Universal architecture is only supported for macOS.".into());
+    }
     if !valid_kind {
         return Err("Update package kind does not match the platform.".into());
     }
@@ -209,20 +237,18 @@ pub fn validate_offer(
     checkpoint: Option<&Checkpoint>,
 ) -> Result<(), String> {
     validate_shape(manifest)?;
-    if (
-        &manifest.platform,
-        &manifest.arch,
-        &manifest.package_kind,
-        &manifest.channel,
-    ) != (
-        &target.platform,
-        &target.arch,
-        &target.package_kind,
-        &target.channel,
-    ) {
+    if (&manifest.platform, &manifest.arch, &manifest.package_kind)
+        != (&target.platform, &target.arch, &target.package_kind)
+        || !(manifest.channel == target.channel
+            || (target.channel == "preview" && manifest.channel == "stable"))
+    {
         return Err("Update manifest targets a different platform, package or channel.".into());
     }
-    if manifest.issued_at > now.saturating_add(600) || manifest.expires_at <= now {
+    if checkpoint.is_some_and(|seen| now.saturating_add(600) < seen.issued_at) {
+        return Err("System clock is older than an authenticated update checkpoint. Check the clock before updating.".into());
+    }
+    let effective_now = now.max(checkpoint.map(|seen| seen.issued_at).unwrap_or(0));
+    if manifest.issued_at > now.saturating_add(600) || manifest.expires_at <= effective_now {
         return Err("Update manifest is expired or its clock is in the future. Check the system clock or wait for a freshly signed release.".into());
     }
     let offered =
@@ -265,17 +291,47 @@ pub fn public_key(seed: &[u8; 32], key_id: String) -> PublicKey {
 }
 
 pub fn copy_verified(
+    reader: impl Read,
+    writer: impl Write,
+    manifest: &Manifest,
+) -> Result<(), String> {
+    copy_checked(reader, writer, manifest, || Ok(()))
+}
+
+pub fn copy_verified_cancelled(
+    reader: impl Read,
+    writer: impl Write,
+    manifest: &Manifest,
+    cancel: &std::sync::atomic::AtomicBool,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    copy_checked(reader, writer, manifest, || {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Update download cancelled.".into());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("Update download exceeded its overall time limit.".into());
+        }
+        Ok(())
+    })
+}
+
+fn copy_checked(
     mut reader: impl Read,
     mut writer: impl Write,
     manifest: &Manifest,
+    mut check: impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let mut count = 0u64;
     let mut hash = Sha256::new();
     let mut buffer = [0; 64 * 1024];
     loop {
+        check()?;
         let n = reader
             .read(&mut buffer)
             .map_err(|_| "Update download was interrupted.")?;
+        check()?;
         if n == 0 {
             break;
         }

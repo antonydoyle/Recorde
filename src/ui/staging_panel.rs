@@ -35,6 +35,10 @@ impl StagingPanel {
         }
     }
 
+    pub fn flush_drafts(&mut self) -> Result<(), String> {
+        self.drafts.flush_all()
+    }
+
     pub fn show(&mut self, ui: &mut Ui) {
         let repo = self.state.lock().unwrap().repo_path.clone();
         self.drafts.switch_to(repo);

@@ -43,3 +43,9 @@ The envelope has exactly `manifest_base64` and `signature_base64`, both standard
 The manifest contains `schema` (1), `key_id`, `channel`, `version`, `issued_at`, `expires_at`, `platform`, `arch`, `package_kind`, `artifact_name`, `url`, `size`, `sha256`. Unknown and duplicate fields are rejected. SHA-256 is lowercase hexadecimal. The URL must exactly name the artifact under `https://github.com/antonydoyle/Recorde/releases/download/v{version}/`. Stable excludes prerelease versions. Update clients also check package/platform/channel, time, the running version, and their persisted highest accepted version and issuance time.
 
 For rotation, ship both old and new public keys in an authenticated application release before signing later releases with the new key. Keep key IDs unique. Never distribute a new trusted key solely through the update manifest.
+
+## Client policy
+
+Preview checks consider stable releases as well as previews; stable checks never accept a prerelease. The persisted version and issuance floor is shared across channels for each platform/architecture/package kind, so switching channels cannot authorize a downgrade. Standard SemVer precedence ignores build metadata: an equal version with different build metadata is not a newer update. A clock more than ten minutes behind a previously authenticated issuance fails with a clock diagnostic. A corrupt checkpoint is preserved and updates fail closed; changing preferences never resets the floor.
+
+The client offers macOS `universal/dmg` downloads only. Runtime apply safety and platform limits are documented in `docs/authenticated-updates.md`.

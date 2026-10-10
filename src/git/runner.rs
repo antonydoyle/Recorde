@@ -62,6 +62,10 @@ impl GitRunner {
         events
     }
 
+    pub fn has_any_jobs(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub fn has_jobs(&self, path: &std::path::Path) -> bool {
         self.pending.values().any(|p| p == path)
     }

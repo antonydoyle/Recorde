@@ -46,6 +46,7 @@ enum SettingsTab {
     Shortcuts,
     Repository,
     About,
+    Updates,
 }
 
 enum AccountChange {
@@ -188,6 +189,8 @@ pub struct RecordeApp {
     branch_switcher_query: String,
     settings_open: bool,
     settings_tab: SettingsTab,
+    updater: crate::update::Controller,
+    instance_guard: Option<crate::update::InstanceGuard>,
     git_name_input: String,
     git_email_input: String,
     git_version: String,
@@ -221,6 +224,11 @@ pub struct RecordeApp {
 }
 
 impl RecordeApp {
+    pub fn with_instance_guard(mut self, guard: Option<crate::update::InstanceGuard>) -> Self {
+        self.instance_guard = guard;
+        self
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, initial_repo: Option<std::path::PathBuf>) -> Self {
         let config = Config::load();
         let dark_theme = config.dark_theme;
@@ -312,6 +320,8 @@ impl RecordeApp {
             branch_switcher_query: String::new(),
             settings_open: false,
             settings_tab: SettingsTab::App,
+            updater: Default::default(),
+            instance_guard: None,
             git_name_input: String::new(),
             git_email_input: String::new(),
             git_version: "Checking...".into(),
@@ -1225,6 +1235,12 @@ impl RecordeApp {
                         SettingsTab::Repository,
                         "Repository",
                     );
+                    settings_tab_button(
+                        ui,
+                        &mut self.settings_tab,
+                        SettingsTab::Updates,
+                        "Updates",
+                    );
                     settings_tab_button(ui, &mut self.settings_tab, SettingsTab::About, "About");
                 });
                 ui.add(egui::Separator::default().spacing(0.0));
@@ -1240,6 +1256,7 @@ impl RecordeApp {
                         SettingsTab::Accounts => self.render_accounts_tab(ui),
                         SettingsTab::Repository => self.render_repo_settings(ui),
                         SettingsTab::About => self.render_about(ui),
+                        SettingsTab::Updates => self.render_update_settings(ui),
                     });
 
                 ui.add_space(16.0);
@@ -1249,6 +1266,73 @@ impl RecordeApp {
                     self.settings_open = false;
                 }
             });
+    }
+
+    fn update_restart_idle(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        !self.runner.has_any_jobs()
+            && state.local_jobs.is_empty()
+            && state.active_ops.is_empty()
+            && state.remote_op.is_none()
+            && state.repo_load_path.is_none()
+            && !state.bisect_in_progress
+            && self.account_task.is_none()
+            && !state.capabilities.as_ref().is_some_and(|c| {
+                c.rebase_in_progress
+                    || c.merge_in_progress
+                    || c.cherry_pick_in_progress
+                    || c.revert_in_progress
+            })
+    }
+
+    fn prepare_update_restart(&mut self) -> Result<(), String> {
+        if !self.update_restart_idle() {
+            return Err("Finish repository operations, clones and pending account changes before restarting.".into());
+        }
+        if self.repo_ui.conflict_editor.is_some()
+            || self.repo_ui.provider_editor.is_some()
+            || self.repo_sessions.values().any(|session| {
+                session.conflict_editor.is_some() || session.provider_editor.is_some()
+            })
+        {
+            return Err("Close conflict and review editors before restarting; their unsent edits must be handled first.".into());
+        }
+        let mut paths = self.config.open_repos.clone();
+        if let Some(path) = self.state.lock().unwrap().repo_path.clone() {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        for path in paths {
+            let repository = git2::Repository::open(&path).map_err(|_| {
+                format!(
+                    "Cannot verify repository state before restart: {}",
+                    path.display()
+                )
+            })?;
+            if repository.state() != git2::RepositoryState::Clean
+                || repository.path().join("BISECT_LOG").exists()
+            {
+                return Err(format!(
+                    "Finish the Git sequence in {} before restarting.",
+                    path.display()
+                ));
+            }
+        }
+        self.staging_panel.flush_drafts()?;
+        self.persist_navigation();
+        self.config.try_save()?;
+        Ok(())
+    }
+
+    fn render_update_settings(&mut self, ui: &mut egui::Ui) {
+        let idle = self.update_restart_idle();
+        if self.updater.show(ui, &self.config.accounts, idle) {
+            match self.prepare_update_restart() {
+                Ok(()) => self.updater.start_apply(),
+                Err(error) => self.updater.report_error(error),
+            }
+        }
     }
 
     fn render_ui_settings(&mut self, ctx: &Context, ui: &mut egui::Ui) {
@@ -2778,6 +2862,22 @@ impl eframe::App for RecordeApp {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = root_ui.ctx().clone();
         let ctx = &context;
+        self.updater.poll(ctx);
+        if self.updater.ready_to_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        if self.updater.applying {
+            egui::CentralPanel::default().show(root_ui, |ui| {
+                ui.spinner();
+                ui.label(
+                    "Preparing the verified update. Recorde will close when its helper is ready.",
+                );
+            });
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
+
         let ready = self.state.lock().unwrap().commit_graph.is_some();
         self.frame_metrics
             .observe(ctx, _frame.info().cpu_usage, ready);
