@@ -6,6 +6,7 @@ pub mod commit_settings;
 pub mod conflict_edit;
 pub mod conflicts;
 pub mod error;
+pub mod gitflow;
 pub mod graph;
 pub mod history;
 pub mod job;
@@ -27,6 +28,7 @@ pub mod reviews;
 pub mod runner;
 pub mod staging;
 pub mod submodules;
+pub mod templates;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod watch;

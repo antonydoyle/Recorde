@@ -43,6 +43,11 @@ pub enum Command {
     InteractiveRebase,
     PreviewCherryPick,
     PreviewGraphRebase,
+    ResetToCommit,
+    Undo,
+    Redo,
+    IntegratedTerminal,
+    GitFlow,
 }
 impl Command {
     pub const ALL: &'static [Self] = &[
@@ -85,6 +90,11 @@ impl Command {
         Self::InteractiveRebase,
         Self::PreviewCherryPick,
         Self::PreviewGraphRebase,
+        Self::ResetToCommit,
+        Self::Undo,
+        Self::Redo,
+        Self::IntegratedTerminal,
+        Self::GitFlow,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -127,6 +137,11 @@ impl Command {
             Self::InteractiveRebase => "InteractiveRebase",
             Self::PreviewCherryPick => "PreviewCherryPick",
             Self::PreviewGraphRebase => "PreviewGraphRebase",
+            Self::ResetToCommit => "ResetToCommit",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::IntegratedTerminal => "IntegratedTerminal",
+            Self::GitFlow => "GitFlow",
         }
     }
     pub fn label(self) -> &'static str {
@@ -158,7 +173,7 @@ impl Command {
             Self::Bisect => "Bisect",
             Self::Provider => "Issues, CI and releases",
             Self::Refresh => "Refresh repository",
-            Self::Terminal => "Open terminal",
+            Self::Terminal => "Open external terminal",
             Self::Reveal => "Reveal repository in file manager",
             Self::CopyPath => "Copy repository path",
             Self::Sidebar => "Focus sidebar",
@@ -170,6 +185,11 @@ impl Command {
             Self::InteractiveRebase => "Interactive rebase from selected commit",
             Self::PreviewCherryPick => "Preview cherry-pick selected commit",
             Self::PreviewGraphRebase => "Preview rebase onto selected commit",
+            Self::ResetToCommit => "Reset current branch to selected commit",
+            Self::Undo => "Undo last operation",
+            Self::Redo => "Redo undone operation",
+            Self::IntegratedTerminal => "Toggle integrated terminal",
+            Self::GitFlow => "Git Flow",
         }
     }
     pub fn disabled_reason(self, s: &crate::state::AppState) -> Option<&'static str> {
@@ -186,6 +206,7 @@ impl Command {
                 | Self::Shortcuts
                 | Self::Accounts
                 | Self::Theme
+                | Self::IntegratedTerminal
         ) {
             return None;
         }
@@ -202,6 +223,7 @@ impl Command {
                 | Self::InteractiveRebase
                 | Self::PreviewCherryPick
                 | Self::PreviewGraphRebase
+                | Self::ResetToCommit
         ) && s.selected_commit.is_none()
         {
             return Some("Select a commit first");
@@ -233,6 +255,10 @@ impl Command {
                 | Self::InteractiveRebase
                 | Self::PreviewCherryPick
                 | Self::PreviewGraphRebase
+                | Self::ResetToCommit
+                | Self::Undo
+                | Self::Redo
+                | Self::GitFlow
         );
         if mutating && (!s.local_jobs.is_empty() || !s.active_ops.is_empty()) {
             return Some("Repository operation is queued or running");
@@ -268,6 +294,12 @@ impl Command {
         if self == Self::Stash && s.dirty_count == 0 {
             return Some("No changes to stash");
         }
+        if self == Self::Undo && s.undo_step.is_none() {
+            return Some("Nothing to undo");
+        }
+        if self == Self::Redo && s.redo_step.is_none() {
+            return Some("Nothing to redo");
+        }
         None
     }
     pub fn available(self, s: &crate::state::AppState) -> bool {
@@ -285,6 +317,9 @@ impl Command {
             Self::Graph => ("2", false),
             Self::Changes => ("3", false),
             Self::Diff => ("4", false),
+            Self::Undo => ("Z", false),
+            Self::Redo => ("Z", true),
+            Self::IntegratedTerminal => ("Backtick", false),
             _ => return None,
         };
         Some(Shortcut {

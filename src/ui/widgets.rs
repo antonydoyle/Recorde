@@ -59,8 +59,14 @@ pub fn status_badge(ui: &mut Ui, ch: char) -> Response {
     };
     let size = Vec2::splat(18.0);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
-    ui.painter()
-        .rect_filled(rect, 3.0, color.gamma_multiply(0.25));
+    // A saturated tint behind the same dark foreground drops light-theme
+    // 12-point badge labels below readable contrast, especially on selected rows.
+    let background = if theme::is_dark() {
+        color.gamma_multiply(0.25)
+    } else {
+        theme::bg_panel()
+    };
+    ui.painter().rect_filled(rect, 3.0, background);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -276,7 +282,7 @@ pub fn branch_label(
     row_height: f32,
 ) -> f32 {
     let font = FontId::proportional(12.0);
-    let galley = painter.layout_no_wrap(name.to_string(), font, Color32::WHITE);
+    let galley = painter.layout_no_wrap(name.to_string(), font, theme::text_primary());
     let pad_x = 6.0;
     let pad_y = 2.0;
     let w = galley.size().x + pad_x * 2.0;
@@ -287,13 +293,7 @@ pub fn branch_label(
     );
 
     // colour by remote vs local vs tag
-    let bg = if name.contains('/') {
-        Color32::from_rgb(28, 42, 68)
-    } else if name.starts_with('v') && name.chars().nth(1).map_or(false, |c| c.is_ascii_digit()) {
-        Color32::from_rgb(42, 28, 68)
-    } else {
-        Color32::from_rgb(24, 48, 92)
-    };
+    let bg = theme::bg_selected();
     let border_col = if name.contains('/') {
         theme::accent_blue().gamma_multiply(0.5)
     } else {
@@ -310,7 +310,7 @@ pub fn branch_label(
     painter.galley(
         Pos2::new(rect.min.x + pad_x, rect.min.y + (h - galley.size().y) / 2.0),
         galley,
-        Color32::WHITE,
+        theme::text_primary(),
     );
     rect.max.x
 }
@@ -325,8 +325,23 @@ pub fn avatar(painter: &egui::Painter, center: Pos2, radius: f32, name: &str) {
         egui::Align2::CENTER_CENTER,
         &theme::author_initials(name),
         FontId::proportional(radius * 0.75),
-        Color32::WHITE,
+        theme::contrast_text(color),
     );
+}
+
+/// A downloaded author picture when available, otherwise initials.
+pub fn avatar_for(painter: &egui::Painter, center: Pos2, radius: f32, name: &str, email: &str) {
+    match crate::ui::avatars::texture(painter.ctx(), email) {
+        Some(texture) => {
+            painter.image(
+                texture,
+                Rect::from_center_size(center, Vec2::splat(radius * 2.0)),
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        None => avatar(painter, center, radius, name),
+    }
 }
 
 // ── Horizontal separator line ─────────────────────────────────────────────────

@@ -208,6 +208,10 @@ fn submit_commit(
         state,
         move || {
             let rp = work_path;
+            if git2::Repository::open(&rp).is_ok_and(|repo| super::merge::squash_in_progress(&repo))
+            {
+                return Err("Resolve and stage squash conflicts, then use Continue in the squash merge banner. Commit and Amend are unavailable during a squash merge.".into());
+            }
             if git2::Repository::open(&rp).is_ok_and(|r| r.state() == git2::RepositoryState::Clean)
             {
                 super::recovery::protect(&rp, if amend { "Amend commit" } else { "Commit" }, || {
@@ -844,6 +848,45 @@ mod tests {
             std::fs::read(repo.path().join("file")).unwrap(),
             b"unstaged\n"
         );
+    }
+
+    #[test]
+    fn commit_and_amend_refuse_resolved_squash_and_leave_original_recovery_pending() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"base\n");
+        repo.git_ok(&["checkout", "-b", "topic"]);
+        repo.commit("file", b"topic\n");
+        repo.git_ok(&["checkout", "main"]);
+        let head = repo.commit("file", b"main\n");
+        assert!(super::super::merge::do_merge(
+            repo.path(),
+            "topic",
+            super::super::merge::MergeMode::Squash,
+            None
+        )
+        .is_err());
+        repo.write("file", b"resolved\n");
+        repo.git_ok(&["add", "file"]);
+        let count = super::super::recovery::list(repo.path()).len();
+        let state = crate::state::new_shared_state();
+        state.lock().unwrap().repo_path = Some(repo.path().into());
+        for amend in [false, true] {
+            let completion =
+                submit_commit("not a separate commit", amend, false, state.clone()).unwrap();
+            assert!(!completion
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap());
+            assert!(state
+                .lock()
+                .unwrap()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Continue"));
+            assert_eq!(repo.head(), head);
+            assert_eq!(repo.index_bytes("file"), b"resolved\n");
+            assert_eq!(super::super::recovery::list(repo.path()).len(), count);
+        }
     }
 
     #[test]

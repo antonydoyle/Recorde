@@ -211,6 +211,136 @@ fn repository_binding_and_url_username_must_agree() {
 }
 
 #[test]
+fn explicit_clone_account_overrides_global_profile_default_but_not_repository_binding() {
+    let mut config = crate::config::Config::default();
+    config
+        .provider_accounts
+        .insert("github.com".into(), "work-user".into());
+    let personal =
+        super::super::endpoint::parse("https://personal-user@github.com/team/project.git", false)
+            .unwrap();
+    let automatic =
+        super::super::endpoint::parse("https://github.com/team/project.git", false).unwrap();
+    let repo = Path::new("fixture/repository");
+    assert_eq!(
+        configured_username(&personal, None, &config).unwrap(),
+        Some("personal-user")
+    );
+    assert_eq!(
+        configured_username(&personal, Some(repo), &config).unwrap(),
+        Some("personal-user")
+    );
+    assert_eq!(
+        configured_username(&automatic, None, &config).unwrap(),
+        Some("work-user")
+    );
+    assert_eq!(
+        configured_username(&automatic, Some(repo), &config).unwrap(),
+        Some("work-user")
+    );
+
+    // Verify routing against an isolated vault with both identities, without
+    // touching the user's global config or native desktop credential vault.
+    let (_dir, store) = fixture();
+    store
+        .save("github.com", "personal-user", "personal-token")
+        .unwrap();
+    store.save("github.com", "work-user", "work-token").unwrap();
+    let username = configured_username(&personal, None, &config).unwrap();
+    assert_eq!(
+        store.lookup(&personal.host, username).unwrap(),
+        Some(("personal-user".into(), "personal-token".into()))
+    );
+    let username = configured_username(&automatic, None, &config).unwrap();
+    assert_eq!(
+        store.lookup(&automatic.host, username).unwrap(),
+        Some(("work-user".into(), "work-token".into()))
+    );
+    let missing =
+        super::super::endpoint::parse("https://missing-user@github.com/team/project.git", false)
+            .unwrap();
+    let username = configured_username(&missing, None, &config).unwrap();
+    assert_eq!(username, Some("missing-user"));
+    assert_eq!(
+        store.lookup(&missing.host, username).unwrap(),
+        None,
+        "an unavailable explicit account must never fall back to the default account"
+    );
+
+    config
+        .per_repo
+        .entry(repo.display().to_string())
+        .or_default()
+        .provider_accounts
+        .insert("github.com".into(), "work-user".into());
+    assert!(configured_username(&personal, Some(repo), &config)
+        .unwrap_err()
+        .contains("conflicts"));
+    config
+        .per_repo
+        .get_mut(&repo.display().to_string())
+        .unwrap()
+        .provider_accounts
+        .insert("github.com".into(), "personal-user".into());
+    assert_eq!(
+        configured_username(&personal, Some(repo), &config).unwrap(),
+        Some("personal-user")
+    );
+    assert_eq!(
+        configured_username(&automatic, Some(repo), &config).unwrap(),
+        Some("personal-user")
+    );
+}
+
+#[test]
+fn global_profile_fallback_respects_transport_aliases_and_exact_authority() {
+    let mut config = crate::config::Config::default();
+    config
+        .provider_accounts
+        .insert("github.com".into(), "work-user".into());
+    config.accounts.push(super::super::StoredAccount {
+        provider: super::super::ProviderKind::GitHubCom,
+        host: "github.com".into(),
+        username: "work-user".into(),
+    });
+    let alias =
+        super::super::endpoint::parse("https://x-access-token@github.com/team/project.git", false)
+            .unwrap();
+    let ssh = super::super::endpoint::parse("git@github.com:team/project.git", true).unwrap();
+    assert_eq!(
+        configured_username(&alias, None, &config).unwrap(),
+        Some("work-user")
+    );
+    assert_eq!(
+        configured_username(&ssh, None, &config).unwrap(),
+        Some("work-user")
+    );
+    for url in [
+        "https://github.com:8443/team/project.git",
+        "https://github.com.evil.test/team/project.git",
+    ] {
+        let endpoint = super::super::endpoint::parse(url, false).unwrap();
+        assert_eq!(
+            configured_username(&endpoint, None, &config).unwrap(),
+            None,
+            "{url}"
+        );
+    }
+    config
+        .provider_accounts
+        .insert("bitbucket.org".into(), "work@example.com".into());
+    let bitbucket = super::super::endpoint::parse(
+        "https://x-bitbucket-api-token-auth@bitbucket.org/team/project.git",
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        configured_username(&bitbucket, None, &config).unwrap(),
+        Some("work@example.com")
+    );
+}
+
+#[test]
 fn oauth_rotation_is_verified_in_vault_before_access_is_returned() {
     for fail in [false, true] {
         let (_dir, store) = fixture();

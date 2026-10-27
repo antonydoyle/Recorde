@@ -196,6 +196,7 @@ impl DiffView {
         // ── Left file list ────────────────────────────────────────────────
         if file_list_w > 0.0 {
             ui.scope_builder(egui::UiBuilder::new().max_rect(list_rect), |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(list_rect));
                 ui.painter()
                     .rect_filled(ui.max_rect(), 0.0, theme::bg_panel());
                 egui::ScrollArea::vertical()
@@ -229,22 +230,23 @@ impl DiffView {
                                     .on_hover_text(status_tooltip(f.status));
                                     ui.add_space(3.0);
                                     let name = f.path.rsplit('/').next().unwrap_or(&f.path);
-                                    let r = ui.selectable_label(
-                                        is_sel,
-                                        egui::RichText::new(name)
-                                            .color(if is_sel {
-                                                theme::text_primary()
-                                            } else {
-                                                theme::text_secondary()
-                                            })
-                                            .size(12.0),
+                                    let r = ui.add(
+                                        egui::Button::selectable(
+                                            is_sel,
+                                            egui::RichText::new(name)
+                                                .color(if is_sel {
+                                                    theme::text_primary()
+                                                } else {
+                                                    theme::text_secondary()
+                                                })
+                                                .size(12.0),
+                                        )
+                                        .truncate(),
                                     );
                                     if r.clicked() {
                                         clicked = true;
                                     }
-                                    if f.path != name {
-                                        r.on_hover_text(&f.path);
-                                    }
+                                    r.on_hover_text(&f.path);
                                 });
                                 if clicked {
                                     let path = f.path.clone();
@@ -291,22 +293,23 @@ impl DiffView {
                                         .on_hover_text(status_tooltip(status));
                                         ui.add_space(3.0);
                                         let name = f.path.rsplit('/').next().unwrap_or(&f.path);
-                                        let r = ui.selectable_label(
-                                            is_sel,
-                                            egui::RichText::new(name)
-                                                .color(if is_sel {
-                                                    theme::bg_app()
-                                                } else {
-                                                    theme::text_secondary()
-                                                })
-                                                .size(12.0),
+                                        let r = ui.add(
+                                            egui::Button::selectable(
+                                                is_sel,
+                                                egui::RichText::new(name)
+                                                    .color(if is_sel {
+                                                        theme::text_primary()
+                                                    } else {
+                                                        theme::text_secondary()
+                                                    })
+                                                    .size(12.0),
+                                            )
+                                            .truncate(),
                                         );
                                         if r.clicked() {
                                             clicked = true;
                                         }
-                                        if f.path != name {
-                                            r.on_hover_text(&f.path);
-                                        }
+                                        r.on_hover_text(&f.path);
                                     });
                                     if clicked {
                                         let path = f.path.clone();

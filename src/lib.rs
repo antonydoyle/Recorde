@@ -8,6 +8,7 @@ pub mod config;
 pub mod crash;
 pub mod git;
 pub mod icons;
+pub mod profiles;
 pub mod providers;
 pub mod state;
 pub mod theme;

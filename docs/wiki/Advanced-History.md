@@ -38,11 +38,14 @@ also require preservation before recovery.
 
 ## Large and replaced histories
 
+Graph Squash and Drop selection plans run in cancellable background tasks. Cancel while Preparing history plan is visible to stop planning; the repository has not been rewritten at that stage. Large range listings stream through a private temporary file instead of the ordinary diagnostic-output buffer. Plans support up to 100,000 commits; a larger range asks you to choose a more recent starting commit. The reviewed repository, branch, HEAD and replacement refs must still match before a prepared plan is used.
+
 Cold repositories load bounded native Git pages without writing a commit graph.
 The loaded graph is ordered with children before parents. With skewed commit
 clocks, loading more history can refine row positions; commit identity remains
-the original OID. **Optimize History** explicitly writes Git's disposable index
-to enable stable topology ordering from the first page.
+the original OID. **Optimize history loading**, under Settings > Repository >
+Checkout and history, explicitly writes Git's disposable index to enable stable
+topology ordering from the first page.
 
 Replacement refs affect graph metadata, ancestry, commit details and diffs,
 including replacement trees and blobs. The visible OID remains the original

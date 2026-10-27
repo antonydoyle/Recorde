@@ -85,6 +85,18 @@ metadata and paging across the 4,096-ID response boundary. Settings mode capture
 the repository menu, top of Settings and scrolled signing controls for visual
 inspection; it does not modify signing configuration.
 
+## Shared Help documentation
+
+The offline Help browser embeds the user-facing pages in `docs/wiki` at compile
+time. Edit these Markdown sources to update both the repository wiki and the
+app. Register a new in-app topic in `PAGES` in `src/ui/help.rs`. The
+`ui::help::tests::embedded_pages_have_unique_names_and_resolvable_wiki_links`
+source check verifies unique topic IDs and local wiki link targets; the remaining
+`ui::help::tests` cover search, navigation, rendering and readable topic/article
+geometry. Run these tests through the platform's supervised validation wrapper
+described above. Native inspector `--review` additionally opens Help pages and
+captures them for visual inspection.
+
 ## Prerequisites
 
 - Rust 1.95 or newer with Cargo.

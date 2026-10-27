@@ -44,6 +44,7 @@ pub struct CommitGraph {
     pub ref_targets: std::collections::BTreeMap<String, String>,
     pub local_names: std::collections::HashSet<String>,
     pub remote_names: std::collections::HashSet<String>,
+    pub configured_remotes: Vec<String>,
     pub head_oid: Option<String>,
     pub has_more: bool,
     pub limit: usize,
@@ -326,6 +327,11 @@ impl CommitGraph {
             edge_max,
             local_names,
             remote_names,
+            configured_remotes: repo
+                .remotes()?
+                .iter()
+                .filter_map(|remote| remote.ok().flatten().map(str::to_owned))
+                .collect(),
             head_oid: head_oid.map(|oid| oid.to_string()),
             nodes,
             edges,
@@ -390,6 +396,7 @@ impl CommitGraph {
             edge_max,
             local_names: self.local_names.clone(),
             remote_names: self.remote_names.clone(),
+            configured_remotes: self.configured_remotes.clone(),
             head_oid: self.head_oid.clone(),
             nodes,
             edges,

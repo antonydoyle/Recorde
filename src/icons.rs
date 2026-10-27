@@ -60,6 +60,8 @@ pub const INFO: char = '\u{E88E}';
 pub const HELP: char = '\u{E887}';
 
 pub const EDIT: char = '\u{E3C9}';
+pub const UNDO: char = '\u{E166}';
+pub const REDO: char = '\u{E15A}';
 pub const DELETE: char = '\u{E872}';
 pub const COPY: char = '\u{E14D}';
 pub const VISIBILITY: char = '\u{E8F4}';

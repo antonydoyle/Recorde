@@ -4,6 +4,7 @@ mod instance;
 mod network;
 mod persistence;
 mod security;
+pub(crate) use security::create_private_file;
 mod witness;
 pub use apply::{acknowledge, startup_recovery_check};
 pub use instance::{register as register_instance, InstanceGuard};

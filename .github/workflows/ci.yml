@@ -131,11 +131,12 @@ jobs:
           foreach ($fixture in @('lfs_stage_push_clone_round_trip', 'authenticated_lfs_http_round_trip_and_failed_downloads', 'ssh_signed_commit_verifies_with_disposable_key', 'native_vault_round_trip')) {
             ./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--lib', $fixture, '--', '--ignored') -Purpose "CI $fixture" -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 300
           }
-      - name: Windows GUI startup
+      - name: Windows native UI and four-theme acceptance
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          ./scripts/windows_task.ps1 -Executable cargo -Arguments @('build', '--locked') -Purpose 'CI GUI build' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 1200 -MaxMemoryMiB 8192
+          ./scripts/windows_task.ps1 -Executable cargo -Arguments @('build', '--locked', '--features', 'ui-inspection', '--bin', 'recorde', '--example', 'inspect_ui') -Purpose 'CI GUI and development inspector build' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 1200 -MaxMemoryMiB 8192
+          ./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--features', 'ui-inspection', '--example', 'inspect_ui') -Purpose 'CI native inspector selectors' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 180 -MaxMemoryMiB 8192
           # Hosted Windows runners expose legacy OpenGL without a GPU driver.
           # Pin and verify Mesa; deploy only beside the CI debug executable.
           $mesa = "$env:RUNNER_TEMP/recorde-mesa"
@@ -150,7 +151,14 @@ jobs:
           Copy-Item "$mesa/x64/opengl32.dll", "$mesa/x64/libgallium_wgl.dll" target/debug/
           $env:GALLIUM_DRIVER = 'llvmpipe'
           $env:LIBGL_ALWAYS_SOFTWARE = '1'
-          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts", '-InspectAccessibility') -Purpose 'CI GUI smoke and native accessibility' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 120
+          foreach ($palette in @('classic', 'siege')) {
+            foreach ($mode in @('dark', 'light')) {
+              $smokeArgs = @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Inspector', 'target/debug/examples/inspect_ui.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts/$palette-$mode", '-ThemePalette', $palette, '-InspectAccessibility', '-Review')
+              if ($mode -eq 'light') { $smokeArgs += '-Light' }
+              ./scripts/windows_task.ps1 -Executable pwsh -Arguments $smokeArgs -Purpose "CI native UI $palette $mode" -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 180
+            }
+          }
+          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Inspector', 'target/debug/examples/inspect_ui.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts/clean-history", '-Review', '-CleanTracked', '-InspectAccessibility') -Purpose 'CI native clean history confirmations' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 180
       - name: Upload Windows process ledgers
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -169,12 +177,16 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python3 scripts/linux_task.py --purpose 'Build development UI inspector' --artifacts "$RUNNER_TEMP/process-safety" --timeout 1200 -- cargo build --locked --features ui-inspection --bin recorde --example inspect_ui
+          python3 scripts/linux_task.py --purpose 'Native inspector selectors' --artifacts "$RUNNER_TEMP/process-safety" --timeout 180 -- cargo test --locked --features ui-inspection --example inspect_ui
           export RECORDE_UI_INSPECTOR="$GITHUB_WORKSPACE/target/debug/examples/inspect_ui"
           for dpi in 1 1.25 1.5 2; do
-            for theme in dark light; do
-              args=()
-              if [[ "$theme" == light ]]; then args+=(--light); fi
-              python3 scripts/linux_task.py --purpose "UI accessibility $theme $dpi" --artifacts "$RUNNER_TEMP/process-safety" --timeout 180 -- python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/accessibility-$theme-$dpi" --design-review "--dpi=$dpi" "${args[@]}"
+            for palette in classic siege; do
+              for theme in dark light; do
+                args=()
+                if [[ "$theme" == light ]]; then args+=(--light); fi
+                if [[ "$palette" == siege ]]; then args+=(--siege); fi
+                python3 scripts/linux_task.py --purpose "UI accessibility $palette $theme $dpi" --artifacts "$RUNNER_TEMP/process-safety" --timeout 180 -- python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/accessibility-$palette-$theme-$dpi" --design-review --review "--dpi=$dpi" "${args[@]}"
+              done
             done
           done
       - name: Upload Linux process ledgers

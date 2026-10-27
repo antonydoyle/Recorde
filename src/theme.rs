@@ -1,8 +1,84 @@
 use egui::Color32;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+/// Colour family; light/dark and high contrast remain independent preferences.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Palette {
+    #[default]
+    Classic,
+    Siege,
+}
+
+impl Palette {
+    pub const ALL: [Self; 2] = [Self::Classic, Self::Siege];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "Classic",
+            Self::Siege => "Siege21",
+        }
+    }
+}
 
 static DARK_MODE: AtomicBool = AtomicBool::new(true);
 static HIGH_CONTRAST: AtomicBool = AtomicBool::new(false);
+static PALETTE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_palette(palette: Palette) {
+    PALETTE.store(palette as u8, Ordering::Relaxed);
+}
+
+fn siege() -> bool {
+    PALETTE.load(Ordering::Relaxed) == Palette::Siege as u8
+}
+
+// Siege21's published identity, sampled from https://siege21.com/assets/css/styles.css.
+// Keep the exact brand orange on primary buttons; brighter/deeper site variants
+// are used for small text where its contrast against the surface is insufficient.
+pub const SIEGE_ORANGE: Color32 = Color32::from_rgb(0xd5, 0x43, 0x29);
+pub const SIEGE_ORANGE_LIGHT: Color32 = Color32::from_rgb(0xf2, 0x69, 0x49);
+pub const SIEGE_ORANGE_DEEP: Color32 = Color32::from_rgb(0xad, 0x32, 0x1e);
+
+pub mod siege_light {
+    use egui::Color32;
+    pub const BG_APP: Color32 = Color32::from_rgb(244, 243, 238);
+    pub const BG_TITLEBAR: Color32 = Color32::from_rgb(235, 233, 224);
+    pub const BG_TOOLBAR: Color32 = Color32::from_rgb(251, 250, 246);
+    pub const BG_PANEL: Color32 = Color32::from_rgb(251, 250, 246);
+    pub const BG_PANEL_ALT: Color32 = Color32::from_rgb(239, 237, 229);
+    pub const BG_HOVER: Color32 = Color32::from_rgb(235, 227, 214);
+    pub const BG_SELECTED: Color32 = Color32::from_rgb(246, 222, 207);
+    pub const BG_ELEVATED: Color32 = Color32::from_rgb(255, 253, 248);
+    pub const BORDER: Color32 = Color32::from_rgb(207, 203, 191);
+    pub const BORDER_STRONG: Color32 = Color32::from_rgb(133, 125, 109);
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(36, 37, 32);
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(60, 62, 54);
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(99, 97, 85);
+    pub const BG_DIFF_ADD: Color32 = Color32::from_rgb(229, 240, 218);
+    pub const BG_DIFF_DEL: Color32 = Color32::from_rgb(250, 228, 222);
+    pub const BG_DIFF_HUNK: Color32 = Color32::from_rgb(237, 230, 214);
+}
+
+pub mod siege_dark {
+    use egui::Color32;
+    pub const BG_APP: Color32 = Color32::from_rgb(25, 26, 23);
+    pub const BG_TITLEBAR: Color32 = Color32::from_rgb(20, 21, 19);
+    pub const BG_TOOLBAR: Color32 = Color32::from_rgb(31, 32, 29);
+    pub const BG_PANEL: Color32 = Color32::from_rgb(31, 32, 29);
+    pub const BG_PANEL_ALT: Color32 = Color32::from_rgb(39, 40, 36);
+    pub const BG_HOVER: Color32 = Color32::from_rgb(45, 45, 39);
+    pub const BG_SELECTED: Color32 = Color32::from_rgb(60, 39, 32);
+    pub const BG_ELEVATED: Color32 = Color32::from_rgb(44, 45, 39);
+    pub const BORDER: Color32 = Color32::from_rgb(65, 66, 57);
+    pub const BORDER_STRONG: Color32 = Color32::from_rgb(127, 126, 112);
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(251, 250, 246);
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(217, 215, 203);
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(174, 172, 157);
+    pub const BG_DIFF_ADD: Color32 = Color32::from_rgb(29, 47, 31);
+    pub const BG_DIFF_DEL: Color32 = Color32::from_rgb(59, 30, 29);
+    pub const BG_DIFF_HUNK: Color32 = Color32::from_rgb(49, 42, 30);
+}
 
 #[inline]
 fn dark() -> bool {
@@ -86,11 +162,15 @@ fn pick(
     normal_light: Color32,
     contrast_dark: Color32,
     contrast_light: Color32,
+    siege_dark: Color32,
+    siege_light: Color32,
 ) -> Color32 {
     match (dark(), high_contrast()) {
         (true, true) => contrast_dark,
+        (true, false) if siege() => siege_dark,
         (true, false) => normal_dark,
         (false, true) => contrast_light,
+        (false, false) if siege() => siege_light,
         (false, false) => normal_light,
     }
 }
@@ -103,6 +183,8 @@ pub fn bg_app() -> Color32 {
         light::BG_APP,
         high_contrast_dark::BG_APP,
         high_contrast_light::BG_APP,
+        siege_dark::BG_APP,
+        siege_light::BG_APP,
     )
 }
 #[inline]
@@ -112,6 +194,8 @@ pub fn bg_titlebar() -> Color32 {
         light::BG_TITLEBAR,
         high_contrast_dark::BG_TITLEBAR,
         high_contrast_light::BG_TITLEBAR,
+        siege_dark::BG_TITLEBAR,
+        siege_light::BG_TITLEBAR,
     )
 }
 #[inline]
@@ -121,6 +205,8 @@ pub fn bg_toolbar() -> Color32 {
         light::BG_TOOLBAR,
         high_contrast_dark::BG_TOOLBAR,
         high_contrast_light::BG_TOOLBAR,
+        siege_dark::BG_TOOLBAR,
+        siege_light::BG_TOOLBAR,
     )
 }
 #[inline]
@@ -130,6 +216,8 @@ pub fn bg_panel() -> Color32 {
         light::BG_PANEL,
         high_contrast_dark::BG_PANEL,
         high_contrast_light::BG_PANEL,
+        siege_dark::BG_PANEL,
+        siege_light::BG_PANEL,
     )
 }
 #[inline]
@@ -139,6 +227,8 @@ pub fn bg_panel_alt() -> Color32 {
         light::BG_PANEL_ALT,
         high_contrast_dark::BG_PANEL_ALT,
         high_contrast_light::BG_PANEL_ALT,
+        siege_dark::BG_PANEL_ALT,
+        siege_light::BG_PANEL_ALT,
     )
 }
 #[inline]
@@ -148,6 +238,8 @@ pub fn bg_hover() -> Color32 {
         light::BG_HOVER,
         high_contrast_dark::BG_HOVER,
         high_contrast_light::BG_HOVER,
+        siege_dark::BG_HOVER,
+        siege_light::BG_HOVER,
     )
 }
 #[inline]
@@ -157,6 +249,8 @@ pub fn bg_selected() -> Color32 {
         light::BG_SELECTED,
         high_contrast_dark::BG_SELECTED,
         high_contrast_light::BG_SELECTED,
+        siege_dark::BG_SELECTED,
+        siege_light::BG_SELECTED,
     )
 }
 #[inline]
@@ -166,6 +260,8 @@ pub fn bg_elevated() -> Color32 {
         light::BG_ELEVATED,
         high_contrast_dark::BG_ELEVATED,
         high_contrast_light::BG_ELEVATED,
+        siege_dark::BG_ELEVATED,
+        siege_light::BG_ELEVATED,
     )
 }
 #[inline]
@@ -183,6 +279,8 @@ pub fn border() -> Color32 {
         light::BORDER,
         high_contrast_dark::BORDER,
         high_contrast_light::BORDER,
+        siege_dark::BORDER,
+        siege_light::BORDER,
     )
 }
 #[inline]
@@ -192,6 +290,8 @@ pub fn border_strong() -> Color32 {
         light::BORDER_STRONG,
         high_contrast_dark::BORDER_STRONG,
         high_contrast_light::BORDER_STRONG,
+        siege_dark::BORDER_STRONG,
+        siege_light::BORDER_STRONG,
     )
 }
 #[inline]
@@ -201,6 +301,8 @@ pub fn text_primary() -> Color32 {
         light::TEXT_PRIMARY,
         high_contrast_dark::TEXT_PRIMARY,
         high_contrast_light::TEXT_PRIMARY,
+        siege_dark::TEXT_PRIMARY,
+        siege_light::TEXT_PRIMARY,
     )
 }
 #[inline]
@@ -210,6 +312,8 @@ pub fn text_secondary() -> Color32 {
         light::TEXT_SECONDARY,
         high_contrast_dark::TEXT_SECONDARY,
         high_contrast_light::TEXT_SECONDARY,
+        siege_dark::TEXT_SECONDARY,
+        siege_light::TEXT_SECONDARY,
     )
 }
 #[inline]
@@ -219,6 +323,8 @@ pub fn text_muted() -> Color32 {
         light::TEXT_MUTED,
         high_contrast_dark::TEXT_MUTED,
         high_contrast_light::TEXT_MUTED,
+        siege_dark::TEXT_MUTED,
+        siege_light::TEXT_MUTED,
     )
 }
 #[inline]
@@ -228,6 +334,8 @@ pub fn bg_diff_add() -> Color32 {
         light::BG_DIFF_ADD,
         high_contrast_dark::BG_DIFF_ADD,
         high_contrast_light::BG_DIFF_ADD,
+        siege_dark::BG_DIFF_ADD,
+        siege_light::BG_DIFF_ADD,
     )
 }
 #[inline]
@@ -237,6 +345,8 @@ pub fn bg_diff_del() -> Color32 {
         light::BG_DIFF_DEL,
         high_contrast_dark::BG_DIFF_DEL,
         high_contrast_light::BG_DIFF_DEL,
+        siege_dark::BG_DIFF_DEL,
+        siege_light::BG_DIFF_DEL,
     )
 }
 #[inline]
@@ -246,6 +356,8 @@ pub fn bg_diff_hunk() -> Color32 {
         light::BG_DIFF_HUNK,
         high_contrast_dark::BG_DIFF_HUNK,
         high_contrast_light::BG_DIFF_HUNK,
+        siege_dark::BG_DIFF_HUNK,
+        siege_light::BG_DIFF_HUNK,
     )
 }
 
@@ -283,15 +395,31 @@ pub const ACCENT_RED: Color32 = Color32::from_rgb(244, 130, 140);
 pub const ACCENT_YELLOW: Color32 = Color32::from_rgb(226, 197, 114);
 
 // Semantic foreground colours are tuned independently for both themes.
-pub fn accent_blue() -> Color32 {
+fn siege_accent() -> Color32 {
     if dark() {
+        if high_contrast() {
+            Color32::WHITE
+        } else {
+            SIEGE_ORANGE_LIGHT
+        }
+    } else {
+        SIEGE_ORANGE_DEEP
+    }
+}
+
+pub fn accent_blue() -> Color32 {
+    if siege() {
+        siege_accent()
+    } else if dark() {
         ACCENT_BLUE
     } else {
         Color32::from_rgb(49, 88, 198)
     }
 }
 pub fn accent_teal() -> Color32 {
-    if dark() {
+    if siege() {
+        siege_accent()
+    } else if dark() {
         ACCENT_TEAL
     } else {
         Color32::from_rgb(13, 115, 94)
@@ -305,7 +433,9 @@ pub fn accent_purple() -> Color32 {
     }
 }
 pub fn accent_orange() -> Color32 {
-    if dark() {
+    if siege() {
+        siege_accent()
+    } else if dark() {
         ACCENT_ORANGE
     } else {
         Color32::from_rgb(158, 81, 18)
@@ -333,7 +463,9 @@ pub fn accent_yellow() -> Color32 {
     }
 }
 pub fn primary_fill() -> Color32 {
-    if dark() {
+    if siege() {
+        SIEGE_ORANGE
+    } else if dark() {
         Color32::from_rgb(66, 100, 206)
     } else {
         Color32::from_rgb(49, 88, 198)
@@ -341,6 +473,27 @@ pub fn primary_fill() -> Color32 {
 }
 pub fn on_primary() -> Color32 {
     Color32::WHITE
+}
+
+/// Choose a readable label for opaque coloured badges and semantic buttons.
+pub fn contrast_text(background: Color32) -> Color32 {
+    if relative_luminance(background) > 0.179 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    }
+}
+
+fn relative_luminance(color: Color32) -> f32 {
+    let linear = |channel: u8| {
+        let value = channel as f32 / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
 }
 pub fn is_dark() -> bool {
     dark()
@@ -519,6 +672,11 @@ pub fn relative_time(ts: i64) -> String {
 
 // ── Apply to egui context ─────────────────────────────────────────────────────
 pub fn apply(ctx: &egui::Context, dark: bool, contrast: bool) {
+    apply_palette(ctx, dark, contrast, Palette::Classic);
+}
+
+pub fn apply_palette(ctx: &egui::Context, dark: bool, contrast: bool, palette: Palette) {
+    set_palette(palette);
     set_dark(dark);
     set_high_contrast(contrast);
     let mut v = if dark {
@@ -627,6 +785,86 @@ pub fn apply_ui_scale(ctx: &egui::Context, scale: f32) {
 
 #[cfg(test)]
 mod typography_tests {
+    fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
+        let a = super::relative_luminance(a);
+        let b = super::relative_luminance(b);
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn siege_palettes_keep_small_text_readable_on_interactive_surfaces() {
+        use super::{siege_dark as d, siege_light as l};
+        for (foregrounds, surfaces) in [
+            (
+                [
+                    l::TEXT_PRIMARY,
+                    l::TEXT_SECONDARY,
+                    l::TEXT_MUTED,
+                    super::SIEGE_ORANGE_DEEP,
+                ],
+                [
+                    l::BG_APP,
+                    l::BG_PANEL,
+                    l::BG_PANEL_ALT,
+                    l::BG_HOVER,
+                    l::BG_SELECTED,
+                    l::BG_ELEVATED,
+                ],
+            ),
+            (
+                [
+                    d::TEXT_PRIMARY,
+                    d::TEXT_SECONDARY,
+                    d::TEXT_MUTED,
+                    super::SIEGE_ORANGE_LIGHT,
+                ],
+                [
+                    d::BG_APP,
+                    d::BG_PANEL,
+                    d::BG_PANEL_ALT,
+                    d::BG_HOVER,
+                    d::BG_SELECTED,
+                    d::BG_ELEVATED,
+                ],
+            ),
+        ] {
+            for foreground in foregrounds {
+                for surface in surfaces {
+                    assert!(
+                        contrast(foreground, surface) >= 4.5,
+                        "Text {foreground:?} on {surface:?} must meet WCAG AA contrast"
+                    );
+                }
+            }
+        }
+        assert!(contrast(super::SIEGE_ORANGE, super::on_primary()) >= 4.5);
+        assert_eq!(
+            super::SIEGE_ORANGE,
+            egui::Color32::from_rgb(0xd5, 0x43, 0x29)
+        );
+    }
+
+    #[test]
+    fn badge_labels_choose_readable_foregrounds() {
+        for background in super::LANE_COLORS
+            .iter()
+            .chain(super::LANE_COLORS_LIGHT)
+            .copied()
+            .chain([
+                super::ACCENT_BLUE,
+                super::ACCENT_TEAL,
+                super::ACCENT_PURPLE,
+                super::ACCENT_ORANGE,
+                super::ACCENT_GREEN,
+                super::ACCENT_RED,
+                super::ACCENT_YELLOW,
+                super::SIEGE_ORANGE,
+            ])
+        {
+            assert!(contrast(background, super::contrast_text(background)) >= 4.5);
+        }
+    }
+
     #[test]
     fn repository_graph_colours_are_stable_varied_permutations() {
         use std::{collections::HashSet, path::Path};

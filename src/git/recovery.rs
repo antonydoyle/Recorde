@@ -22,6 +22,9 @@ pub struct Checkpoint {
     pub before_state: Option<TrackedState>,
     #[serde(default)]
     pub pinned: bool,
+    /// The checkpoint this one undid or redid; absent for ordinary operations.
+    #[serde(default)]
+    pub reverses: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -34,12 +37,14 @@ struct SequenceWitness {
 fn sequence_witness(repo: &git2::Repository) -> Result<Option<SequenceWitness>, String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
-    if repo.state() == git2::RepositoryState::Clean {
+    if repo.state() == git2::RepositoryState::Clean && !super::merge::squash_in_progress(repo) {
         return Ok(None);
     }
     let mut digest = Sha256::new();
     for name in [
         "MERGE_HEAD",
+        "SQUASH_MSG",
+        "recorde-squash.json",
         "CHERRY_PICK_HEAD",
         "REVERT_HEAD",
         "ORIG_HEAD",
@@ -83,7 +88,11 @@ fn sequence_witness(repo: &git2::Repository) -> Result<Option<SequenceWitness>, 
     }
     Ok(Some(SequenceWitness {
         head: head_state(repo)?,
-        state: format!("{:?}", repo.state()),
+        state: if super::merge::squash_in_progress(repo) {
+            "Squash".into()
+        } else {
+            format!("{:?}", repo.state())
+        },
         control: format!("{:x}", digest.finalize()),
     }))
 }
@@ -216,10 +225,6 @@ fn tracked_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, S
 // without changing the user's index or HEAD. Ignored files are never added.
 fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, String> {
     let sparse = sparse_state(repo)?;
-    let output = super::process::git(path, &["write-tree"], &AtomicBool::new(false))
-        .map_err(|e| e.user_message())?;
-    let index = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    git2::Oid::from_str(&index).map_err(|e| e.to_string())?;
     let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
     let index_path = temporary.path().join("index");
     let run = |args: &[&str]| -> Result<String, String> {
@@ -241,11 +246,49 @@ fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, 
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     };
-    if repo.path().join("index").exists() {
-        std::fs::copy(repo.path().join("index"), &index_path).map_err(|e| e.to_string())?;
+    // Git primes an index's cached trees with the IDs it read. While
+    // replacement refs are active those are the replaced objects' IDs, not
+    // the entries' contents, and write-tree trusts them until a refresh
+    // invalidates them. Rebuild those indexes from their entries instead.
+    // Sparse indexes keep the native copy, which preserves skip-worktree bits.
+    let replaced =
+        sparse.is_none() && super::replacement::refs(repo).is_ok_and(|refs| !refs.is_empty());
+    let index = if replaced {
+        // Listings can exceed the diagnostic output limit; stream via a file.
+        let listing = git_listing(path, &["ls-files", "--stage", "-z"])?;
+        let mut command = super::process::command(path);
+        command.env("GIT_INDEX_FILE", &index_path).args([
+            "--no-replace-objects",
+            "update-index",
+            "-z",
+            "--index-info",
+        ]);
+        let output = super::process::run_with_stdin(
+            &mut command,
+            &AtomicBool::new(false),
+            std::time::Duration::from_secs(600),
+            listing.reopen().map_err(|e| e.to_string())?.into(),
+        )
+        .map_err(|e| e.user_message())?;
+        if !output.status.success() {
+            return Err(crate::auth::redact::text(&String::from_utf8_lossy(
+                &output.stderr,
+            )));
+        }
+        run(&["write-tree"])?
     } else {
-        run(&["read-tree", &index])?;
-    }
+        let output = super::process::git(path, &["write-tree"], &AtomicBool::new(false))
+            .map_err(|e| e.user_message())?;
+        let index = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        git2::Oid::from_str(&index).map_err(|e| e.to_string())?;
+        if repo.path().join("index").exists() {
+            std::fs::copy(repo.path().join("index"), &index_path).map_err(|e| e.to_string())?;
+        } else {
+            run(&["read-tree", &index])?;
+        }
+        index
+    };
+    git2::Oid::from_str(&index).map_err(|e| e.to_string())?;
     run(&["add", "--all", "--sparse", "--", "."])?;
     // Explicit pathspecs include materialized files outside the sparse cone on
     // Git versions where a directory pathspec still applies sparse filtering.
@@ -319,6 +362,14 @@ fn save(repo: &git2::Repository, checkpoint: &Checkpoint) -> Result<(), String> 
 }
 
 pub fn capture(path: &Path, label: &str) -> Result<Option<Checkpoint>, String> {
+    capture_reversing(path, label, None)
+}
+
+fn capture_reversing(
+    path: &Path,
+    label: &str,
+    reverses: Option<&str>,
+) -> Result<Option<Checkpoint>, String> {
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
     let (before, branch) = head_state(&repo)?;
     let before = before.unwrap_or_default();
@@ -389,6 +440,7 @@ pub fn capture(path: &Path, label: &str) -> Result<Option<Checkpoint>, String> {
         after_state: None,
         before_state: Some(before_state),
         pinned: false,
+        reverses: reverses.map(str::to_owned),
     };
     save(&repo, &checkpoint)?;
     Ok(Some(checkpoint))
@@ -399,7 +451,11 @@ pub fn protect<T>(
     label: &str,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    protect_inner(path, label, false, operation)
+    let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+    if super::merge::squash_in_progress(&repo) {
+        return Err("Finish or abort the squash merge before starting another operation.".into());
+    }
+    protect_inner(path, label, false, None, operation)
 }
 
 pub fn protect_sequence<T>(
@@ -408,19 +464,20 @@ pub fn protect_sequence<T>(
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
-    if repo.state() != git2::RepositoryState::Clean {
+    if repo.state() != git2::RepositoryState::Clean || super::merge::squash_in_progress(&repo) {
         return Err("Finish the current operation first.".into());
     }
-    protect_inner(path, label, true, operation)
+    protect_inner(path, label, true, None, operation)
 }
 
 fn protect_inner<T>(
     path: &Path,
     label: &str,
     sequence: bool,
+    reverses: Option<&str>,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    let checkpoint = capture(path, label)?;
+    let checkpoint = capture_reversing(path, label, reverses)?;
     let result = operation();
     if let Some(mut checkpoint) = checkpoint {
         let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
@@ -434,6 +491,9 @@ fn protect_inner<T>(
         checkpoint.head_target_changed = checkpoint.after_branch != checkpoint.branch;
         if sequence {
             checkpoint.sequence = sequence_witness(&repo).ok().flatten();
+            if checkpoint.sequence.is_some() {
+                checkpoint.after_state = None;
+            }
         }
         // The mutation already happened. A journal update failure must not turn
         // a successful commit into a retryable commit failure (and retain its draft).
@@ -557,7 +617,7 @@ pub fn restore(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
         git2::Oid::from_str(snapshot).map_err(|_| "Invalid recovery snapshot.")?;
     }
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
-    if repo.state() != git2::RepositoryState::Clean {
+    if repo.state() != git2::RepositoryState::Clean || super::merge::squash_in_progress(&repo) {
         return Err(
             "Finish or abort the current Git operation before restoring a snapshot.".into(),
         );
@@ -625,7 +685,18 @@ pub fn restore(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
         );
     }
     ensure_no_untracked_collisions(&repo, checkpoint)?;
-    let label = match checkpoint.label.strip_prefix("Undo ") {
+    protect_inner(
+        path,
+        &restore_label(checkpoint),
+        false,
+        Some(&checkpoint.id),
+        || restore_contents(path, checkpoint),
+    )
+}
+
+/// What restoring `checkpoint` does: undo its operation, or redo an undone one.
+pub fn restore_label(checkpoint: &Checkpoint) -> String {
+    match checkpoint.label.strip_prefix("Undo ") {
         Some(label) => format!("Redo {label}"),
         None => format!(
             "Undo {}",
@@ -634,8 +705,103 @@ pub fn restore(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
                 .strip_prefix("Redo ")
                 .unwrap_or(&checkpoint.label)
         ),
-    };
-    protect(path, &label, || restore_contents(path, checkpoint))
+    }
+}
+
+/// Operations that can be undone and undone operations that can be redone,
+/// oldest first; the next step is the last entry of each.
+#[derive(Default)]
+pub struct UndoHistory {
+    pub undo: Vec<Checkpoint>,
+    pub redo: Vec<Checkpoint>,
+}
+
+impl UndoHistory {
+    /// Checkpoint ID and button label for the next undo or redo.
+    pub fn next(&self, redo: bool) -> Option<(String, String)> {
+        if self
+            .undo
+            .last()
+            .into_iter()
+            .chain(self.redo.last())
+            .any(|entry| entry.after_state.is_none() || entry.sequence.is_some())
+        {
+            return None;
+        }
+        let stack = if redo { &self.redo } else { &self.undo };
+        stack
+            .last()
+            .map(|checkpoint| (checkpoint.id.clone(), restore_label(checkpoint)))
+    }
+}
+
+/// A completed operation that changed nothing (for example one Git refused)
+/// is not worth an undo step.
+fn unchanged(checkpoint: &Checkpoint) -> bool {
+    checkpoint.after_state.is_some()
+        && checkpoint.after_state == checkpoint.before_state
+        && checkpoint.after.as_deref().unwrap_or_default() == checkpoint.before
+        && checkpoint.after_branch == checkpoint.branch
+}
+
+/// Replay the journal like an editor's undo stack: a new operation clears
+/// redo, undoing moves a step to redo and redoing moves it back.
+pub fn undo_history(path: &Path) -> UndoHistory {
+    let mut history = UndoHistory::default();
+    for checkpoint in list(path).into_iter().rev() {
+        if unchanged(&checkpoint) {
+            continue;
+        }
+        let target = checkpoint.reverses.clone();
+        let undone = target.as_ref().and_then(|id| {
+            history
+                .undo
+                .iter()
+                .rposition(|entry| &entry.id == id)
+                .map(|index| (true, index))
+                .or_else(|| {
+                    history
+                        .redo
+                        .iter()
+                        .rposition(|entry| &entry.id == id)
+                        .map(|index| (false, index))
+                })
+        });
+        match undone {
+            Some((true, index)) => {
+                history.undo.remove(index);
+                history.redo.push(checkpoint);
+            }
+            Some((false, index)) => {
+                history.redo.remove(index);
+                history.undo.push(checkpoint);
+            }
+            None => {
+                history.redo.clear();
+                history.undo.push(checkpoint);
+            }
+        }
+    }
+    history
+}
+
+/// Restore the next undo (or redo) step, but only if it is still `id`.
+/// Another operation may have saved a newer checkpoint after the user confirmed.
+pub fn restore_step(path: &Path, id: &str, redo: bool) -> Result<(), String> {
+    let history = undo_history(path);
+    if history.next(redo).is_none() {
+        return Err("Finish or recover the incomplete operation before using Undo or Redo.".into());
+    }
+    let stack = if redo { history.redo } else { history.undo };
+    let next = stack.last().ok_or(if redo {
+        "There is nothing to redo."
+    } else {
+        "There is nothing to undo."
+    })?;
+    if next.id != id {
+        return Err("Another operation finished first. Choose Undo again to review it.".into());
+    }
+    restore(path, next)
 }
 
 fn verify_restore_state(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
@@ -649,6 +815,7 @@ fn verify_restore_state(path: &Path, checkpoint: &Checkpoint) -> Result<(), Stri
         &checkpoint.branch
     };
     if repo.state() != git2::RepositoryState::Clean
+        || super::merge::squash_in_progress(&repo)
         || head != checkpoint.after
         || &branch != expected_branch
     {
@@ -1061,6 +1228,29 @@ pub fn remove(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn incomplete_checkpoint_blocks_older_undo_and_redo_without_disappearing() {
+        let fixture = TestRepo::new();
+        fixture.commit("file", b"before\n");
+        protect(fixture.path(), "Edit", || {
+            fixture.write("file", b"after\n");
+            Ok(())
+        })
+        .unwrap();
+        let (older, _) = undo_history(fixture.path()).next(false).unwrap();
+        let incomplete = capture(fixture.path(), "Interrupted operation")
+            .unwrap()
+            .unwrap();
+        let history = undo_history(fixture.path());
+        assert!(history.next(false).is_none());
+        assert!(history.next(true).is_none());
+        assert_eq!(history.undo.last().unwrap().id, incomplete.id);
+        assert!(restore_step(fixture.path(), &older, false).is_err());
+        assert_eq!(
+            std::fs::read(fixture.path().join("file")).unwrap(),
+            b"after\n"
+        );
+    }
+    #[test]
     fn large_tree_listing_is_complete_beyond_diagnostic_limit() {
         use std::io::Read;
         let fixture = TestRepo::new();
@@ -1172,6 +1362,28 @@ mod tests {
                 .target(),
             Some(replacement)
         );
+    }
+
+    #[test]
+    fn complete_state_hashes_entries_when_a_replaced_tree_primes_the_cache() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"original\n");
+        let raw = repo.open();
+        let tree = raw.head().unwrap().peel_to_tree().unwrap().id();
+        let blob = raw.blob(b"replacement\n").unwrap();
+        let mut builder = raw.treebuilder(None).unwrap();
+        builder.insert("file", blob, 0o100644).unwrap();
+        let replacement = builder.write().unwrap();
+        repo.git_ok(&["replace", &tree.to_string(), &replacement.to_string()]);
+        // Reset primes the index's cached tree with the replaced tree's ID.
+        repo.git_ok(&["reset", "--hard", "HEAD"]);
+        let state = complete_state(repo.path(), &raw).unwrap();
+        assert_eq!(state.index, replacement.to_string());
+        assert_eq!(state.worktree, replacement.to_string());
+        repo.write("file", b"edited\n");
+        let edited = complete_state(repo.path(), &raw).unwrap();
+        assert_eq!(edited.index, replacement.to_string());
+        assert_ne!(edited.worktree, replacement.to_string());
     }
 
     #[test]
@@ -1668,6 +1880,96 @@ mod tests {
             b"ignored work\n"
         );
     }
+    fn soft_reset(repo: &TestRepo, label: &str) {
+        protect(repo.path(), label, || {
+            super::super::merge::run_git_seq(repo.path(), &["reset", "--soft", "HEAD~1"])
+                .map_err(|e| e.user_message())
+        })
+        .unwrap();
+    }
+
+    fn step(repo: &TestRepo, redo: bool) -> String {
+        let (id, label) = undo_history(repo.path()).next(redo).unwrap();
+        restore_step(repo.path(), &id, redo).unwrap();
+        label
+    }
+
+    #[test]
+    fn undo_and_redo_walk_several_steps_and_a_new_operation_clears_redo() {
+        let repo = TestRepo::new();
+        let first = repo.commit(
+            "file.txt", b"first
+",
+        );
+        let second = repo.commit(
+            "file.txt", b"second
+",
+        );
+        let third = repo.commit(
+            "file.txt", b"third
+",
+        );
+        assert!(restore_step(repo.path(), "missing", false).is_err());
+        soft_reset(&repo, "Reset A");
+        soft_reset(&repo, "Reset B");
+        assert_eq!(repo.head(), first);
+        // An operation Git refused leaves nothing to undo.
+        protect(repo.path(), "Refused", || Err::<(), _>("refused".into())).unwrap_err();
+        let history = undo_history(repo.path());
+        assert_eq!(history.undo.len(), 2);
+        assert!(history.redo.is_empty());
+
+        assert_eq!(step(&repo, false), "Undo Reset B");
+        assert_eq!(repo.head(), second);
+        assert_eq!(step(&repo, false), "Undo Reset A");
+        assert_eq!(repo.head(), third);
+        assert!(undo_history(repo.path()).next(false).is_none());
+        assert_eq!(step(&repo, true), "Redo Reset A");
+        assert_eq!(repo.head(), second);
+        assert_eq!(step(&repo, true), "Redo Reset B");
+        assert_eq!(repo.head(), first);
+        assert!(undo_history(repo.path()).next(true).is_none());
+        assert_eq!(step(&repo, false), "Undo Reset B");
+        assert_eq!(repo.head(), second);
+
+        // A new operation after an undo discards the remaining redo step.
+        let (redo_id, _) = undo_history(repo.path()).next(true).unwrap();
+        soft_reset(&repo, "Reset C");
+        assert_eq!(repo.head(), first);
+        let history = undo_history(repo.path());
+        assert!(history.redo.is_empty());
+        assert!(restore_step(repo.path(), &redo_id, true).is_err());
+        assert_eq!(step(&repo, false), "Undo Reset C");
+        assert_eq!(repo.head(), second);
+        assert_eq!(step(&repo, false), "Undo Reset A");
+        assert_eq!(repo.head(), third);
+    }
+
+    #[test]
+    fn undo_refuses_a_stale_confirmation() {
+        let repo = TestRepo::new();
+        repo.commit(
+            "file.txt", b"base
+",
+        );
+        repo.commit(
+            "file.txt", b"tip
+",
+        );
+        repo.commit(
+            "file.txt", b"newest
+",
+        );
+        soft_reset(&repo, "Soft reset");
+        let (id, label) = undo_history(repo.path()).next(false).unwrap();
+        assert_eq!(label, "Undo Soft reset");
+        // A newer snapshot after confirmation must not be restored silently.
+        soft_reset(&repo, "Mixed reset");
+        let head = repo.head();
+        assert!(restore_step(repo.path(), &id, false).is_err());
+        assert_eq!(repo.head(), head);
+    }
+
     #[test]
     fn soft_reset_undo_redo_preserves_index_and_rejects_later_edits() {
         let repo = TestRepo::new();

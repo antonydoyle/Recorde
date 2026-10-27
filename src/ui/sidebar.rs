@@ -10,13 +10,15 @@ use crate::ui::widgets;
 pub enum SidebarAction {
     OpenRepository(std::path::PathBuf),
     CheckoutBranch(String),
-    OpenCreateBranch { from_oid: Option<String> },
+    OpenCreateBranch {
+        from_oid: Option<String>,
+    },
     DeleteBranch(String),
     CreateTag(String),
     DeleteTag(String),
-    StashApply(usize),
-    StashPop(usize),
-    StashDrop(usize),
+    StashApply(usize, String),
+    StashPop(usize, String),
+    StashDrop(usize, String),
     MergeBranch(String),
     RebaseOnto(String),
     RenameBranch(String),
@@ -26,13 +28,24 @@ pub enum SidebarAction {
     PushTag(String),
     DeleteRemoteTag(String),
     PreviewStash(usize, String),   // (index, oid)
-    StashBranch(usize),            // index
+    StashBranch(usize, String),    // (index, oid)
     RestoreBranch(String, String), // (name, oid)
+    /// Remote-tracking shorthand such as `origin/feature`.
+    CheckoutRemoteBranch(String),
+    DeleteRemoteBranch(String),
+    /// Select and scroll to a ref's commit in the graph.
+    RevealCommit(String),
+    /// Open the merge dialog with this branch chosen.
+    MergeWithOptions(String),
+    /// Move a branch that is not checked out to its upstream.
+    FastForward(String),
 }
 
 pub struct Sidebar {
     state: SharedState,
     open: HashMap<&'static str, bool>,
+    /// Case-insensitive branch and tag filter. Matching sections expand.
+    filter: String,
 }
 
 impl Sidebar {
@@ -43,7 +56,11 @@ impl Sidebar {
         open.insert("TAGS", true);
         open.insert("STASHES", false);
         open.insert("WORKTREES", true);
-        Self { state, open }
+        Self {
+            state,
+            open,
+            filter: String::new(),
+        }
     }
 
     pub fn show(&mut self, ui: &mut Ui) -> Option<SidebarAction> {
@@ -100,26 +117,53 @@ impl Sidebar {
                     return;
                 };
 
-                // Split refs into categories
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.filter)
+                            .hint_text("Filter branches and tags")
+                            .desired_width((ui.available_width() - 12.0).max(40.0)),
+                    );
+                });
+                ui.add_space(8.0);
+                let needle = self.filter.trim().to_lowercase();
+                let filtering = !needle.is_empty();
+                let shown = |name: &&str| !filtering || name.to_lowercase().contains(&needle);
+                let none = |empty: &'static str| if filtering { "No matches" } else { empty };
+
+                // Split refs into categories. Upstream choices always list every remote branch.
                 let mut local: Vec<&str> = graph.local_names.iter().map(String::as_str).collect();
                 let mut remote: Vec<&str> = graph.remote_names.iter().map(String::as_str).collect();
                 let mut tags: Vec<&str> = graph.tag_names.iter().map(String::as_str).collect();
                 local.sort_unstable();
                 remote.sort_unstable();
                 tags.sort_unstable();
+                local.retain(shown);
+                tags.retain(shown);
+                let remote_rows: Vec<&str> = remote.iter().copied().filter(shown).collect();
 
                 // ── LOCAL BRANCHES ────────────────────────────────────
                 {
                     let open = self.open.entry("LOCAL").or_insert(true);
                     widgets::section_header(ui, "Local branches", local.len(), open);
-                    if *open {
+                    if *open || filtering {
                         ui.add_space(2.0);
                         for name in &local {
                             let is_head = *name == head.as_str();
                             let is_merged = merged_set.contains(*name);
                             let ab = ab_map.get(*name).copied();
                             let resp = branch_row(ui, name, is_head, false, ab, is_merged)
-                                .on_hover_text("Right-click for options");
+                                .on_hover_text(
+                                    "Click to show in graph, double-click to check out, right-click for options",
+                                );
+                            let tip = graph.ref_targets.get(&format!("refs/heads/{name}")).cloned();
+                            if resp.double_clicked() && !is_head {
+                                action = Some(SidebarAction::CheckoutBranch(name.to_string()));
+                            } else if resp.clicked() {
+                                if let Some(tip) = tip.clone() {
+                                    action = Some(SidebarAction::RevealCommit(tip));
+                                }
+                            }
                             resp.context_menu(|ui| {
                                 ui.set_min_width(195.0);
                                 if !is_head {
@@ -152,10 +196,24 @@ impl Sidebar {
                                         }
                                     }
                                 });
+                                if !is_head && ab.is_some_and(|(ahead, behind)| ahead == 0 && behind > 0) {
+                                    if ui
+                                        .button("Fast-forward to upstream")
+                                        .on_hover_text("Move this branch to its upstream without checking it out")
+                                        .clicked()
+                                    {
+                                        action = Some(SidebarAction::FastForward(name.to_string()));
+                                        ui.close();
+                                    }
+                                }
                                 if !is_head {
                                     ui.separator();
                                     if ui.button("Merge into current").clicked() {
                                         action = Some(SidebarAction::MergeBranch(name.to_string()));
+                                        ui.close();
+                                    }
+                                    if ui.button("Merge with options…").clicked() {
+                                        action = Some(SidebarAction::MergeWithOptions(name.to_string()));
                                         ui.close();
                                     }
                                     if ui.button("Rebase onto").clicked() {
@@ -167,10 +225,7 @@ impl Sidebar {
                                     ui.separator();
                                     if ui.button("Create Branch From Here").clicked() {
                                         action = Some(SidebarAction::OpenCreateBranch {
-                                            from_oid: graph
-                                                .ref_targets
-                                                .get(&format!("refs/heads/{name}"))
-                                                .cloned(),
+                                            from_oid: tip.clone(),
                                         });
                                         ui.close();
                                     }
@@ -210,7 +265,7 @@ impl Sidebar {
                             });
                         }
                         if local.is_empty() {
-                            empty_hint(ui, "No local branches");
+                            empty_hint(ui, none("No local branches"));
                         }
                         ui.add_space(4.0);
                     }
@@ -219,14 +274,72 @@ impl Sidebar {
                 // ── REMOTE BRANCHES ───────────────────────────────────
                 {
                     let open = self.open.entry("REMOTE").or_insert(false);
-                    widgets::section_header(ui, "Remotes", remote.len(), open);
-                    if *open {
+                    widgets::section_header(ui, "Remotes", remote_rows.len(), open);
+                    if *open || filtering {
                         ui.add_space(2.0);
-                        for name in &remote {
-                            branch_row(ui, name, false, true, None, false);
+                        for (remote_name, branches) in group_remote_branches(&remote_rows, &graph.configured_remotes) {
+                            egui::CollapsingHeader::new(format!("{remote_name} ({})", branches.len()))
+                                .id_salt(("remote_group", &remote_name, filtering))
+                                .default_open(true)
+                                .open(if filtering { Some(true) } else { None })
+                                .show(ui, |ui| {
+                        for name in &branches {
+                            let resp = branch_row(ui, name, false, true, None, false)
+                                .on_hover_text(
+                                    "Click to show in graph, double-click to check out, right-click for options",
+                                );
+                            let tip = graph.ref_targets.get(&format!("refs/remotes/{name}")).cloned();
+                            if resp.double_clicked() {
+                                action = Some(SidebarAction::CheckoutRemoteBranch(name.to_string()));
+                            } else if resp.clicked() {
+                                if let Some(tip) = tip.clone() {
+                                    action = Some(SidebarAction::RevealCommit(tip));
+                                }
+                            }
+                            resp.context_menu(|ui| {
+                                ui.set_min_width(195.0);
+                                if ui.button("Checkout").on_hover_text("Create or switch to a local branch that tracks this branch").clicked() {
+                                    action = Some(SidebarAction::CheckoutRemoteBranch(name.to_string()));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui.button("Merge into current").clicked() {
+                                    action = Some(SidebarAction::MergeBranch(name.to_string()));
+                                    ui.close();
+                                }
+                                if ui.button("Merge with options…").clicked() {
+                                    action = Some(SidebarAction::MergeWithOptions(name.to_string()));
+                                    ui.close();
+                                }
+                                if ui.button("Rebase onto").clicked() {
+                                    action = Some(SidebarAction::RebaseOnto(name.to_string()));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui.button("Create Branch From Here").clicked() {
+                                    action = Some(SidebarAction::OpenCreateBranch { from_oid: tip.clone() });
+                                    ui.close();
+                                }
+                                if ui.button("Copy Name").clicked() {
+                                    ui.ctx().copy_text(name.to_string());
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui
+                                    .add(Button::new(
+                                        RichText::new("Delete from Remote").color(theme::accent_red()),
+                                    ))
+                                    .clicked()
+                                {
+                                    action = Some(SidebarAction::DeleteRemoteBranch(name.to_string()));
+                                    ui.close();
+                                }
+                            });
                         }
-                        if remote.is_empty() {
-                            empty_hint(ui, "No remote branches");
+                                });
+                        }
+                        if remote_rows.is_empty() {
+                            empty_hint(ui, none("No remote branches"));
                         }
                         ui.add_space(4.0);
                     }
@@ -236,10 +349,16 @@ impl Sidebar {
                 {
                     let open = self.open.entry("TAGS").or_insert(false);
                     widgets::section_header(ui, "Tags", tags.len(), open);
-                    if *open {
+                    if *open || filtering {
                         ui.add_space(2.0);
                         for name in &tags {
-                            let resp = tag_row(ui, name).on_hover_text("Right-click for options");
+                            let resp = tag_row(ui, name)
+                                .on_hover_text("Click to show in graph, right-click for options");
+                            if resp.clicked() {
+                                if let Some(tip) = graph.ref_targets.get(&format!("refs/tags/{name}")) {
+                                    action = Some(SidebarAction::RevealCommit(tip.clone()));
+                                }
+                            }
                             resp.context_menu(|ui| {
                                 ui.set_min_width(160.0);
                                 if ui.button("Push to Remote").clicked() {
@@ -288,7 +407,7 @@ impl Sidebar {
                             }
                         });
                         if tags.is_empty() {
-                            empty_hint(ui, "No tags");
+                            empty_hint(ui, none("No tags"));
                         }
                         ui.add_space(4.0);
                     }
@@ -337,15 +456,15 @@ impl Sidebar {
                                 }
                                 ui.separator();
                                 if ui.button("Apply").clicked() {
-                                    action = Some(SidebarAction::StashApply(idx));
+                                    action = Some(SidebarAction::StashApply(idx, oid.clone()));
                                     ui.close();
                                 }
                                 if ui.button("Pop").clicked() {
-                                    action = Some(SidebarAction::StashPop(idx));
+                                    action = Some(SidebarAction::StashPop(idx, oid.clone()));
                                     ui.close();
                                 }
                                 if ui.button("Create Branch Here…").clicked() {
-                                    action = Some(SidebarAction::StashBranch(idx));
+                                    action = Some(SidebarAction::StashBranch(idx, oid.clone()));
                                     ui.close();
                                 }
                                 ui.separator();
@@ -355,7 +474,7 @@ impl Sidebar {
                                     ))
                                     .clicked()
                                 {
-                                    action = Some(SidebarAction::StashDrop(idx));
+                                    action = Some(SidebarAction::StashDrop(idx, oid.clone()));
                                     ui.close();
                                 }
                             });
@@ -456,6 +575,110 @@ impl Sidebar {
 }
 
 // ── Branch row ────────────────────────────────────────────────────────────────
+
+/// Group with the longest configured prefix: `team/origin/topic` can belong
+/// to remote `team/origin`, not necessarily to remote `team`.
+fn group_remote_branches<'a>(
+    branches: &[&'a str],
+    remotes: &[String],
+) -> std::collections::BTreeMap<String, Vec<&'a str>> {
+    let mut groups = std::collections::BTreeMap::new();
+    for branch in branches {
+        let remote = remotes
+            .iter()
+            .filter(|remote| {
+                branch
+                    .strip_prefix(remote.as_str())
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            })
+            .max_by_key(|remote| remote.len())
+            .map(String::as_str)
+            .unwrap_or_else(|| branch.split('/').next().unwrap_or(branch));
+        groups
+            .entry(remote.to_string())
+            .or_insert_with(Vec::new)
+            .push(*branch);
+    }
+    groups
+}
+
+/// Graph chips carry fully qualified references, so a branch and a tag sharing
+/// a name cannot accidentally invoke each other's operations.
+pub fn graph_reference_menu(
+    ui: &mut Ui,
+    reference: &str,
+    oid: &str,
+    state: &SharedState,
+) -> Option<SidebarAction> {
+    let mut action = None;
+    ui.set_min_width(210.0);
+    ui.label(egui::RichText::new(reference).color(theme::text_muted()));
+    ui.separator();
+    if let Some(name) = reference.strip_prefix("refs/heads/") {
+        let is_head = state.lock().unwrap().head_branch.as_deref() == Some(name);
+        if !is_head && ui.button("Checkout").clicked() {
+            action = Some(SidebarAction::CheckoutBranch(name.into()));
+        }
+        if ui.button("Rename…").clicked() {
+            action = Some(SidebarAction::RenameBranch(name.into()));
+        }
+        if ui.button("Publish Branch").clicked() {
+            action = Some(SidebarAction::PublishBranch(name.into()));
+        }
+        if !is_head {
+            if ui.button("Merge with options…").clicked() {
+                action = Some(SidebarAction::MergeWithOptions(name.into()));
+            }
+            if ui.button("Rebase onto").clicked() {
+                action = Some(SidebarAction::RebaseOnto(name.into()));
+            }
+            if ui.button("Delete Branch…").clicked() {
+                action = Some(SidebarAction::DeleteBranch(name.into()));
+            }
+        }
+    } else if let Some(name) = reference.strip_prefix("refs/remotes/") {
+        if ui.button("Checkout tracking branch").clicked() {
+            action = Some(SidebarAction::CheckoutRemoteBranch(name.into()));
+        }
+        if ui.button("Merge with options…").clicked() {
+            action = Some(SidebarAction::MergeWithOptions(name.into()));
+        }
+        if ui.button("Rebase onto").clicked() {
+            action = Some(SidebarAction::RebaseOnto(name.into()));
+        }
+        if ui.button("Delete from Remote…").clicked() {
+            action = Some(SidebarAction::DeleteRemoteBranch(name.into()));
+        }
+    } else if let Some(name) = reference.strip_prefix("refs/tags/") {
+        if ui.button("Push to Remote").clicked() {
+            action = Some(SidebarAction::PushTag(name.into()));
+        }
+        if ui.button("Delete Tag…").clicked() {
+            action = Some(SidebarAction::DeleteTag(name.into()));
+        }
+        if ui.button("Delete from Remote…").clicked() {
+            action = Some(SidebarAction::DeleteRemoteTag(name.into()));
+        }
+    }
+    if ui.button("Create Branch From Here").clicked() {
+        action = Some(SidebarAction::OpenCreateBranch {
+            from_oid: Some(oid.into()),
+        });
+    }
+    ui.separator();
+    if ui.button("Copy Reference").clicked() {
+        ui.ctx().copy_text(reference.to_string());
+        ui.close();
+    }
+    if ui.button("Copy SHA").clicked() {
+        ui.ctx().copy_text(oid.to_string());
+        ui.close();
+    }
+    if action.is_some() {
+        ui.close();
+    }
+    action
+}
 
 fn branch_row(
     ui: &mut Ui,
@@ -636,4 +859,218 @@ fn empty_hint(ui: &mut Ui, text: &str) {
         ui.add_space(20.0);
         ui.label(RichText::new(text).color(theme::text_muted()).size(12.0));
     });
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+
+    #[test]
+    fn remote_groups_use_longest_configured_name_and_keep_branch_paths() {
+        let remotes = vec!["team".into(), "team/origin".into(), "origin".into()];
+        let groups = group_remote_branches(
+            &[
+                "origin/feature/ui",
+                "team/main",
+                "team/origin/topic",
+                "orphan/topic",
+            ],
+            &remotes,
+        );
+        assert_eq!(groups["origin"], ["origin/feature/ui"]);
+        assert_eq!(groups["team"], ["team/main"]);
+        assert_eq!(groups["team/origin"], ["team/origin/topic"]);
+        assert_eq!(groups["orphan"], ["orphan/topic"]);
+    }
+    use crate::git::test_support::TestRepo;
+
+    fn frame(
+        ctx: &egui::Context,
+        sidebar: &mut Sidebar,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, Option<SidebarAction>) {
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 1200.0))),
+            events,
+            ..Default::default()
+        });
+        let action = egui::CentralPanel::default()
+            .show(
+                &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("test_root"),
+                    egui::UiBuilder::new().max_rect(ctx.content_rect()),
+                ),
+                |ui| sidebar.show(ui),
+            )
+            .inner;
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        (output, action)
+    }
+
+    fn pointer(pos: Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    /// Press and release `button` at `pos`, returning any actions produced.
+    fn click(
+        ctx: &egui::Context,
+        sidebar: &mut Sidebar,
+        pos: Pos2,
+        button: egui::PointerButton,
+    ) -> Vec<SidebarAction> {
+        let (_, pressed) = frame(
+            ctx,
+            sidebar,
+            vec![egui::Event::PointerMoved(pos), pointer(pos, button, true)],
+        );
+        let (_, released) = frame(ctx, sidebar, vec![pointer(pos, button, false)]);
+        pressed.into_iter().chain(released).collect()
+    }
+
+    fn text_position(output: &egui::FullOutput, label: &str) -> Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text: {label}"))
+    }
+
+    fn setup() -> (TestRepo, tempfile::TempDir, egui::Context, Sidebar) {
+        let repo = TestRepo::new();
+        repo.commit("base", b"base");
+        let remote = tempfile::tempdir().unwrap();
+        git2::Repository::init_bare(remote.path()).unwrap();
+        repo.git_ok(&["remote", "add", "origin", remote.path().to_str().unwrap()]);
+        repo.git_ok(&["checkout", "-b", "topic"]);
+        repo.commit("topic", b"topic");
+        repo.git_ok(&["push", "origin", "topic"]);
+        repo.git_ok(&["checkout", "main"]);
+        repo.git_ok(&["branch", "-D", "topic"]);
+        repo.git_ok(&["branch", "feature"]);
+        let state = crate::state::new_shared_state();
+        {
+            let mut s = state.lock().unwrap();
+            s.repo_path = Some(repo.path().canonicalize().unwrap());
+            s.head_branch = Some("main".into());
+            s.commit_graph = Some(std::sync::Arc::new(
+                crate::git::graph::CommitGraph::from_repo(&repo.open()).unwrap(),
+            ));
+        }
+        let mut sidebar = Sidebar::new(state);
+        sidebar.open.insert("REMOTE", true);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::icons::font_definitions());
+        (repo, remote, ctx, sidebar)
+    }
+
+    #[test]
+    fn remote_branch_click_reveals_double_click_checks_out_and_menu_deletes() {
+        let (repo, _remote, ctx, mut sidebar) = setup();
+        let tip = repo
+            .open()
+            .refname_to_id("refs/remotes/origin/topic")
+            .unwrap()
+            .to_string();
+        let (output, _) = frame(&ctx, &mut sidebar, vec![]);
+        let row = text_position(&output, "origin/topic");
+
+        let first = click(&ctx, &mut sidebar, row, egui::PointerButton::Primary);
+        assert!(
+            matches!(first.as_slice(), [SidebarAction::RevealCommit(oid)] if *oid == tip),
+            "a single click reveals the branch tip"
+        );
+        let second = click(&ctx, &mut sidebar, row, egui::PointerButton::Primary);
+        assert!(
+            matches!(second.as_slice(), [SidebarAction::CheckoutRemoteBranch(name)] if name == "origin/topic"),
+            "a double click checks out a tracking branch"
+        );
+
+        // Let the double-click window lapse before opening the menu.
+        for _ in 0..40 {
+            frame(&ctx, &mut sidebar, vec![]);
+        }
+        assert!(
+            click(&ctx, &mut sidebar, row, egui::PointerButton::Secondary)
+                .iter()
+                .all(|action| !matches!(action, SidebarAction::DeleteRemoteBranch(_)))
+        );
+        let (output, _) = frame(&ctx, &mut sidebar, vec![]);
+        let delete = text_position(&output, "Delete from Remote");
+        let chosen = click(&ctx, &mut sidebar, delete, egui::PointerButton::Primary);
+        assert!(
+            matches!(chosen.as_slice(), [SidebarAction::DeleteRemoteBranch(name)] if name == "origin/topic"),
+            "the menu requests confirmation for the clicked remote branch"
+        );
+    }
+
+    fn has_text(output: &egui::FullOutput, label: &str) -> bool {
+        output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label),
+        )
+    }
+
+    #[test]
+    fn filter_matches_case_insensitively_and_expands_collapsed_sections() {
+        let (_repo, _remote, ctx, mut sidebar) = setup();
+        sidebar.open.insert("REMOTE", false);
+        let (output, _) = frame(&ctx, &mut sidebar, vec![]);
+        assert!(
+            !has_text(&output, "origin/topic"),
+            "remotes start collapsed"
+        );
+        assert!(has_text(&output, "feature"));
+
+        sidebar.filter = " TOP ".into();
+        let (output, _) = frame(&ctx, &mut sidebar, vec![]);
+        assert!(has_text(&output, "origin/topic"));
+        assert!(!has_text(&output, "feature"));
+        assert!(!has_text(&output, "main"));
+        assert!(has_text(&output, "No matches"), "empty sections say so");
+
+        sidebar.filter.clear();
+        let (output, _) = frame(&ctx, &mut sidebar, vec![]);
+        assert!(
+            !has_text(&output, "origin/topic"),
+            "clearing restores the collapsed state"
+        );
+        assert!(has_text(&output, "feature") && has_text(&output, "main"));
+    }
+
+    #[test]
+    fn local_branch_double_click_checks_out_other_branches_but_not_head() {
+        let (_repo, _remote, ctx, mut sidebar) = setup();
+        let (output, _) = frame(&ctx, &mut sidebar, vec![]);
+        let feature = text_position(&output, "feature");
+        let head = text_position(&output, "main");
+
+        click(&ctx, &mut sidebar, feature, egui::PointerButton::Primary);
+        let second = click(&ctx, &mut sidebar, feature, egui::PointerButton::Primary);
+        assert!(
+            matches!(second.as_slice(), [SidebarAction::CheckoutBranch(name)] if name == "feature")
+        );
+
+        for _ in 0..40 {
+            frame(&ctx, &mut sidebar, vec![]);
+        }
+        click(&ctx, &mut sidebar, head, egui::PointerButton::Primary);
+        let second = click(&ctx, &mut sidebar, head, egui::PointerButton::Primary);
+        assert!(
+            second
+                .iter()
+                .all(|action| !matches!(action, SidebarAction::CheckoutBranch(_))),
+            "double-clicking the current branch does not check it out again"
+        );
+    }
 }

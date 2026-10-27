@@ -168,8 +168,9 @@ fn do_clone_depth(url: &str, dest: &Path, depth: u32) -> Result<(), String> {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
-/// Initialise a new git repository at `path`, then open it in the app.
-pub fn init_repo(path: PathBuf, state: SharedState) {
+/// Initialise a new git repository at `path`, add the chosen starter files,
+/// then open it in the app.
+pub fn init_repo(path: PathBuf, options: super::templates::InitOptions, state: SharedState) {
     {
         let mut s = state.lock().unwrap();
         s.console_log.push(format!("$ git init {}", path.display()));
@@ -183,23 +184,29 @@ pub fn init_repo(path: PathBuf, state: SharedState) {
         path.clone(),
         "Initialize repository",
         state,
-        move || {
-            git2::Repository::init(&work_path)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        },
+        move || do_init(&work_path, &options),
         move |result, state| {
             let current = {
                 let s = state.lock().unwrap();
                 (s.repo_load_id, s.repo_epoch) == request
             };
             match result {
-                Ok(()) if current => crate::git::operations::load_repo(path, state),
-                Ok(()) => state
-                    .lock()
-                    .unwrap()
-                    .console_log
-                    .push(format!("Repository ready: {}", path.display())),
+                Ok(skipped) => {
+                    let mut s = state.lock().unwrap();
+                    if !skipped.is_empty() {
+                        s.error = Some(format!(
+                            "Kept existing {}; the template was not written over it.",
+                            skipped.join(", ")
+                        ));
+                    }
+                    if !current {
+                        s.console_log
+                            .push(format!("Repository ready: {}", path.display()));
+                        return;
+                    }
+                    drop(s);
+                    crate::git::operations::load_repo(path, state);
+                }
                 Err(error) => {
                     let mut s = state.lock().unwrap();
                     s.console_log.push(format!("Init failed: {error}"));
@@ -210,6 +217,64 @@ pub fn init_repo(path: PathBuf, state: SharedState) {
             }
         },
     );
+}
+
+/// Returns starter files that already existed and were left unchanged.
+pub(crate) fn do_init(
+    path: &Path,
+    options: &super::templates::InitOptions,
+) -> Result<Vec<String>, String> {
+    let (written, skipped) = create_with_templates(path, options)?;
+    if options.initial_commit {
+        commit_starter_files(path, &written)?;
+    }
+    Ok(skipped)
+}
+
+/// Returns (written, skipped) starter files.
+fn create_with_templates(
+    path: &Path,
+    options: &super::templates::InitOptions,
+) -> Result<(Vec<&'static str>, Vec<String>), String> {
+    let branch = options.default_branch.trim();
+    if branch.is_empty() || !git2::Branch::name_is_valid(branch).unwrap_or(false) {
+        return Err(format!("\"{branch}\" is not a valid branch name."));
+    }
+    if path.join(".git").exists() {
+        return Err("This folder is already a Git repository. Open it instead.".into());
+    }
+    std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    let mut init = git2::RepositoryInitOptions::new();
+    init.initial_head(branch);
+    git2::Repository::init_opts(path, &init).map_err(|e| e.to_string())?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Repository".into());
+    let mut written = Vec::new();
+    let mut skipped = Vec::new();
+    for (file, contents) in super::templates::files(options, &name) {
+        let target = super::safe_path::ScopedFile::new(path, file)?;
+        // Any existing entry, even one too large or unreadable, is left alone.
+        if !matches!(target.read(0), Ok(None)) {
+            skipped.push(file.to_string());
+            continue;
+        }
+        target.replace(None, contents.as_bytes())?;
+        written.push(file);
+    }
+    Ok((written, skipped))
+}
+
+/// Commit only the generated files; anything already in the folder stays untracked.
+fn commit_starter_files(path: &Path, written: &[&str]) -> Result<(), String> {
+    if !written.is_empty() {
+        let mut add = vec!["add", "--"];
+        add.extend(written.iter().copied());
+        super::merge::run_git_seq(path, &add).map_err(|e| e.user_message())?;
+    }
+    super::merge::run_git_seq(path, &["commit", "--allow-empty", "-m", "Initial commit"])
+        .map_err(|e| e.user_message())
 }
 
 // ── Terminal ──────────────────────────────────────────────────────────────────
@@ -317,6 +382,79 @@ mod tests {
         );
     }
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn init_writes_starter_files_keeps_existing_ones_and_commits() {
+        use crate::git::templates::{InitOptions, License};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("new project");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(
+            path.join("README.md"),
+            b"keep me
+",
+        )
+        .unwrap();
+        let mut options = InitOptions {
+            default_branch: "trunk".into(),
+            gitignore: Some(0),
+            readme: true,
+            license: Some(License::Mit),
+            author: "Test Author".into(),
+            initial_commit: false,
+        };
+        options.default_branch = "bad..name".into();
+        assert!(do_init(&path, &options).is_err());
+        assert!(!path.join(".git").exists());
+        options.default_branch = "trunk".into();
+        let skipped = do_init(&path, &options).unwrap();
+        assert_eq!(skipped, vec!["README.md".to_string()]);
+        assert_eq!(
+            std::fs::read(path.join("README.md")).unwrap(),
+            b"keep me
+"
+        );
+        assert!(std::fs::read_to_string(path.join(".gitignore"))
+            .unwrap()
+            .contains("/target/"));
+        assert!(std::fs::read_to_string(path.join("LICENSE"))
+            .unwrap()
+            .contains("Test Author"));
+        let repo = git2::Repository::open(&path).unwrap();
+        assert_eq!(
+            repo.find_reference("HEAD")
+                .unwrap()
+                .symbolic_target()
+                .ok()
+                .flatten(),
+            Some("refs/heads/trunk")
+        );
+        assert!(do_init(&path, &options).is_err(), "never re-initializes");
+
+        // The initial commit records only the generated files.
+        let other = root.path().join("committed");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(
+            other.join("notes.txt"),
+            b"private
+",
+        )
+        .unwrap();
+        options.readme = false;
+        let (written, _) = create_with_templates(&other, &options).unwrap();
+        let repo = git2::Repository::open(&other).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test Committer").unwrap();
+        config
+            .set_str("user.email", "committer@example.com")
+            .unwrap();
+        config.set_bool("commit.gpgsign", false).unwrap();
+        commit_starter_files(&other, &written).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let names: Vec<_> = tree.iter().map(|e| e.name().unwrap().to_string()).collect();
+        assert_eq!(names, [".gitignore", "LICENSE"]);
+    }
+
     #[test]
     fn native_clone_preserves_existing_destination_and_checks_out_bytes() {
         let source = TestRepo::new();

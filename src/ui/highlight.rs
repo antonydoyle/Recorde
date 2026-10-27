@@ -58,7 +58,11 @@ pub fn paint(
                 0.0,
                 TextFormat {
                     font_id: FontId::monospace(13.0),
-                    color,
+                    color: if selected {
+                        crate::theme::text_primary()
+                    } else {
+                        color
+                    },
                     background: if selected {
                         crate::theme::accent_blue().gamma_multiply(0.32)
                     } else {
@@ -160,4 +164,33 @@ pub fn supported(path: &str) -> bool {
                 | "sh"
         )
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changed_ranges_isolate_edits_on_character_boundaries() {
+        assert_eq!(changed_ranges("let x = 1;", "let x = 2;"), (8..9, 8..9));
+        assert_eq!(changed_ranges("same", "same"), (4..4, 4..4));
+        assert_eq!(changed_ranges("", "new"), (0..0, 0..3));
+        // Shared prefixes and suffixes never overlap on repeated text.
+        assert_eq!(changed_ranges("aa", "aaa"), (2..2, 2..3));
+        assert_eq!(changed_ranges("abcabc", "abc"), (3..6, 3..3));
+        let (old, new) = ("naïve café ☕", "naïve cafe ☕");
+        let (a, b) = changed_ranges(old, new);
+        assert_eq!(&old[a], "é");
+        assert_eq!(&new[b], "e");
+    }
+
+    #[test]
+    fn syntax_coloring_uses_the_final_extension_only() {
+        for path in ["src/main.rs", "web/app.test.tsx", "Cargo.toml", "ci.yml"] {
+            assert!(supported(path), "{path}");
+        }
+        for path in ["README.md", "Makefile", "archive.tar.gz", "image.png"] {
+            assert!(!supported(path), "{path}");
+        }
+    }
 }

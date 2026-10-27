@@ -8,8 +8,10 @@ identity fields and control characters are rejected. Missing-identity errors
 point back to these settings and preserve the commit draft.
 
 Commit signing supports Git's OpenPGP, SSH and X.509 formats, with a key ID,
-public key, or existing key path. It uses your installed signing tool and agent;
-Recorde does not import private keys or collect passphrases. Signing failures
+public key, or existing key path. Signing operations use your installed signing
+tool and agent, which handle any passphrase prompts. The separate SSH key
+generator accepts an optional encryption passphrase, processes it in the app,
+and does not persist the passphrase. Signing failures
 retain the draft and never trigger an unsigned retry. A blank OpenPGP/X.509 key
 removes this scope's key override so Git can use its inherited/default key.
 Saving uses the current worktree's settings when `extensions.worktreeConfig`

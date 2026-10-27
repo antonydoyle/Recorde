@@ -172,10 +172,31 @@ fn spawn_repo_load(path: PathBuf, id: u64, state: SharedState) {
         } else {
             None
         };
+        let first_bad = if bisect_active {
+            crate::git::reflog::bisect_first_bad(&path)
+        } else {
+            None
+        };
+        let history = crate::git::recovery::undo_history(&path);
+        let flow = crate::git::gitflow::config(&path);
         let success = result.is_ok();
         let mut s = state.lock().unwrap();
         let switching = s.repo_path.as_ref() != Some(&path);
         apply_repo_result(&mut s, path.clone(), id, result, bisect_active, bisect_oid);
+        if success && s.repo_load_id == id && s.repo_path.as_ref() == Some(&path) {
+            s.bisect_first_bad = first_bad;
+            s.undo_step = history.next(false);
+            s.redo_step = history.next(true);
+            s.git_flow = flow;
+            if let Some(graph) = s.commit_graph.clone() {
+                // Rewritten or hidden commits leave the multi-selection.
+                s.selected_commits
+                    .retain(|oid| graph.oid_to_row.contains_key(oid));
+                if s.selected_commits.len() < 2 {
+                    s.selected_commits.clear();
+                }
+            }
+        }
         let selection = if success
             && s.repo_load_id == id
             && s.repo_path.as_ref() == Some(&path)

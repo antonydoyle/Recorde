@@ -15,6 +15,8 @@ pub struct RepoConfig {
     pub diff_preferences: DiffPreferences,
     #[serde(default)]
     pub layout: Option<RepoLayout>,
+    #[serde(default)]
+    pub graph_preferences: crate::ui::commit_graph::GraphPreferences,
     /// Exact HTTPS authority to selected account username; contains no secrets.
     #[serde(default)]
     pub provider_accounts: std::collections::HashMap<String, String>,
@@ -156,7 +158,7 @@ impl PullStrategy {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// A failed load must never turn into an overwrite with default settings.
     #[serde(skip)]
@@ -179,6 +181,8 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub dark_theme: bool,
     #[serde(default)]
+    pub theme_palette: crate::theme::Palette,
+    #[serde(default)]
     pub high_contrast: bool,
     #[serde(default)]
     pub default_editor: String,
@@ -191,6 +195,9 @@ pub struct Config {
     /// Provider accounts (no tokens — tokens live in the token store).
     #[serde(default)]
     pub accounts: Vec<StoredAccount>,
+    /// Default account selections, replaced when applying a global profile.
+    #[serde(default)]
+    pub provider_accounts: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub pull_strategy: PullStrategy,
     #[serde(default)]
@@ -221,6 +228,15 @@ pub struct Config {
     pub right_panel_width: Option<f32>,
     #[serde(default)]
     pub diff_panel_height: Option<f32>,
+    /// Named commit identities; see Settings > Accounts & SSH.
+    #[serde(default)]
+    pub profiles: Vec<crate::profiles::Profile>,
+    /// Off by default: showing pictures sends a hash of each author's email
+    /// address to Gravatar.
+    #[serde(default)]
+    pub gravatar: bool,
+    #[serde(default)]
+    pub show_terminal: bool,
 }
 
 fn default_true() -> bool {
@@ -237,6 +253,15 @@ fn default_font_scale() -> f32 {
 }
 
 impl Config {
+    /// Repository selections override the active global profile's defaults.
+    pub fn account_binding(&self, repo_path: Option<&Path>, host: &str) -> Option<String> {
+        repo_path
+            .and_then(|path| self.per_repo.get(&path.display().to_string()))
+            .and_then(|repo| repo.provider_accounts.get(host))
+            .or_else(|| self.provider_accounts.get(host))
+            .cloned()
+    }
+
     pub fn remember_layout(&mut self, path: &Path) {
         let layout = RepoLayout {
             show_sidebar: self.show_sidebar,

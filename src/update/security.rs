@@ -268,16 +268,134 @@ pub fn open_read(path: &Path) -> Result<std::fs::File, String> {
 }
 
 pub fn create_private(path: &Path) -> Result<std::fs::File, String> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
+    create_private_file(path)
+}
+
+/// Create a new file with private permissions in the creation syscall. This
+/// also protects SSH key material when the parent has a broadly inherited ACL.
+pub(crate) fn create_private_file(path: &Path) -> Result<std::fs::File, String> {
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
+        use std::path::{Component, Prefix};
+        use windows_sys::Win32::{
+            Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE},
+            Security::SECURITY_ATTRIBUTES,
+            Storage::FileSystem::{
+                CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            },
+        };
+        // Alternate streams share the base file's ACL and device paths are not
+        // regular files. A supplied creation descriptor cannot make them private.
+        for component in path.components() {
+            match component {
+                Component::Prefix(prefix)
+                    if !matches!(
+                        prefix.kind(),
+                        Prefix::Disk(_)
+                            | Prefix::VerbatimDisk(_)
+                            | Prefix::UNC(_, _)
+                            | Prefix::VerbatimUNC(_, _)
+                    ) =>
+                {
+                    return Err("Private files require a regular filesystem path.".into());
+                }
+                Component::Normal(name) => {
+                    let name = name.to_string_lossy();
+                    let stem = name
+                        .split('.')
+                        .next()
+                        .unwrap_or_default()
+                        .trim_end_matches(' ')
+                        .to_ascii_uppercase();
+                    let numbered_device = ["COM", "LPT"].into_iter().any(|prefix| {
+                        stem.strip_prefix(prefix).is_some_and(|suffix| {
+                            matches!(
+                                suffix,
+                                "1" | "2"
+                                    | "3"
+                                    | "4"
+                                    | "5"
+                                    | "6"
+                                    | "7"
+                                    | "8"
+                                    | "9"
+                                    | "¹"
+                                    | "²"
+                                    | "³"
+                            )
+                        })
+                    });
+                    if name.contains(':')
+                        || matches!(
+                            stem.as_str(),
+                            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+                        )
+                        || numbered_device
+                    {
+                        return Err("Private files cannot use alternate data streams or Windows device names.".into());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let descriptor = windows_descriptor("", true)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        if wide[..wide.len() - 1].contains(&0) {
+            return Err("Private file path contains a null character.".into());
+        }
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(format!(
+                "Cannot create a new private file: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let file = unsafe { std::fs::File::from_raw_handle(handle) };
+        if !file
+            .metadata()
+            .map_err(|_| "Cannot verify the new private file.")?
+            .is_file()
+        {
+            return Err("Private storage is not a regular file.".into());
+        }
+        return Ok(file);
     }
-    options
-        .open(path)
-        .map_err(|_| "Cannot create private update file.".into())
+    #[cfg(not(windows))]
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(path)
+            .map_err(|_| "Cannot create a new private file.")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| "Cannot set private file permissions.")?;
+        }
+        Ok(file)
+    }
 }
 pub fn private_tempdir(parent: &Path, prefix: &str) -> Result<tempfile::TempDir, String> {
     let mut builder = tempfile::Builder::new();
@@ -331,6 +449,11 @@ impl Drop for WindowsDescriptor {
 
 #[cfg(windows)]
 fn windows_directory_descriptor(extra_aces: &str) -> Result<WindowsDescriptor, String> {
+    windows_descriptor(extra_aces, false)
+}
+
+#[cfg(windows)]
+fn windows_descriptor(extra_aces: &str, owner_only: bool) -> Result<WindowsDescriptor, String> {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, LocalFree},
         Security::{
@@ -365,12 +488,12 @@ fn windows_directory_descriptor(extra_aces: &str) -> Result<WindowsDescriptor, S
         }
         let sid_string = String::from_utf16_lossy(std::slice::from_raw_parts(sid_text, len));
         LocalFree(sid_text.cast());
-        let sddl: Vec<u16> = format!(
-            "O:{sid_string}D:P(A;OICI;FA;;;{sid_string})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA){extra_aces}"
-        )
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
+        let text = if owner_only {
+            format!("O:{sid_string}D:P(A;;FA;;;{sid_string})")
+        } else {
+            format!("O:{sid_string}D:P(A;OICI;FA;;;{sid_string})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA){extra_aces}")
+        };
+        let sddl: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
         let mut descriptor = std::ptr::null_mut();
         if ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
@@ -515,6 +638,85 @@ fn private_staging_refuses_writable_inherited_acl_before_creating_payloads() {
     assert!(owned_directory(directory.path()).is_err());
     assert!(private_tempdir(directory.path(), "unsafe-").is_err());
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn generated_ssh_keys_have_owner_only_acl_under_a_permissive_parent() {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT},
+            EqualSid, GetAce, GetSecurityDescriptorControl, ACCESS_ALLOWED_ACE, ACE_HEADER,
+            DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, SE_DACL_PROTECTED,
+        },
+    };
+    let directory = fixture_dir();
+    fixture_acl(directory.path(), true);
+    assert!(windows_owner(directory.path()).is_err());
+    let private = directory.path().join("id_acl_fixture");
+    crate::auth::ssh::generate_key(&private, "ACL fixture", "").unwrap();
+    assert!(
+        windows_owner(directory.path()).is_err(),
+        "Do not change the user's parent ACL"
+    );
+    for path in [&private, &private.with_extension("pub")] {
+        windows_owner(path).unwrap();
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe {
+            let mut owner = std::ptr::null_mut();
+            let mut descriptor = std::ptr::null_mut();
+            let mut dacl = std::ptr::null_mut();
+            assert_eq!(
+                GetNamedSecurityInfoW(
+                    wide.as_ptr(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                    &mut owner,
+                    std::ptr::null_mut(),
+                    &mut dacl,
+                    std::ptr::null_mut(),
+                    &mut descriptor
+                ),
+                0
+            );
+            assert!(!dacl.is_null());
+            let mut control = 0;
+            let mut revision = 0;
+            assert_ne!(
+                GetSecurityDescriptorControl(descriptor, &mut control, &mut revision),
+                0
+            );
+            assert_ne!(
+                control & SE_DACL_PROTECTED,
+                0,
+                "Private keys must not inherit parent grants"
+            );
+            assert_eq!(
+                (*dacl).AceCount,
+                1,
+                "Only the owner may access the private file"
+            );
+            let mut ace = std::ptr::null_mut();
+            assert_ne!(GetAce(dacl, 0, &mut ace), 0);
+            let header = &*ace.cast::<ACE_HEADER>();
+            assert_eq!(header.AceType, 0);
+            assert_eq!(header.AceFlags & 0x10, 0, "Grant must not be inherited");
+            let grant = &*ace.cast::<ACCESS_ALLOWED_ACE>();
+            let sid = (&grant.SidStart as *const u32).cast_mut().cast();
+            assert_ne!(EqualSid(sid, owner), 0);
+            LocalFree(descriptor);
+        }
+    }
+    let shared = directory.path().join("shared.txt");
+    std::fs::write(&shared, "keep shared file unchanged").unwrap();
+    assert!(create_private_file(&directory.path().join("shared.txt:secret")).is_err());
+    assert!(create_private_file(&directory.path().join("NUL")).is_err());
+    assert_eq!(
+        std::fs::read_to_string(shared).unwrap(),
+        "keep shared file unchanged"
+    );
 }
 
 pub fn open_lock(path: &Path) -> Result<std::fs::File, String> {

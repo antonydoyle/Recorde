@@ -36,6 +36,8 @@ pub enum ToolbarAction {
     OpenReflog,
     OpenBisect,
     OpenProvider,
+    Undo,
+    Redo,
 }
 
 // ── Overflow item kind (Clone+Copy so we can collect them without owning actions) ──
@@ -178,7 +180,7 @@ impl Toolbar {
                                             action = Some(ToolbarAction::CopyRepoPath);
                                             ui.close();
                                         }
-                                        if ui.button("Open Terminal").clicked() {
+                                        if ui.button("Open External Terminal").clicked() {
                                             action = Some(ToolbarAction::OpenTerminal);
                                             ui.close();
                                         }
@@ -463,6 +465,44 @@ impl Toolbar {
                         }
 
                         ui.add_space(8.0);
+                        vsep(ui);
+                        ui.add_space(8.0);
+
+                        // Right-to-left: Redo is placed first so Undo appears on its left.
+                        let (undo, redo) = {
+                            let s = self.state.lock().unwrap();
+                            (s.undo_step.clone(), s.redo_step.clone())
+                        };
+                        let key = if cfg!(target_os = "macos") {
+                            "Cmd"
+                        } else {
+                            "Ctrl"
+                        };
+                        for (step, icon, redo, idle) in [
+                            (&redo, icons::REDO, true, "Nothing to redo"),
+                            (&undo, icons::UNDO, false, "Nothing to undo"),
+                        ] {
+                            let tip = match step {
+                                Some((_, label)) if redo => format!("{label}  ({key}+Shift+Z)"),
+                                Some((_, label)) => format!("{label}  ({key}+Z)"),
+                                None => idle.to_string(),
+                            };
+                            let response = ui
+                                .add_enabled_ui(has_repo && step.is_some() && !busy, |ui| {
+                                    widgets::icon_btn_mat(ui, icon, 18.0, &tip)
+                                })
+                                .inner;
+                            if response.clicked() {
+                                action = Some(if redo {
+                                    ToolbarAction::Redo
+                                } else {
+                                    ToolbarAction::Undo
+                                });
+                            }
+                            ui.add_space(2.0);
+                        }
+
+                        ui.add_space(6.0);
                         vsep(ui);
                         ui.add_space(8.0);
 

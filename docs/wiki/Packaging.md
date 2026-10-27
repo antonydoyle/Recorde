@@ -40,6 +40,14 @@ Windows installer metadata is split between:
 `src/main.rs` uses `windows_subsystem = "windows"` on Windows builds so launching
 the GUI does not also open a console window.
 
+The Windows x64 MSVC build requires the Microsoft Visual C++ v14 x64 runtime.
+Install the latest supported [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)
+before launching on a machine without it. The runtime must be at least as recent
+as the build tools used for the binary. The local 0.4.0 review build uses MSVC
+14.51 and imports `VCRUNTIME140.dll`; its portable archive does not install the
+runtime. Git CLI must also be on PATH for command-backed workflows, with Git LFS
+and SSH installed when those workflows are needed.
+
 ## Runtime Assets
 
 The app icon is embedded for the native window icon and title bar texture.

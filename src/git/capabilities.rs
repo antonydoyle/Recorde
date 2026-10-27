@@ -6,6 +6,7 @@ pub struct RepoCapabilities {
     pub is_bare: bool,
     pub is_detached_head: bool,
     pub merge_in_progress: bool,
+    pub squash_merge_in_progress: bool,
     pub rebase_in_progress: bool,
     pub rebase_edit: bool,
     pub rebase_split: bool,
@@ -43,7 +44,8 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
     let is_detached_head = repo.head_detached().unwrap_or(false);
 
     // In-progress state: look for the sentinel files git uses
-    let merge_in_progress = git_dir.join("MERGE_HEAD").exists();
+    let squash_merge_in_progress = super::merge::squash_in_progress(&repo);
+    let merge_in_progress = git_dir.join("MERGE_HEAD").exists() || squash_merge_in_progress;
     let cherry_pick_in_progress = git_dir.join("CHERRY_PICK_HEAD").exists();
     let revert_in_progress = git_dir.join("REVERT_HEAD").exists();
     let rebase_in_progress =
@@ -87,6 +89,7 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
         is_bare,
         is_detached_head,
         merge_in_progress,
+        squash_merge_in_progress,
         rebase_in_progress,
         rebase_edit: super::rebase::is_edit_pause(&repo),
         rebase_split: git_dir.join("rebase-merge/recorde-split").is_file(),

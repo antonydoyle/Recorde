@@ -7,11 +7,20 @@ GitHub, GitLab, Bitbucket Cloud or Azure DevOps Services, within each adapter's
 documented limits.
 
 This wiki documents the application from both user and developer perspectives.
+The user-facing pages are also bundled with Recorde under the Help menu, with
+offline search and navigation. Links to developer pages and external resources
+open in your browser.
 
 ## Contents
 
 - [User Guide](User-Guide.md): using the app day to day.
 - [Feature Reference](Feature-Reference.md): detailed capability map.
+- [Branches and Git Flow](Branching-and-Git-Flow.md): merge choices, history previews, feature/release/hotfix workflows.
+- [Undo, redo and recovery](Recovery.md): snapshots, retention, conflict drafts and recovery limits.
+- [Accounts, identities and tools](Accounts-and-Tools.md): profiles, provider accounts, SSH, editor and terminal.
+- [Keyboard shortcuts](Keyboard-Shortcuts.md): default commands, customization and keyboard navigation.
+- [Themes and accessibility](Themes-and-Accessibility.md): colour palettes, scale, contrast and workspace layout.
+- [Advanced history](Advanced-History.md): commit splitting, merge topology and sparse recovery.
 - [Architecture](Architecture.md): module boundaries and runtime flow.
 - [Configuration](Configuration.md): persisted settings, accounts, and tokens.
 - [Provider Integrations](Provider-Integrations.md): provider capabilities and limits.

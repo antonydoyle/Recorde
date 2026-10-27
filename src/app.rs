@@ -24,6 +24,10 @@ use crate::ui::{
     toolbar::{Toolbar, ToolbarAction},
 };
 
+mod history_plan;
+mod lifecycle_guards;
+mod workflows;
+
 #[derive(PartialEq, Clone, Copy)]
 pub enum RightTab {
     Changes,
@@ -87,7 +91,9 @@ struct RepoUiSession {
     rename_branch_input: String,
     tag_message_input: String,
     stash_message_input: String,
+    stash_include_untracked: bool,
     stash_branch_input: String,
+    reset_mode: crate::git::branches::ResetMode,
     reflog_recover_input: String,
     reflog_recover_oid: Option<String>,
     compare_file_selected: Option<String>,
@@ -103,6 +109,16 @@ struct RepoUiSession {
     conflict_editor: Option<crate::ui::conflict_editor::ConflictEditor>,
     pending_recovery_id: Option<String>,
     provider_editor: Option<crate::ui::provider_editor::ProviderEditor>,
+    file_editor: Option<crate::ui::file_editor::FileEditor>,
+    merge_mode: crate::git::merge::MergeMode,
+    merge_message: String,
+    merge_choice: Option<String>,
+    flow_config: crate::git::gitflow::FlowConfig,
+    flow_kind: crate::git::gitflow::Kind,
+    flow_name: String,
+    flow_finish: Option<workflows::FlowFinish>,
+    reset_preview: Option<crate::git::branches::ResetPreview>,
+    rebase_target: Option<crate::git::rebase::PlanTarget>,
 }
 
 impl Default for RepoUiSession {
@@ -129,7 +145,9 @@ impl Default for RepoUiSession {
             rename_branch_input: String::new(),
             tag_message_input: String::new(),
             stash_message_input: "WIP".into(),
+            stash_include_untracked: false,
             stash_branch_input: String::new(),
+            reset_mode: Default::default(),
             reflog_recover_input: String::new(),
             reflog_recover_oid: None,
             compare_file_selected: None,
@@ -145,11 +163,35 @@ impl Default for RepoUiSession {
             conflict_editor: None,
             pending_recovery_id: None,
             provider_editor: None,
+            file_editor: None,
+            merge_mode: Default::default(),
+            merge_message: String::new(),
+            merge_choice: None,
+            flow_config: Default::default(),
+            flow_kind: crate::git::gitflow::Kind::Feature,
+            flow_name: String::new(),
+            flow_finish: None,
+            reset_preview: None,
+            rebase_target: None,
         }
     }
 }
 
+fn unsaved_file_edit<'a>(
+    active: &'a RepoUiSession,
+    inactive: impl Iterator<Item = &'a RepoUiSession>,
+) -> Option<&'a str> {
+    std::iter::once(active)
+        .chain(inactive)
+        .filter_map(|session| session.file_editor.as_ref())
+        .find(|editor| editor.is_dirty())
+        .map(|editor| editor.file.as_str())
+}
+
 pub struct RecordeApp {
+    quit_waiting: bool,
+    pending_navigation: Option<lifecycle_guards::Navigation>,
+    history_plan: Option<history_plan::Task>,
     workspace_name: String,
     repo_ui: RepoUiSession,
     repo_sessions: std::collections::HashMap<std::path::PathBuf, RepoUiSession>,
@@ -165,6 +207,8 @@ pub struct RecordeApp {
     staging_panel: StagingPanel,
     status_bar: StatusBar,
     config: Config,
+    help: crate::ui::help::HelpBrowser,
+    repository_browser: crate::ui::repository_browser::RepositoryBrowser,
     /// Pre-loaded texture of the app icon for rendering in the title bar.
     app_icon_texture: egui::TextureHandle,
     /// Tracks the last-seen mtimes of key .git ref files so external changes
@@ -221,6 +265,16 @@ pub struct RecordeApp {
     terminal_input: String,
     diff_tool_input: String,
     merge_tool_input: String,
+    terminal: crate::ui::terminal_panel::TerminalPanel,
+    init_options: crate::git::templates::InitOptions,
+    profile_input: crate::profiles::Profile,
+    profile_message: Option<String>,
+    ssh_key_path: String,
+    ssh_key_comment: String,
+    ssh_key_passphrase: String,
+    ssh_public_key: Option<(std::path::PathBuf, String)>,
+    ssh_task: Option<std::sync::mpsc::Receiver<Result<workflows::SshDone, String>>>,
+    ssh_message: Option<String>,
 }
 
 impl RecordeApp {
@@ -240,8 +294,14 @@ impl RecordeApp {
         let merge_tool = config.merge_tool.clone();
 
         cc.egui_ctx.set_fonts(crate::icons::font_definitions());
+        crate::ui::avatars::set_enabled(config.gravatar);
 
-        theme::apply(&cc.egui_ctx, dark_theme, high_contrast);
+        theme::apply_palette(
+            &cc.egui_ctx,
+            dark_theme,
+            high_contrast,
+            config.theme_palette,
+        );
         theme::apply_ui_scale(&cc.egui_ctx, config.font_scale);
 
         // Pre-load the app icon as a texture so the title bar can render it.
@@ -279,6 +339,9 @@ impl RecordeApp {
         }
 
         Self {
+            quit_waiting: false,
+            pending_navigation: None,
+            history_plan: None,
             workspace_name: String::new(),
             repo_ui: RepoUiSession::default(),
             repo_sessions: Default::default(),
@@ -307,6 +370,8 @@ impl RecordeApp {
             observed_repo: None,
             observed_provider: None,
             config,
+            help: Default::default(),
+            repository_browser: Default::default(),
             dark_theme,
             high_contrast,
             state,
@@ -346,6 +411,16 @@ impl RecordeApp {
             terminal_input: terminal,
             diff_tool_input: diff_tool,
             merge_tool_input: merge_tool,
+            terminal: Default::default(),
+            init_options: Default::default(),
+            profile_input: Default::default(),
+            profile_message: None,
+            ssh_key_path: String::new(),
+            ssh_key_comment: String::new(),
+            ssh_key_passphrase: String::new(),
+            ssh_public_key: None,
+            ssh_task: None,
+            ssh_message: None,
         }
     }
 
@@ -411,8 +486,10 @@ impl RecordeApp {
                 remote::push_set_upstream(&mut self.runner, &self.state)
             }
             ToolbarAction::MergeBranch => {
-                self.state.lock().unwrap().modal = ModalKind::MergeBranch;
+                self.state.lock().unwrap().modal = ModalKind::MergeBranch { branch: None };
             }
+            ToolbarAction::Undo => self.open_undo(false),
+            ToolbarAction::Redo => self.open_undo(true),
             ToolbarAction::RebaseOnto => {
                 self.state.lock().unwrap().modal = ModalKind::RebaseOnto;
             }
@@ -420,7 +497,12 @@ impl RecordeApp {
                 self.dark_theme = !self.dark_theme;
                 self.config.dark_theme = self.dark_theme;
                 self.save_config();
-                theme::apply(ctx, self.dark_theme, self.high_contrast);
+                theme::apply_palette(
+                    ctx,
+                    self.dark_theme,
+                    self.high_contrast,
+                    self.config.theme_palette,
+                );
             }
             ToolbarAction::ToggleSearch => {
                 let mut s = self.state.lock().unwrap();
@@ -475,9 +557,21 @@ impl RecordeApp {
             SidebarAction::DeleteTag(n) => {
                 self.state.lock().unwrap().modal = ModalKind::ConfirmDeleteTag { tag_name: n }
             }
-            SidebarAction::StashApply(i) => branches::stash_apply(i, self.state.clone()),
-            SidebarAction::StashPop(i) => branches::stash_pop(i, self.state.clone()),
-            SidebarAction::StashDrop(i) => branches::stash_drop(i, self.state.clone()),
+            SidebarAction::StashApply(i, oid) => {
+                if let Some(target) = self.stash_target(i, &oid) {
+                    branches::stash_apply(target, self.state.clone());
+                }
+            }
+            SidebarAction::StashPop(i, oid) => {
+                if let Some(target) = self.stash_target(i, &oid) {
+                    branches::stash_pop(target, self.state.clone());
+                }
+            }
+            SidebarAction::StashDrop(i, oid) => {
+                if let Some(target) = self.stash_target(i, &oid) {
+                    self.state.lock().unwrap().modal = ModalKind::ConfirmDropStash { target };
+                }
+            }
             SidebarAction::MergeBranch(n) => merge::merge_branch(&n, self.state.clone()),
             SidebarAction::RebaseOnto(n) => rebase::rebase_onto(&n, self.state.clone()),
             SidebarAction::RenameBranch(n) => {
@@ -488,12 +582,24 @@ impl RecordeApp {
                 branches::set_upstream(&n, &target, self.state.clone())
             }
             SidebarAction::ForceDeleteBranch(n) => {
-                branches::force_delete_branch(&n, self.state.clone())
+                self.state.lock().unwrap().modal =
+                    ModalKind::ConfirmForceDeleteBranch { branch_name: n }
             }
             SidebarAction::PushTag(n) => branches::push_tag(&n, self.state.clone()),
             SidebarAction::DeleteRemoteTag(n) => {
-                branches::delete_remote_tag(&n, self.state.clone())
+                self.state.lock().unwrap().modal = ModalKind::ConfirmDeleteRemoteTag { tag_name: n }
             }
+            SidebarAction::CheckoutRemoteBranch(n) => {
+                branches::checkout_remote_branch(&n, self.state.clone())
+            }
+            SidebarAction::DeleteRemoteBranch(n) => {
+                self.state.lock().unwrap().modal = ModalKind::ConfirmDeleteRemoteBranch { name: n }
+            }
+            SidebarAction::RevealCommit(oid) => self.commit_graph_view.reveal_commit(&oid),
+            SidebarAction::MergeWithOptions(n) => {
+                self.state.lock().unwrap().modal = ModalKind::MergeBranch { branch: Some(n) }
+            }
+            SidebarAction::FastForward(n) => merge::fast_forward_branch(&n, self.state.clone()),
             SidebarAction::PreviewStash(_, oid) => {
                 {
                     let mut s = self.state.lock().unwrap();
@@ -504,13 +610,28 @@ impl RecordeApp {
                 }
                 crate::git::operations::load_commit_detail(&oid, self.state.clone());
             }
-            SidebarAction::StashBranch(idx) => {
+            SidebarAction::StashBranch(idx, oid) => {
                 self.repo_ui.stash_branch_input.clear();
-                self.state.lock().unwrap().modal =
-                    ModalKind::CreateBranchFromStash { stash_index: idx };
+                if let Some(target) = self.stash_target(idx, &oid) {
+                    self.state.lock().unwrap().modal = ModalKind::CreateBranchFromStash { target };
+                }
             }
             SidebarAction::RestoreBranch(name, oid) => {
                 branches::restore_deleted_branch(&name, &oid, self.state.clone())
+            }
+        }
+    }
+
+    fn stash_target(&self, index: usize, oid: &str) -> Option<branches::StashTarget> {
+        let (path, epoch) = {
+            let state = self.state.lock().unwrap();
+            (state.repo_path.clone()?, state.repo_epoch)
+        };
+        match branches::StashTarget::capture(&path, epoch, index, oid) {
+            Ok(target) => Some(target),
+            Err(error) => {
+                self.state.lock().unwrap().error = Some(error);
+                None
             }
         }
     }
@@ -563,37 +684,8 @@ impl RecordeApp {
     // ── Open rebase modal ─────────────────────────────────────────────────────
 
     fn open_rebase_modal(&mut self, upstream_oid: String) {
-        let repo_path = self.state.lock().unwrap().repo_path.clone();
-        let Some(path) = repo_path else { return };
-        let upstream_summary = (|| -> Option<String> {
-            let repo = git2::Repository::open(&path).ok()?;
-            let oid = git2::Oid::from_str(&upstream_oid).ok()?;
-            let commit = repo.find_commit(oid).ok()?;
-            commit.summary().ok().flatten().map(str::to_owned)
-        })()
-        .unwrap_or_default();
-        let entries = rebase::load_rebase_entries(&path, &upstream_oid);
-        match entries {
-            Some(e) if !e.is_empty() => {
-                let preserve = git2::Repository::open(&path).is_ok_and(|repo| {
-                    e.iter().any(|entry| {
-                        git2::Oid::from_str(&entry.oid)
-                            .ok()
-                            .and_then(|oid| repo.find_commit(oid).ok())
-                            .is_some_and(|c| c.parent_count() > 1)
-                    })
-                });
-                let mut modal = RebaseModal::new(upstream_oid, upstream_summary, e);
-                modal.preserve_merges = preserve;
-                self.repo_ui.rebase_modal = Some(modal);
-            }
-            _ => {
-                self.state.lock().unwrap().error =
-                    Some("No commits to rebase between this commit and HEAD.".into())
-            }
-        }
+        self.start_history_plan(history_plan::Request::Rebase(upstream_oid));
     }
-
     // ── Modal rendering ───────────────────────────────────────────────────────
 
     fn render_modals(&mut self, ctx: &Context) {
@@ -601,6 +693,9 @@ impl RecordeApp {
             return;
         }
         let modal_kind = self.state.lock().unwrap().modal.clone();
+        if !matches!(modal_kind, ModalKind::ResetToCommit { .. }) {
+            self.repo_ui.reset_preview = None;
+        }
         match modal_kind {
             ModalKind::None => {}
 
@@ -653,7 +748,10 @@ impl RecordeApp {
                             .color(theme::text_primary())
                             .size(14.0),
                     );
-                    ui.label(styled_muted("Unmerged commits will be lost."));
+                    ui.label(styled_muted(
+                        "Git refuses to delete a branch that is not fully merged. \
+                         Use Force Delete for those.",
+                    ));
                     ui.add_space(16.0);
                     ui.horizontal(|ui| {
                         let ok = ui.add(danger_btn("Delete")).clicked();
@@ -761,6 +859,82 @@ impl RecordeApp {
                 });
             }),
 
+            ModalKind::ConfirmForceDeleteBranch { branch_name } => self.render_confirm_modal(
+                ctx,
+                "Force Delete Branch",
+                &format!("Force delete \"{branch_name}\"?"),
+                "Commits that are not on another branch will no longer be reachable. \
+                     The branch can be restored from Recently deleted.",
+                "Force Delete",
+                move |app| branches::force_delete_branch(&branch_name, app.state.clone()),
+            ),
+
+            ModalKind::ConfirmDeleteRemoteBranch { name } => self.render_confirm_modal(
+                ctx,
+                "Delete Remote Branch",
+                &format!("Delete \"{name}\" from the remote?"),
+                "This changes the shared repository for everyone. Its last known tip is kept \
+                 under Recently deleted so it can be restored locally.",
+                "Delete from Remote",
+                move |app| branches::delete_remote_branch(&name, app.state.clone()),
+            ),
+
+            ModalKind::ConfirmDeleteRemoteTag { tag_name } => self.render_confirm_modal(
+                ctx,
+                "Delete Remote Tag",
+                &format!("Delete tag \"{tag_name}\" from the remote?"),
+                "This changes the shared repository for everyone. The local tag is kept.",
+                "Delete from Remote",
+                move |app| branches::delete_remote_tag(&tag_name, app.state.clone()),
+            ),
+
+            ModalKind::ResetToCommit { oid } => self.render_reset_modal(ctx, oid),
+
+            ModalKind::ConfirmCommitSequence { preview } => {
+                let label = preview.label();
+                let branch = preview
+                    .head_ref
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(&preview.head_ref);
+                let question = format!("{label} {} commits on {branch}?", preview.oids.len());
+                let commits = preview
+                    .oids
+                    .iter()
+                    .take(8)
+                    .map(|oid| &oid[..7.min(oid.len())])
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let detail = format!("Repository: {}\nDestination HEAD: {}\nSelected commits (oldest first): {commits}{}. {} A recovery snapshot is saved first. The operation stops if the destination branch or HEAD changes before it starts.", preview.path.display(), preview.head_oid, if preview.oids.len() > 8 { ", …" } else { "" }, if preview.revert { "Reverts run newest first." } else { "Cherry-picks run oldest first." });
+                self.render_confirm_modal(ctx, label, &question, &detail, label, move |app| {
+                    preview.submit(app.state.clone())
+                });
+            }
+
+            ModalKind::ConfirmUndo { id, label, redo } => {
+                let question = format!("{label}?");
+                let button = label.clone();
+                self.render_confirm_modal(
+                    ctx,
+                    if redo { "Redo" } else { "Undo" },
+                    &question,
+                    "Restores HEAD, the index and working files saved around that operation. \
+                     Pushes and other remote changes are not undone. Recorde stops if files \
+                     changed since then, and saves a new snapshot so this can be reversed.",
+                    &button,
+                    move |app| {
+                        let path = app.state.lock().unwrap().repo_path.clone();
+                        if let Some(path) = path {
+                            app.state.lock().unwrap().remote_op = Some(label);
+                            crate::git::mutation::spawn_operation(
+                                path,
+                                app.state.clone(),
+                                move |repo| crate::git::recovery::restore_step(repo, &id, redo),
+                            );
+                        }
+                    },
+                )
+            }
+
             ModalKind::CloneRepo => self.render_clone_modal(ctx),
             ModalKind::InitRepo => self.render_init_modal(ctx),
             ModalKind::RenameBranch { old_name } => self.render_rename_branch_modal(ctx, old_name),
@@ -768,18 +942,26 @@ impl RecordeApp {
                 self.render_detached_checkout_modal(ctx, oid)
             }
             ModalKind::StashWithMessage => self.render_stash_message_modal(ctx),
-            ModalKind::CreateBranchFromStash { stash_index } => {
-                self.render_stash_branch_modal(ctx, stash_index)
+            ModalKind::CreateBranchFromStash { target } => {
+                self.render_stash_branch_modal(ctx, target)
+            }
+            ModalKind::ConfirmDropStash { target } => {
+                let question = format!("Drop stash@{{{}}} ({})?", target.index, &target.oid[..12]);
+                let detail = format!("Repository: {}\nA recovery copy is kept at {}. Restore it with git stash apply; this action is not in Undo history.", target.path.display(), target.recovery_ref());
+                self.render_confirm_modal(
+                    ctx,
+                    "Drop Stash",
+                    &question,
+                    &detail,
+                    "Drop Stash",
+                    move |app| {
+                        branches::stash_drop(target, app.state.clone());
+                    },
+                );
             }
 
-            ModalKind::MergeBranch => self.render_branch_picker(
-                ctx,
-                "Merge Branch",
-                "Select a branch to merge into the current branch:",
-                |app, branch| {
-                    merge::merge_branch(&branch, app.state.clone());
-                },
-            ),
+            ModalKind::MergeBranch { branch } => self.render_merge_modal(ctx, branch),
+            ModalKind::GitFlow => self.render_git_flow_modal(ctx),
 
             ModalKind::RebaseOnto => self.render_branch_picker(
                 ctx,
@@ -924,6 +1106,29 @@ impl RecordeApp {
             C::InteractiveRebase => {
                 let mut s = self.state.lock().unwrap();
                 s.pending_open_rebase = s.selected_commit.clone();
+                None
+            }
+            C::Undo => {
+                self.open_undo(false);
+                None
+            }
+            C::Redo => {
+                self.open_undo(true);
+                None
+            }
+            C::IntegratedTerminal => {
+                self.toggle_terminal();
+                None
+            }
+            C::GitFlow => {
+                self.open_git_flow();
+                None
+            }
+            C::ResetToCommit => {
+                let mut s = self.state.lock().unwrap();
+                if let Some(oid) = s.selected_commit.clone() {
+                    s.modal = ModalKind::ResetToCommit { oid };
+                }
                 None
             }
         };
@@ -1273,13 +1478,11 @@ impl RecordeApp {
 
     fn update_restart_idle(&self) -> bool {
         let state = self.state.lock().unwrap();
-        !self.runner.has_any_jobs()
-            && state.local_jobs.is_empty()
-            && state.active_ops.is_empty()
-            && state.remote_op.is_none()
-            && state.repo_load_path.is_none()
+        !self.background_work_pending(&state)
             && !state.bisect_in_progress
             && self.account_task.is_none()
+            && self.ssh_task.is_none()
+            && !self.repository_browser.is_busy()
             && !state.capabilities.as_ref().is_some_and(|c| {
                 c.rebase_in_progress
                     || c.merge_in_progress
@@ -1295,13 +1498,15 @@ impl RecordeApp {
         if self.repo_ui.conflict_editor.is_some()
             || self.repo_ui.provider_editor.is_some()
             || self.repo_ui.rebase_modal.is_some()
+            || unsaved_file_edit(&self.repo_ui, self.repo_sessions.values()).is_some()
+            || self.terminal.is_running()
             || self.repo_sessions.values().any(|session| {
                 session.conflict_editor.is_some()
                     || session.provider_editor.is_some()
                     || session.rebase_modal.is_some()
             })
         {
-            return Err("Close conflict editors, review editors and rebase plans before restarting; their unsaved edits must be handled first.".into());
+            return Err("Save or close file editors in every repository tab, close conflict and review editors and rebase plans, and stop terminal commands before restarting.".into());
         }
         let mut paths = self.config.open_repos.clone();
         if let Some(path) = self.state.lock().unwrap().repo_path.clone() {
@@ -1342,6 +1547,23 @@ impl RecordeApp {
     }
 
     fn render_ui_settings(&mut self, ctx: &Context, ui: &mut egui::Ui) {
+        let previous_palette = self.config.theme_palette;
+        egui::ComboBox::from_label("Colour palette")
+            .selected_text(self.config.theme_palette.label())
+            .show_ui(ui, |ui| {
+                for palette in theme::Palette::ALL {
+                    ui.selectable_value(&mut self.config.theme_palette, palette, palette.label());
+                }
+            });
+        if previous_palette != self.config.theme_palette {
+            self.save_config();
+            theme::apply_palette(
+                ctx,
+                self.dark_theme,
+                self.high_contrast,
+                self.config.theme_palette,
+            );
+        }
         if ui
             .checkbox(
                 &mut self.dark_theme,
@@ -1351,7 +1573,12 @@ impl RecordeApp {
         {
             self.config.dark_theme = self.dark_theme;
             self.save_config();
-            theme::apply(ctx, self.dark_theme, self.high_contrast);
+            theme::apply_palette(
+                ctx,
+                self.dark_theme,
+                self.high_contrast,
+                self.config.theme_palette,
+            );
         }
         if ui
             .checkbox(
@@ -1362,7 +1589,12 @@ impl RecordeApp {
         {
             self.config.high_contrast = self.high_contrast;
             self.save_config();
-            theme::apply(ctx, self.dark_theme, self.high_contrast);
+            theme::apply_palette(
+                ctx,
+                self.dark_theme,
+                self.high_contrast,
+                self.config.theme_palette,
+            );
         }
 
         // ── UI scale ─────────────────────────────────────────────────────────
@@ -1409,6 +1641,30 @@ impl RecordeApp {
                 .set_colorblind(self.config.colorblind_graph);
             self.save_config();
         }
+
+        ui.add_space(12.0);
+        ui.label(
+            RichText::new("Author pictures")
+                .color(theme::text_secondary())
+                .size(13.0)
+                .strong(),
+        );
+        if ui
+            .checkbox(
+                &mut self.config.gravatar,
+                RichText::new("Show author pictures from Gravatar and GitHub")
+                    .color(theme::text_secondary()),
+            )
+            .changed()
+        {
+            crate::ui::avatars::set_enabled(self.config.gravatar);
+            self.save_config();
+        }
+        ui.label(styled_muted(
+            "Off by default. When on, a SHA-256 hash of each author's email address is sent to \
+             Gravatar (GitHub no-reply addresses use the GitHub account number instead). \
+             Pictures are cached for a week; initials are shown otherwise.",
+        ));
 
         ui.add_space(8.0);
         ui.label(styled_muted(
@@ -1895,6 +2151,11 @@ impl RecordeApp {
         } else {
             ui.label("SSH diagnostics pending");
         }
+        ui.add_space(6.0);
+        self.render_ssh_keygen(ui);
+
+        ui.add_space(14.0);
+        self.render_profiles(ui);
 
         ui.add_space(14.0);
 
@@ -2851,9 +3112,15 @@ impl RecordeApp {
         self.config.diff_panel_height = None;
         if let Some(ref path) = self.state.lock().unwrap().repo_path.clone() {
             self.config.reset_repo_column_widths(path);
+            self.config
+                .per_repo
+                .entry(path.display().to_string())
+                .or_default()
+                .graph_preferences = Default::default();
         }
         self.save_config();
         self.commit_graph_view.reset_column_widths();
+        self.commit_graph_view.set_preferences(Default::default());
     }
 }
 
@@ -2884,10 +3151,16 @@ impl eframe::App for RecordeApp {
             return;
         }
 
+        if ctx.input(|input| input.viewport().close_requested()) {
+            self.request_quit(ctx);
+        }
+
         let ready = self.state.lock().unwrap().commit_graph.is_some();
         self.frame_metrics
             .observe(ctx, _frame.info().cpu_usage, ready);
         self.sync_repo_session();
+        self.poll_history_plan(ctx);
+        self.show_lifecycle_guards(ctx);
         if self.last_navigation_save.elapsed() >= std::time::Duration::from_secs(2) {
             self.persist_navigation();
             self.last_navigation_save = std::time::Instant::now();
@@ -2981,7 +3254,12 @@ impl eframe::App for RecordeApp {
         ctx.options_mut(|o| o.warn_on_id_clash = false);
 
         let shortcuts = !crate::commands::text_input_has_focus(ctx)
+            && !self.help.open
+            && !self.repository_browser.open
             && !self.settings_open
+            && !self.quit_waiting
+            && self.pending_navigation.is_none()
+            && self.history_plan.is_none()
             && !self.command_palette_open
             && !self.branch_switcher_open
             && !self.add_account_open
@@ -2994,9 +3272,15 @@ impl eframe::App for RecordeApp {
             }
             && self.repo_ui.rebase_modal.is_none()
             && self.repo_ui.conflict_editor.is_none()
-            && self.repo_ui.provider_editor.is_none();
+            && self.repo_ui.provider_editor.is_none()
+            && self.repo_ui.file_editor.is_none();
         self.commit_graph_view.set_interactions_enabled(
             !self.settings_open
+                && !self.quit_waiting
+                && self.pending_navigation.is_none()
+                && self.history_plan.is_none()
+                && !self.help.open
+                && !self.repository_browser.open
                 && !self.command_palette_open
                 && !self.branch_switcher_open
                 && !self.add_account_open
@@ -3004,6 +3288,7 @@ impl eframe::App for RecordeApp {
                 && self.repo_ui.rebase_modal.is_none()
                 && self.repo_ui.conflict_editor.is_none()
                 && self.repo_ui.provider_editor.is_none()
+                && self.repo_ui.file_editor.is_none()
                 && {
                     let s = self.state.lock().unwrap();
                     matches!(s.modal, ModalKind::None)
@@ -3029,6 +3314,19 @@ impl eframe::App for RecordeApp {
                 self.config.set_repo_column_widths(path, rw, gw, tw, hw);
             }
         }
+        if let Some(preferences) = self.commit_graph_view.take_dirty_preferences() {
+            if let Some(path) = self.state.lock().unwrap().repo_path.clone() {
+                self.config
+                    .per_repo
+                    .entry(path.display().to_string())
+                    .or_default()
+                    .graph_preferences = preferences;
+                self.config.save();
+            }
+        }
+        if let Some(action) = self.commit_graph_view.take_sidebar_action() {
+            self.handle_sidebar(action);
+        }
 
         // ── In-progress operation banner (rebase/merge/cherry-pick/revert) ─
         self.show_in_progress_banner(root_ui);
@@ -3037,6 +3335,20 @@ impl eframe::App for RecordeApp {
         let pending_rebase = self.state.lock().unwrap().pending_open_rebase.take();
         if let Some(oid) = pending_rebase {
             self.open_rebase_modal(oid);
+        }
+        let pending_squash = self.state.lock().unwrap().pending_squash.take();
+        if let Some(oids) = pending_squash {
+            self.open_squash(oids);
+        }
+        let pending_drop = self.state.lock().unwrap().pending_drop.take();
+        if let Some(oids) = pending_drop {
+            self.open_drop(oids);
+        }
+        self.show_file_editor(ctx);
+        self.help.show(ctx);
+        if let Some(url) = self.repository_browser.show(ctx, &self.config.accounts) {
+            self.clone_url = url;
+            self.state.lock().unwrap().modal = ModalKind::CloneRepo;
         }
 
         // ── Modals ────────────────────────────────────────────────────────
@@ -3072,7 +3384,14 @@ impl eframe::App for RecordeApp {
                 self.repo_ui.rebase_modal = None;
             }
             if let Some((oid, entries)) = execute {
-                rebase::start_rebase(&oid, entries, self.state.clone());
+                if let Some(target) = self.repo_ui.rebase_target.take() {
+                    rebase::start_rebase_checked(target, &oid, entries, self.state.clone());
+                } else {
+                    self.state.lock().unwrap().error =
+                        Some("Reopen the rebase plan to review its branch and HEAD.".into());
+                }
+            } else if close {
+                self.repo_ui.rebase_target = None;
             }
         }
 
@@ -3120,6 +3439,17 @@ impl eframe::App for RecordeApp {
                         "Diff",
                         "Show or hide the bottom diff panel",
                     );
+                    if panel_toggle(
+                        ui,
+                        &mut self.config.show_terminal,
+                        "Terminal",
+                        "Show or hide the integrated terminal",
+                    ) {
+                        layout_changed = true;
+                        if self.config.show_terminal {
+                            self.terminal.focus();
+                        }
+                    }
                     if layout_changed {
                         self.save_config();
                     }
@@ -3310,12 +3640,32 @@ impl eframe::App for RecordeApp {
             }
         }
 
+        if self.config.show_terminal {
+            self.show_terminal_panel(root_ui);
+        } else {
+            // Hiding the panel must not stop draining its bounded output queue
+            // or postpone cleanup of a completed command's descendants.
+            let finished = self.terminal.poll();
+            if finished.is_some() && finished == self.state.lock().unwrap().repo_path {
+                crate::git::operations::refresh_repo(self.state.clone());
+            }
+            if self.terminal.needs_poll() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
+
         if self.config.show_diff_panel {
+            let max_height = (root_ui.available_height() - 180.0).clamp(120.0, 480.0);
             let diff_response =
                 egui::Panel::bottom(egui::Id::new(("diff_panel", &self.observed_repo)))
                     .resizable(true)
-                    .default_size(self.config.diff_panel_height.unwrap_or(300.0))
-                    .size_range(160.0..=480.0)
+                    .default_size(
+                        self.config
+                            .diff_panel_height
+                            .unwrap_or(300.0)
+                            .min(max_height),
+                    )
+                    .size_range(120.0..=max_height)
                     .frame(egui::Frame::NONE.fill(theme::bg_app()))
                     .show(root_ui, |ui| {
                         let r = ui.max_rect();
@@ -3404,6 +3754,132 @@ impl RecordeApp {
         }
     }
 
+    /// A destructive confirmation with a red confirm button. Escape cancels.
+    fn render_confirm_modal(
+        &mut self,
+        ctx: &Context,
+        title: &str,
+        question: &str,
+        detail: &str,
+        confirm_label: &str,
+        on_confirm: impl FnOnce(&mut Self),
+    ) {
+        let mut confirm = false;
+        let mut close = false;
+        modal_window(ctx, title, |ui| {
+            ui.label(
+                RichText::new(question)
+                    .color(theme::text_primary())
+                    .size(14.0),
+            );
+            ui.add_space(6.0);
+            ui.label(styled_muted(detail));
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                confirm = ui.add(danger_btn(confirm_label)).clicked();
+                close = ui.add(secondary_btn("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(Key::Escape));
+            });
+        });
+        if confirm {
+            self.state.lock().unwrap().modal = ModalKind::None;
+            on_confirm(self);
+        } else if close {
+            self.state.lock().unwrap().modal = ModalKind::None;
+        }
+    }
+
+    fn render_reset_modal(&mut self, ctx: &Context, oid: String) {
+        let short = &oid[..7.min(oid.len())];
+        let (path, epoch, dirty) = {
+            let s = self.state.lock().unwrap();
+            (s.repo_path.clone(), s.repo_epoch, s.dirty_count)
+        };
+        let Some(path) = path else { return };
+        if self
+            .repo_ui
+            .reset_preview
+            .as_ref()
+            .is_none_or(|preview| preview.oid != oid || preview.epoch != epoch)
+        {
+            match branches::ResetPreview::capture(&path, epoch, &oid) {
+                Ok(preview) => self.repo_ui.reset_preview = Some(preview),
+                Err(error) => {
+                    let mut state = self.state.lock().unwrap();
+                    state.error = Some(error);
+                    state.modal = ModalKind::None;
+                    self.repo_ui.reset_preview = None;
+                    return;
+                }
+            }
+        }
+        let preview = self.repo_ui.reset_preview.clone().unwrap();
+        let branch = preview
+            .head_ref
+            .strip_prefix("refs/heads/")
+            .unwrap_or("detached HEAD");
+        let target = format!("Reset {branch} to {short}");
+        let mut confirm = false;
+        let mut close = false;
+        modal_window(ctx, "Reset to Commit", |ui| {
+            ui.label(
+                RichText::new(&target)
+                    .color(theme::text_primary())
+                    .size(14.0),
+            );
+            ui.label(styled_muted(&format!(
+                "{}\nCurrent HEAD: {}",
+                preview.path.display(),
+                preview.head_oid
+            )));
+            ui.add_space(8.0);
+            for mode in branches::ResetMode::ALL {
+                ui.radio_value(
+                    &mut self.repo_ui.reset_mode,
+                    mode,
+                    styled_label(mode.label()),
+                );
+                ui.label(styled_muted(&format!("    {}", mode.description())));
+            }
+            ui.add_space(8.0);
+            ui.label(styled_muted(
+                "A recovery snapshot of HEAD, the index and working files is saved first. \
+                 Restore it from Repository settings > Recovery snapshots.",
+            ));
+            if self.repo_ui.reset_mode == branches::ResetMode::Hard && dirty > 0 {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{dirty} changed file(s) will be overwritten. Untracked files are kept."
+                    ))
+                    .color(theme::accent_red())
+                    .size(12.0),
+                );
+            }
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                let label = format!("{} Reset", self.repo_ui.reset_mode.label());
+                confirm = if self.repo_ui.reset_mode == branches::ResetMode::Hard {
+                    ui.add(danger_btn(&label)).clicked()
+                } else {
+                    ui.add(primary_btn(&label)).clicked()
+                };
+                close = ui.add(secondary_btn("Cancel")).clicked()
+                    || ui.input(|i| i.key_pressed(Key::Escape));
+            });
+        });
+        if confirm {
+            self.state.lock().unwrap().modal = ModalKind::None;
+            preview.submit(self.repo_ui.reset_mode, self.state.clone());
+            self.repo_ui.reset_preview = None;
+            self.repo_ui.reset_mode = Default::default();
+        } else if close {
+            self.state.lock().unwrap().modal = ModalKind::None;
+            self.repo_ui.reset_preview = None;
+            self.repo_ui.reset_mode = Default::default();
+        }
+    }
+
     fn render_detached_checkout_modal(&mut self, ctx: &Context, oid: String) {
         let mut close = false;
         let mut do_checkout = false;
@@ -3453,6 +3929,11 @@ impl RecordeApp {
                     .hint_text("WIP"),
             );
             r.request_focus();
+            ui.add_space(8.0);
+            ui.checkbox(
+                &mut self.repo_ui.stash_include_untracked,
+                styled_label("Include untracked files"),
+            );
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 let ok = ui.add(primary_btn("Stash")).clicked()
@@ -3473,7 +3954,11 @@ impl RecordeApp {
             } else {
                 self.repo_ui.stash_message_input.trim().to_string()
             };
-            branches::stash_save_with_message(&msg, self.state.clone());
+            branches::stash_save_with_message(
+                &msg,
+                self.repo_ui.stash_include_untracked,
+                self.state.clone(),
+            );
             self.repo_ui.stash_message_input = "WIP".into();
             self.state.lock().unwrap().modal = ModalKind::None;
         } else if close {
@@ -3482,7 +3967,7 @@ impl RecordeApp {
         }
     }
 
-    fn render_stash_branch_modal(&mut self, ctx: &Context, stash_index: usize) {
+    fn render_stash_branch_modal(&mut self, ctx: &Context, target: branches::StashTarget) {
         let mut close = false;
         let mut do_branch = false;
         modal_window(ctx, "Create Branch From Stash", |ui| {
@@ -3517,7 +4002,7 @@ impl RecordeApp {
         if do_branch {
             branches::stash_branch(
                 self.repo_ui.stash_branch_input.trim(),
-                stash_index,
+                target,
                 self.state.clone(),
             );
             self.repo_ui.stash_branch_input.clear();
@@ -3533,6 +4018,10 @@ impl RecordeApp {
         let mut do_clone = false;
 
         modal_window(ctx, "Clone Repository", |ui| {
+            if ui.button("Browse connected accounts…").clicked() {
+                self.repository_browser.open = true;
+                close = true;
+            }
             ui.label(styled_label("Repository URL"));
             ui.add_space(4.0);
             let r = ui.add(
@@ -3651,7 +4140,9 @@ impl RecordeApp {
                     }
                 }
             });
-            ui.add_space(16.0);
+            ui.add_space(10.0);
+            self.render_init_options(ui);
+            ui.add_space(12.0);
             let can_init = self.init_repo_path.is_some();
             ui.horizontal(|ui| {
                 let ok = ui
@@ -3671,7 +4162,7 @@ impl RecordeApp {
         if do_init {
             if let Some(path) = self.init_repo_path.clone() {
                 self.config.add_recent(path.clone());
-                lifecycle::init_repo(path, self.state.clone());
+                lifecycle::init_repo(path, self.init_options.clone(), self.state.clone());
             }
             self.init_repo_path = None;
             self.state.lock().unwrap().modal = ModalKind::None;
@@ -3832,18 +4323,20 @@ impl RecordeApp {
     fn render_bisect_modal(&mut self, ctx: &Context) {
         use crate::git::bisect;
 
-        let (repo_path, bisect_active, bisect_oid, selected_oid) = {
+        let (repo_path, bisect_active, bisect_oid, selected_oid, first_bad) = {
             let s = self.state.lock().unwrap();
             (
                 s.repo_path.clone(),
                 s.bisect_in_progress,
                 s.bisect_current_oid.clone(),
                 s.selected_commit.clone(),
+                s.bisect_first_bad.clone(),
             )
         };
 
         let mut close = false;
-        let mut action: Option<String> = None; // "good" | "bad" | "reset"
+        let mut reveal: Option<String> = None;
+        let mut action: Option<bisect::Step> = None;
 
         modal_window(ctx, "Bisect", |ui| {
             ui.set_min_width(380.0);
@@ -3855,11 +4348,11 @@ impl RecordeApp {
                         .size(13.0),
                 );
                 ui.add_space(8.0);
-                ui.label(RichText::new("Select the known-bad commit in the graph, then mark it bad. Select a known-good commit and mark it good.").color(theme::text_muted()).size(12.0));
+                ui.label(RichText::new("After starting, right-click a known-bad commit in the graph and mark it bad, then mark a known-good commit good. Recorde checks out each commit to test and selects it.").color(theme::text_muted()).size(12.0));
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.add(primary_btn("Start Bisect")).clicked() {
-                        action = Some("start".into());
+                        action = Some(bisect::Step::Start);
                     }
                     if ui.add(secondary_btn("Cancel")).clicked() {
                         close = true;
@@ -3874,7 +4367,29 @@ impl RecordeApp {
                 );
                 ui.add_space(6.0);
 
-                if let Some(ref oid) = bisect_oid {
+                if let Some(ref oid) = first_bad {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("First bad commit:")
+                                .color(theme::text_primary())
+                                .size(13.0)
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(&oid[..7.min(oid.len())])
+                                .monospace()
+                                .color(theme::accent_red())
+                                .size(13.0),
+                        );
+                        if ui.button("Show in graph").clicked() {
+                            reveal = Some(oid.clone());
+                        }
+                    });
+                    ui.label(styled_muted(
+                        "Reset ends the session and returns to the branch you started on.",
+                    ));
+                    ui.add_space(6.0);
+                } else if let Some(ref oid) = bisect_oid {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new("Testing:")
@@ -3913,60 +4428,61 @@ impl RecordeApp {
                     if ui
                         .add_enabled(
                             has_sel,
-                            Button::new(RichText::new("Mark Good").color(Color32::WHITE))
-                                .fill(theme::accent_green())
-                                .min_size([110.0, 26.0].into()),
+                            Button::new(
+                                RichText::new("Mark Good")
+                                    .color(theme::contrast_text(theme::accent_green())),
+                            )
+                            .fill(theme::accent_green())
+                            .min_size([110.0, 26.0].into()),
                         )
                         .clicked()
                     {
-                        action = Some("good".into());
+                        action = Some(bisect::Step::Good);
                     }
                     ui.add_space(6.0);
                     if ui
                         .add_enabled(
                             has_sel,
-                            Button::new(RichText::new("Mark Bad").color(Color32::WHITE))
-                                .fill(theme::accent_red())
-                                .min_size([110.0, 26.0].into()),
+                            Button::new(
+                                RichText::new("Mark Bad")
+                                    .color(theme::contrast_text(theme::accent_red())),
+                            )
+                            .fill(theme::accent_red())
+                            .min_size([110.0, 26.0].into()),
                         )
                         .clicked()
                     {
-                        action = Some("bad".into());
+                        action = Some(bisect::Step::Bad);
                     }
                     ui.add_space(12.0);
                     if ui.add(secondary_btn("Reset")).clicked() {
-                        action = Some("reset".into());
+                        action = Some(bisect::Step::Reset);
+                    }
+                    if ui.add(secondary_btn("Close")).clicked()
+                        || ui.input(|i| i.key_pressed(Key::Escape))
+                    {
+                        close = true;
                     }
                 });
+                ui.add_space(6.0);
+                ui.label(styled_muted(
+                    "Close keeps the session. Right-click commits in the graph to mark them good or bad.",
+                ));
             }
         });
 
-        if let Some(act) = action {
-            let reset = act == "reset";
-            if let Some(ref p) = repo_path {
-                let sel = selected_oid.unwrap_or_default();
-                let state = self.state.clone();
-                let epoch = state.lock().unwrap().repo_epoch;
-                crate::git::mutation::spawn_operation(p.clone(), self.state.clone(), move |path| {
-                    let next = match act.as_str() {
-                        "start" => bisect::start(path).map(|_| None),
-                        "good" => bisect::mark_good(path, &sel),
-                        "bad" => bisect::mark_bad(path, &sel),
-                        "reset" => bisect::reset(path).map(|_| None),
-                        _ => Ok(None),
-                    }?;
-                    let mut s = state.lock().unwrap();
-                    if s.repo_path.as_deref() == Some(path) && s.repo_epoch == epoch {
-                        if let Some(next) = next {
-                            s.selected_commit = Some(next);
-                        }
-                    }
-                    Ok(())
-                });
+        if let Some(step) = action {
+            if repo_path.is_some() {
+                bisect::spawn_step(step, selected_oid, self.state.clone());
             }
-            if reset {
+            // Close after starting too: commits are chosen in the graph, which
+            // modal dialogs disable. The commit menu offers Mark Good/Bad.
+            if matches!(step, bisect::Step::Start | bisect::Step::Reset) {
                 self.state.lock().unwrap().modal = ModalKind::None;
             }
+        }
+        if let Some(oid) = reveal {
+            self.commit_graph_view.reveal_commit(&oid);
         }
         if close {
             self.state.lock().unwrap().modal = ModalKind::None;
@@ -4156,26 +4672,7 @@ impl RecordeApp {
         hint: &str,
         on_confirm: impl Fn(&mut Self, String),
     ) {
-        let branches_list: Vec<String> = {
-            let s = self.state.lock().unwrap();
-            let head = s.head_branch.clone().unwrap_or_default();
-            s.commit_graph
-                .as_ref()
-                .map(|g| {
-                    let mut refs: Vec<&str> = g
-                        .nodes
-                        .iter()
-                        .flat_map(|n| n.refs.iter().map(|r| r.as_str()))
-                        .collect();
-                    refs.sort_unstable();
-                    refs.dedup();
-                    refs.iter()
-                        .filter(|r| !r.contains('/') && **r != head.as_str())
-                        .map(|s| s.to_string())
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+        let branches_list = self.branch_choices();
 
         let mut close = false;
         let mut chosen: Option<String> = None;
@@ -4213,7 +4710,7 @@ impl RecordeApp {
                             }
                         }
                         if branches_list.is_empty() {
-                            ui.label(styled_muted("No other local branches."));
+                            ui.label(styled_muted("No other branches."));
                         }
                     });
                 ui.add_space(8.0);
@@ -4240,7 +4737,14 @@ impl RecordeApp {
         let (label, show_skip) = if caps.rebase_in_progress {
             ("Rebase in progress", true)
         } else if caps.merge_in_progress {
-            ("Merge in progress", false)
+            (
+                if caps.squash_merge_in_progress {
+                    "Squash merge in progress"
+                } else {
+                    "Merge in progress"
+                },
+                false,
+            )
         } else if caps.cherry_pick_in_progress {
             ("Cherry-pick in progress", false)
         } else if caps.revert_in_progress {
@@ -4258,7 +4762,7 @@ impl RecordeApp {
             .exact_size(36.0)
             .frame(
                 egui::Frame::NONE
-                    .fill(Color32::from_rgb(0x4A, 0x32, 0x00))
+                    .fill(theme::bg_elevated())
                     .inner_margin(egui::Margin::symmetric(16, 0)),
             )
             .show(root_ui, |ui| {
@@ -4287,8 +4791,8 @@ impl RecordeApp {
                     ui.add_space(10.0);
                     if ui
                         .add(
-                            Button::new(RichText::new("Continue").color(Color32::WHITE).size(13.0))
-                                .fill(theme::accent_teal())
+                            Button::new(RichText::new("Continue").color(theme::on_primary()).size(13.0))
+                                .fill(theme::primary_fill())
                                 .corner_radius(5.0)
                                 .min_size(egui::Vec2::new(72.0, 24.0)),
                         )
@@ -4512,6 +5016,8 @@ impl RecordeApp {
                 }
                 self.config.active_repo = Some(path.clone());
                 let layout = self.config.get_repo_config(path);
+                self.commit_graph_view
+                    .set_preferences(layout.graph_preferences.clone());
                 self.diff_view.restore_preferences(&layout.diff_preferences);
                 self.commit_graph_view.reset_column_widths();
                 self.commit_graph_view.set_column_widths(
@@ -4633,13 +5139,19 @@ impl RecordeApp {
                             {
                                 open = Some(path.clone());
                             }
-                            if self.config.open_repos.len() > 1
-                                && ui
-                                    .small_button("×")
-                                    .on_hover_text("Close repository tab")
-                                    .clicked()
-                            {
-                                close = Some(path.clone());
+                            if self.config.open_repos.len() > 1 {
+                                let response =
+                                    ui.small_button("×").on_hover_text("Close repository tab");
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        ui.is_enabled(),
+                                        format!("Close repository tab {label}"),
+                                    )
+                                });
+                                if response.clicked() {
+                                    close = Some(path.clone());
+                                }
                             }
                             ui.separator();
                         }
@@ -4654,18 +5166,12 @@ impl RecordeApp {
                 });
             });
         if let Some(paths) = workspace {
-            if let Some(first) = paths.first() {
-                open = Some(first.clone());
-                self.config.open_repos = paths;
-                self.save_config();
+            if !paths.is_empty() {
+                self.request_navigation(lifecycle_guards::Navigation::Workspace(paths));
             }
         }
         if let Some(path) = close {
-            self.config.open_repos.retain(|p| p != &path);
-            if active.as_ref() == Some(&path) {
-                open = self.config.open_repos.last().cloned();
-            }
-            self.save_config();
+            self.request_navigation(lifecycle_guards::Navigation::Close(path));
         }
         if let Some(path) = open {
             self.config.add_recent(path.clone());
@@ -4784,14 +5290,16 @@ impl RecordeApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     egui::Frame::NONE
-                        .fill(Color32::from_rgb(74, 24, 28))
+                        .fill(theme::bg_diff_del())
                         .stroke(Stroke::new(1.5, theme::accent_red()))
                         .corner_radius(8.0)
                         .inner_margin(egui::Margin::symmetric(16, 12))
                         .show(ui, |ui| {
                             ui.set_max_width(640.0);
                             ui.horizontal_centered(|ui| {
-                                ui.label(RichText::new(&desc).color(Color32::WHITE).size(13.0));
+                                ui.label(
+                                    RichText::new(&desc).color(theme::text_primary()).size(13.0),
+                                );
                                 ui.add_space(12.0);
                                 if ui.add(danger_btn("Discard")).clicked() {
                                     confirm = true;
@@ -4826,7 +5334,7 @@ impl RecordeApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     egui::Frame::NONE
-                        .fill(Color32::from_rgb(74, 24, 28))
+                        .fill(theme::bg_diff_del())
                         .stroke(Stroke::new(1.5, theme::accent_red()))
                         .corner_radius(8.0)
                         .inner_margin(egui::Margin::symmetric(16, 12))
@@ -4835,12 +5343,14 @@ impl RecordeApp {
                             ui.horizontal_centered(|ui| {
                                 ui.label(
                                     RichText::new("Operation blocked")
-                                        .color(Color32::WHITE)
+                                        .color(theme::text_primary())
                                         .size(13.5)
                                         .strong(),
                                 );
                                 ui.add_space(10.0);
-                                ui.label(RichText::new(error).color(Color32::WHITE).size(13.0));
+                                ui.label(
+                                    RichText::new(error).color(theme::text_primary()).size(13.0),
+                                );
                                 ui.add_space(10.0);
                                 if ui.add(secondary_btn("Dismiss")).clicked() {
                                     self.state.lock().unwrap().error = None;
@@ -4996,12 +5506,48 @@ impl RecordeApp {
                     ui.close();
                 }
                 if ui.button("Quit").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.request_quit(ctx);
                     ui.close();
                 }
             });
 
             ui.menu_button("Edit", |ui| {
+                let (undo, redo) = {
+                    let s = self.state.lock().unwrap();
+                    (
+                        crate::commands::Command::Undo
+                            .available(&s)
+                            .then(|| s.undo_step.clone())
+                            .flatten(),
+                        crate::commands::Command::Redo
+                            .available(&s)
+                            .then(|| s.redo_step.clone())
+                            .flatten(),
+                    )
+                };
+                let undo_label = undo.map(|(_, label)| label);
+                if ui
+                    .add_enabled(
+                        undo_label.is_some(),
+                        Button::new(undo_label.unwrap_or_else(|| "Undo".into())),
+                    )
+                    .clicked()
+                {
+                    self.open_undo(false);
+                    ui.close();
+                }
+                let redo_label = redo.map(|(_, label)| label);
+                if ui
+                    .add_enabled(
+                        redo_label.is_some(),
+                        Button::new(redo_label.unwrap_or_else(|| "Redo".into())),
+                    )
+                    .clicked()
+                {
+                    self.open_undo(true);
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Copy Selected Commit SHA").clicked() {
                     if let Some(oid) = self.state.lock().unwrap().selected_commit.clone() {
                         ui.ctx().copy_text(oid);
@@ -5014,6 +5560,7 @@ impl RecordeApp {
                 }
                 if ui.button("Clear Selection").clicked() {
                     let mut s = self.state.lock().unwrap();
+                    s.selected_commits.clear();
                     s.selected_commit = None;
                     s.selected_commit_detail = None;
                     s.selected_file = None;
@@ -5094,7 +5641,14 @@ impl RecordeApp {
                     ui.close();
                 }
                 if ui
-                    .add_enabled(has_repo, Button::new("Open Terminal"))
+                    .add_enabled(has_repo, Button::new("Integrated Terminal"))
+                    .clicked()
+                {
+                    self.toggle_terminal();
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(has_repo, Button::new("Open External Terminal"))
                     .clicked()
                 {
                     if let Some(rp) = self.state.lock().unwrap().repo_path.clone() {
@@ -5223,7 +5777,11 @@ impl RecordeApp {
                     .add_enabled(has_repo, Button::new("Merge Branch…"))
                     .clicked()
                 {
-                    self.state.lock().unwrap().modal = ModalKind::MergeBranch;
+                    self.state.lock().unwrap().modal = ModalKind::MergeBranch { branch: None };
+                    ui.close();
+                }
+                if ui.add_enabled(has_repo, Button::new("Git Flow…")).clicked() {
+                    self.open_git_flow();
                     ui.close();
                 }
                 if ui
@@ -5245,6 +5803,18 @@ impl RecordeApp {
             });
 
             ui.menu_button("Help", |ui| {
+                for (label, page) in [
+                    ("User Guide", "User-Guide"),
+                    ("Feature Reference", "Feature-Reference"),
+                    ("Keyboard Shortcuts", "Keyboard-Shortcuts"),
+                    ("Troubleshooting", "Troubleshooting"),
+                ] {
+                    if ui.button(label).clicked() {
+                        self.help.open_page(page);
+                        ui.close();
+                    }
+                }
+                ui.separator();
                 if ui.button("About Recorde").clicked() {
                     self.open_settings(SettingsTab::About);
                     ui.close();
@@ -5935,14 +6505,14 @@ fn slugify(s: &str) -> String {
 }
 
 fn primary_btn(label: &str) -> Button<'_> {
-    Button::new(RichText::new(label).color(Color32::WHITE).size(14.0))
+    Button::new(RichText::new(label).color(theme::on_primary()).size(14.0))
         .fill(theme::primary_fill())
         .corner_radius(7.0)
         .min_size(egui::Vec2::new(120.0, 28.0))
 }
 
 fn danger_btn(label: &str) -> Button<'_> {
-    Button::new(RichText::new(label).color(Color32::WHITE))
+    Button::new(RichText::new(label).color(theme::contrast_text(theme::accent_red())))
         .fill(theme::accent_red())
         .corner_radius(6.0)
         .min_size(egui::Vec2::new(0.0, 28.0))
@@ -6057,9 +6627,7 @@ fn save_git_identity(
             .map_err(|e| e.message().to_string())?
             .config()
             .map_err(|e| e.message().to_string())?,
-        None => git2::Config::open_default()
-            .and_then(|mut c| c.open_global())
-            .map_err(|e| e.message().to_string())?,
+        None => crate::profiles::global_config_for_write().map_err(|e| e.message().to_string())?,
     };
     if !name.trim().is_empty() {
         config

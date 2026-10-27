@@ -70,12 +70,19 @@ impl Widget for Button<'_> {
             let fill = match self.fill {
                 Some(fill) if highlighted && fill != Color32::TRANSPARENT => {
                     // Preserve primary/destructive colours and their label contrast.
-                    let tint = if response.is_pointer_button_down_on() {
+                    let tint = if fill == crate::theme::primary_fill()
+                        || crate::theme::contrast_text(fill) == Color32::WHITE
+                    {
                         egui::Rgba::BLACK
                     } else {
                         egui::Rgba::WHITE
                     };
-                    Color32::from(egui::Rgba::from(fill) * 0.9 + tint * 0.1)
+                    let amount = if response.is_pointer_button_down_on() {
+                        0.18
+                    } else {
+                        0.1
+                    };
+                    Color32::from(egui::Rgba::from(fill) * (1.0 - amount) + tint * amount)
                 }
                 Some(_) if highlighted => visuals.weak_bg_fill,
                 Some(fill) => fill,
@@ -107,10 +114,18 @@ mod tests {
 
     #[test]
     fn custom_buttons_render_hover_and_focus_without_activating_disabled_controls() {
-        for dark in [false, true] {
-            for fill in [Color32::TRANSPARENT, Color32::from_rgb(49, 88, 198)] {
+        for (palette, dark) in crate::theme::Palette::ALL
+            .into_iter()
+            .flat_map(|palette| [false, true].map(|dark| (palette, dark)))
+        {
+            let primary = if palette == crate::theme::Palette::Siege {
+                crate::theme::SIEGE_ORANGE
+            } else {
+                Color32::from_rgb(49, 88, 198)
+            };
+            for fill in [Color32::TRANSPARENT, primary] {
                 let ctx = egui::Context::default();
-                crate::theme::apply(&ctx, dark, false);
+                crate::theme::apply_palette(&ctx, dark, false, palette);
                 let draw = |events: Vec<egui::Event>, enabled, focus| {
                     ctx.begin_pass(egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
@@ -155,6 +170,15 @@ mod tests {
                 let pointer = idle.rect.center();
                 let (_, hover) = draw(vec![egui::Event::PointerMoved(pointer)], true, false);
                 assert_ne!(normal, hover, "Custom surface must change on hover");
+                if fill != Color32::TRANSPARENT {
+                    let hover_fill = hover.unwrap().0;
+                    assert!(
+                        hover_fill.r() <= fill.r()
+                            && hover_fill.g() <= fill.g()
+                            && hover_fill.b() <= fill.b(),
+                        "White primary labels must retain contrast on hover"
+                    );
+                }
                 draw(vec![egui::Event::PointerGone], true, true);
                 let (_, focused) = draw(vec![], true, false);
                 assert_ne!(normal, focused, "Keyboard focus must be visible");

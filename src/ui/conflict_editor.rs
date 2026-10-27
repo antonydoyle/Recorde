@@ -103,8 +103,8 @@ impl ConflictEditor {
         egui::Window::new(format!("Resolve {}", self.file)).open(&mut open).default_width(1000.0)
             .show(ctx, |ui| {
                 if self.saving.is_some() { ui.disable(); }
-                if let Some(error) = &self.error { ui.colored_label(egui::Color32::RED, error); }
-                if let Some(error) = &self.draft_error { ui.colored_label(egui::Color32::RED, error); }
+                if let Some(error) = &self.error { ui.colored_label(crate::theme::accent_red(), error); }
+                if let Some(error) = &self.draft_error { ui.colored_label(crate::theme::accent_red(), error); }
                 if self.stale_draft.is_some() {
                     ui.label("A saved draft belongs to an earlier version of this conflict. Compare it with the current versions before saving.");
                     if ui.button("Recover earlier draft into result").clicked() {

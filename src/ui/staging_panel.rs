@@ -250,16 +250,16 @@ impl StagingPanel {
                                 selection,
                                 false,
                                 |ui| {
-                                    let btn = if is_sel {
-                                        small_btn_accent("Stage")
-                                    } else {
-                                        small_btn("Stage")
-                                    };
-                                    if ui.add(btn).clicked() {
+                                    if ui.button("Stage").clicked() {
                                         do_stage_file = Some(f.path.clone());
+                                        ui.close();
                                     }
-                                    if ui.add(small_btn_danger("Discard")).clicked() {
+                                    if ui
+                                        .button(RichText::new("Discard").color(theme::accent_red()))
+                                        .clicked()
+                                    {
                                         do_discard_file = Some(f.path.clone());
+                                        ui.close();
                                     }
                                 },
                             );
@@ -283,6 +283,11 @@ impl StagingPanel {
                                     ui.close();
                                 }
                                 ui.separator();
+                                if ui.button("Edit in Recorde").clicked() {
+                                    self.state.lock().unwrap().pending_file_edit =
+                                        Some(f.path.clone());
+                                    ui.close();
+                                }
                                 if ui.button("Open in Editor").clicked() {
                                     open_file_in_editor(&f.path, &repo_path);
                                     ui.close();
@@ -326,17 +331,18 @@ impl StagingPanel {
                                 selection,
                                 true,
                                 |ui| {
-                                    let btn = if is_sel {
-                                        small_btn_accent("Unstage")
-                                    } else {
-                                        small_btn("Unstage")
-                                    };
-                                    if ui.add(btn).clicked() {
+                                    if ui.button("Unstage").clicked() {
                                         do_unstage_file = Some(f.path.clone());
+                                        ui.close();
                                     }
                                 },
                             );
                             resp.context_menu(|ui| {
+                                if ui.button("Edit in Recorde").clicked() {
+                                    self.state.lock().unwrap().pending_file_edit =
+                                        Some(f.path.clone());
+                                    ui.close();
+                                }
                                 if ui.button("Open in Editor").clicked() {
                                     open_file_in_editor(&f.path, &repo_path);
                                     ui.close();
@@ -372,14 +378,21 @@ impl StagingPanel {
                         for f in &untracked {
                             let is_sel = selected_file.as_deref() == Some(f.path.as_str());
                             let resp = file_row(ui, &f.path, '?', is_sel, selection, false, |ui| {
-                                if ui.add(small_btn("Stage")).clicked() {
+                                if ui.button("Stage").clicked() {
                                     do_stage_file = Some(f.path.clone());
+                                    ui.close();
                                 }
-                                if ui.add(small_btn("Ignore")).clicked() {
+                                if ui.button("Ignore").clicked() {
                                     do_ignore_file = Some(f.path.clone());
+                                    ui.close();
                                 }
                             });
                             resp.context_menu(|ui| {
+                                if ui.button("Edit in Recorde").clicked() {
+                                    self.state.lock().unwrap().pending_file_edit =
+                                        Some(f.path.clone());
+                                    ui.close();
+                                }
                                 if ui.button("Reveal in Folder").clicked() {
                                     reveal_in_folder(&f.path, &repo_path);
                                     ui.close();
@@ -403,11 +416,8 @@ impl StagingPanel {
         egui::ScrollArea::vertical().id_salt("commit_composer").auto_shrink([false; 2]).show(ui, |ui| {
                 // Hint when a sequencing op is in progress but all conflicts resolved
                 if any_seq_in_progress && conflicted.is_empty() {
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0);
-                        ui.label(RichText::new("✓ All conflicts resolved — stage remaining changes, then click Continue in the banner above.")
-                            .color(theme::accent_green()).size(12.0));
-                    });
+                    commit_notice(ui, RichText::new("✓ All conflicts resolved — stage remaining changes, then click Continue in the banner above.")
+                        .color(theme::accent_green()).size(12.0));
                     ui.add_space(6.0);
                 }
 
@@ -531,13 +541,10 @@ impl StagingPanel {
                 let is_protected = ["main", "master", "production", "release"]
                     .iter().any(|p| *p == head_branch.as_str());
                 if is_protected && !self.drafts.current.is_amend {
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0);
-                        ui.label(RichText::new(format!(
-                            "⚠ Committing directly to \"{}\" — make sure this is intentional.",
-                            head_branch
-                        )).color(theme::accent_yellow()).size(12.0));
-                    });
+                    commit_notice(ui, RichText::new(format!(
+                        "⚠ Committing directly to \"{}\" — make sure this is intentional.",
+                        head_branch
+                    )).color(theme::accent_yellow()).size(12.0));
                     ui.add_space(4.0);
                 }
 
@@ -876,7 +883,17 @@ fn file_row(
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), path)
             });
             ui.menu_button(crate::icons::rich(crate::icons::MORE_VERT, 18.0), |ui| {
+                ui.set_min_width(144.0);
                 add_btns(ui);
+            })
+            .response
+            .on_hover_text(format!("Actions for {path}"))
+            .widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    ui.is_enabled(),
+                    format!("Actions for {path}"),
+                )
             });
             label
         })
@@ -890,18 +907,6 @@ fn small_btn(label: &str) -> Button<'_> {
         .fill(Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(1.0, theme::border()))
         .min_size(egui::Vec2::new(0.0, 22.0))
-}
-
-fn small_btn_accent(label: &str) -> Button<'_> {
-    Button::new(
-        RichText::new(label)
-            .color(theme::on_primary())
-            .size(12.0)
-            .strong(),
-    )
-    .fill(theme::primary_fill())
-    .stroke(egui::Stroke::new(1.0, theme::accent_teal()))
-    .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
 fn small_btn_danger(label: &str) -> Button<'_> {
@@ -988,4 +993,53 @@ fn available_width_after(ui: &Ui, reserved: f32) -> f32 {
 
 fn form_width(ui: &Ui, reserved: f32, max_width: f32) -> f32 {
     available_width_after(ui, reserved).min(max_width)
+}
+
+fn commit_notice(ui: &mut Ui, text: RichText) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        // Horizontal layouts otherwise lay out labels on one line, expanding the
+        // composer and pushing the commit button beyond the Changes panel.
+        let width = (ui.available_width() - 12.0).max(1.0);
+        ui.add_sized([width, 0.0], egui::Label::new(text).wrap())
+    })
+    .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_notices_wrap_without_expanding_narrow_composer() {
+        for message in [
+            "⚠ Committing directly to \"production\" — make sure this is intentional.",
+            "✓ All conflicts resolved — stage remaining changes, then click Continue in the banner above.",
+        ] {
+            let mut heights = Vec::new();
+            for width in [240.0, 344.0, 600.0] {
+                let ctx = egui::Context::default();
+                ctx.begin_pass(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(width, 400.0),
+                    )),
+                    ..Default::default()
+                });
+                let mut ui = Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("responsive_commit_composer"),
+                    egui::UiBuilder::new().max_rect(ctx.content_rect()),
+                );
+                let notice = commit_notice(&mut ui, RichText::new(message).size(12.0));
+                assert!(notice.rect.right() <= width - 11.0);
+                assert!(ui.min_rect().right() <= width);
+                // Later controls must still receive the original panel width.
+                assert!(ui.available_width() <= width);
+                heights.push(notice.rect.height());
+                ctx.end_pass().textures_delta.clear();
+            }
+            assert!(heights[0] > heights[2], "Narrow notices must wrap onto additional lines");
+        }
+    }
 }

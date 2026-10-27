@@ -89,6 +89,18 @@ provider calls run in background tasks, and API requests never forward tokens
 through redirects. See [Configuration](Configuration.md) for migration and the
 shared Git credential-helper behavior.
 
+### SSH public-key upload permissions
+
+GitLab public-key uploads use Bearer authentication, supporting both browser OAuth
+and personal tokens with `api` scope. GitHub's existing browser sign-in scopes do
+not request SSH-key write access. Use Copy and the provider's SSH keys page button,
+or supply a classic PAT with `write:public_key` or a fine-grained token with Git SSH
+keys write permission. Upload refusals explain this fallback; Recorde does not
+expand OAuth scopes or retry writes automatically. These are provider permission
+requirements, not evidence of live-account acceptance. See
+[GitLab API authentication](https://docs.gitlab.com/api/rest/authentication/) and
+[GitHub SSH key permissions](https://docs.github.com/en/rest/users/keys).
+
 ## Remote Parsing
 
 Provider detection starts from the Git remote URL. Supported forms include:

@@ -27,3 +27,12 @@ pub fn data_dir() -> Option<PathBuf> {
     }
     dirs::data_dir()
 }
+
+/// Disposable downloads such as author pictures.
+pub fn cache_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(path) = override_path("LOCALAPPDATA") {
+        return Some(path);
+    }
+    dirs::cache_dir()
+}

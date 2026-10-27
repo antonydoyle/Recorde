@@ -14,6 +14,8 @@ Start with:
 - [User Guide](docs/wiki/User-Guide.md) for everyday workflows.
 - [Architecture](docs/wiki/Architecture.md) for how the app is structured.
 - [Developer Guide](docs/wiki/Developer-Guide.md) for setup, testing, and release notes.
+- [Packaging](docs/wiki/Packaging.md) for platform prerequisites, including the
+  Microsoft Visual C++ x64 runtime required by Windows MSVC builds.
 
 ## Local test builds
 

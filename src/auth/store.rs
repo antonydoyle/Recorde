@@ -275,6 +275,14 @@ pub(crate) fn save_oauth(session: &super::oauth::Session) -> Result<(), String> 
 pub fn remove(host: &str, username: &str) -> Result<(), String> {
     with_store(|store| store.remove(host, username))
 }
+/// Access token for one saved account, renewing an OAuth sign-in if needed.
+pub fn token_for_account(host: &str, username: &str) -> Result<Option<String>, String> {
+    let token = with_store(|store| store.lookup(host, Some(username)))?.map(|(_, token)| token);
+    if let Some(token) = &token {
+        super::redact::remember(token);
+    }
+    Ok(token)
+}
 pub fn lookup_for_url(
     remote: &str,
     repo_path: Option<&Path>,
@@ -291,14 +299,8 @@ fn lookup(
 ) -> Result<Option<(String, String)>, String> {
     let endpoint = super::endpoint::parse(remote, for_api)?;
     let config = crate::config::Config::try_load()?;
-    let binding = repo_path.and_then(|path| {
-        config
-            .get_repo_config(path)
-            .provider_accounts
-            .get(&endpoint.host)
-            .cloned()
-    });
-    let username = remote_username(&endpoint, binding.as_deref(), &config.accounts)?;
+    let binding = config.account_binding(repo_path, &endpoint.host);
+    let username = configured_username(&endpoint, repo_path, &config)?;
     let result = with_store(|store| {
         let result = store.lookup(&endpoint.host, username)?;
         if for_api {
@@ -316,13 +318,34 @@ fn lookup(
             None => Ok(None),
         }
     })?;
-    if result.is_none() && binding.is_some() {
+    if result.is_none() && binding.is_some() && binding.as_deref() == username {
         return Err("No token for this repository's selected account. Update it in Settings > Accounts & SSH.".into());
     }
     if let Some((_, token)) = &result {
         super::redact::remember(token);
     }
     Ok(result)
+}
+
+/// Repository bindings are constraints; global profile accounts are defaults.
+/// In particular, a repository-browser clone carries an explicit account in its
+/// URL and must not be forced back to the active global profile's account.
+fn configured_username<'a>(
+    endpoint: &'a super::endpoint::Endpoint,
+    repo_path: Option<&Path>,
+    config: &'a crate::config::Config,
+) -> Result<Option<&'a str>, String> {
+    let repository_binding = repo_path
+        .and_then(|path| config.per_repo.get(&path.display().to_string()))
+        .and_then(|repo| repo.provider_accounts.get(&endpoint.host))
+        .map(String::as_str);
+    let explicit = remote_username(endpoint, repository_binding, &config.accounts)?;
+    Ok(explicit.or_else(|| {
+        config
+            .provider_accounts
+            .get(&endpoint.host)
+            .map(String::as_str)
+    }))
 }
 
 fn remote_username<'a>(

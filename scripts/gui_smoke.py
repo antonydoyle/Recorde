@@ -1,6 +1,9 @@
 """Linux startup smoke test with an isolated repository/config and private Xvfb.
 
-Usage: python3 scripts/gui_smoke.py /path/to/recorde /path/to/artifacts [--image-preview | --line-selection]
+Usage: python3 scripts/gui_smoke.py /path/to/recorde /path/to/artifacts [--siege] [--light] [--dpi=1.5] [--review]
+Run through scripts/linux_task.py for bounded ownership and descendant cleanup.
+--review requires RECORDE_UI_INSPECTOR and an app built with ui-inspection; it
+adds native Help, column preferences and repository-browser acceptance captures.
 Requires Xvfb. Image mode also requires libXtst and selects a working image,
 verifying both snapshots' colors in the framebuffer. Line mode checks selected
 index bytes and worktree preservation. Other mode checks startup.
@@ -44,11 +47,13 @@ def main():
     binary, artifacts = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
     recent_menu = "--recent-menu" in sys.argv[3:]
     assert not recent_menu or "--design-review" in sys.argv[3:], "Recent menu fixture requires --design-review"
-    design_review = "--design-review" in sys.argv[3:]
+    feature_review = "--review" in sys.argv[3:]
+    design_review = "--design-review" in sys.argv[3:] or feature_review
     ui_scale = 1.25 if "--scaled" in sys.argv[3:] else 1.0
     native_scale = float(next((arg.split("=", 1)[1] for arg in sys.argv[3:] if arg.startswith("--dpi=")), "1"))
     assert native_scale in (1.0, 1.25, 1.5, 2.0), "Supported native DPI: 1, 1.25, 1.5, 2"
     inspector = os.environ.get("RECORDE_UI_INSPECTOR")
+    assert not feature_review or inspector, "--review requires RECORDE_UI_INSPECTOR pointing to the native inspect_ui example"
     inspection_address = None
     if inspector:
         with socket.socket() as probe:
@@ -57,13 +62,20 @@ def main():
     compact = "--compact" in sys.argv[3:]
     welcome = "--welcome" in sys.argv[3:]
     light = "--light" in sys.argv[3:]
+    palette = "siege" if "--siege" in sys.argv[3:] else "classic"
     image_preview = "--image-preview" in sys.argv[3:]
     split_selection = "--split-selection" in sys.argv[3:]
     line_selection = "--line-selection" in sys.argv[3:] or split_selection
     frame_profile = "--frame-profile" in sys.argv[3:]
     repository_settings = "--repository-settings" in sys.argv[3:]
     assert not (image_preview and line_selection), "Select one GUI fixture"
+    assert not feature_review or not (welcome or image_preview or line_selection or recent_menu or repository_settings or frame_profile), "--review requires the standard design fixture without welcome or another action fixture"
     artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "smoke-settings.json").write_text(json.dumps({
+        "palette": palette, "dark_theme": not light, "native_scale": native_scale,
+        "ui_scale": ui_scale, "feature_review": feature_review,
+        "inspection": bool(inspector), "binary": str(binary),
+    }, indent=2))
     with tempfile.TemporaryDirectory(prefix="recorde-gui-") as temporary:
         root = Path(temporary)
         repo = root / "fixture"
@@ -74,11 +86,11 @@ def main():
             XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"),
             XDG_RUNTIME_DIR=str(root / "runtime"), RUST_LOG="warn")
         env["WINIT_X11_SCALE_FACTOR"] = str(native_scale)
+        env.pop("EGUI_INSPECTION_ADDR", None)
         if inspection_address:
             env["EGUI_INSPECTION"] = inspection_address
         else:
             env.pop("EGUI_INSPECTION", None)
-            env.pop("EGUI_INSPECTION_ADDR", None)
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("WAYLAND_SOCKET", None)
         if frame_profile:
@@ -134,7 +146,7 @@ def main():
             (repo / "accessibility-notes-with-a-long-filename.md").write_text('Keyboard and icon review\n')
         settings = root / "config" / "recorde"
         settings.mkdir(parents=True, exist_ok=True)
-        (settings / "config.toml").write_text(f'dark_theme = {str(not light).lower()}\nfont_scale = {ui_scale}\n')
+        (settings / "config.toml").write_text(f'dark_theme = {str(not light).lower()}\ntheme_palette = "{palette}"\nfont_scale = {ui_scale}\n')
         if recent_menu:
             recent_paths = [repo, root / 'projects' / 'recorde', root / 'archive' / 'recorde', root / 'team' / 'a-repository-with-a-very-long-name', root / 'labs' / 'café-client']
             recent_paths += [root / 'projects' / name for name in ['website', 'shared-components', 'documentation']]
@@ -347,7 +359,13 @@ x.XCloseDisplay(d)'''
                             assert colors.count(bytes((255, 0, 0))) > 100, "After image was not rendered"
                         png_from_xwd(root / "Xvfb_screen0", artifacts / "gui-smoke.png")
                         if inspector:
-                            subprocess.run([inspector, inspection_address, str(artifacts), *(["--graph"] if design_review and not welcome else [])], env=env, check=True, timeout=120)
+                            inspector_args = [inspector, inspection_address, str(artifacts)]
+                            if design_review and not welcome:
+                                inspector_args.append("--graph")
+                            if feature_review:
+                                inspector_args.append("--review")
+                            with (artifacts / "inspector.stdout.log").open("w") as inspector_out, (artifacts / "inspector.stderr.log").open("w") as inspector_err:
+                                subprocess.run(inspector_args, env=env, check=True, timeout=120, stdout=inspector_out, stderr=inspector_err)
                             display_info = json.loads((artifacts / "display.json").read_text())
                             assert abs(display_info["pixels_per_point"] - native_scale * ui_scale) < 0.01, display_info
                             capture = (artifacts / "native-frame.png").read_bytes()
@@ -366,10 +384,19 @@ x.XCloseDisplay(d)'''
                     finally:
                         if app.poll() is None:
                             app.terminate()
-                            app.wait(timeout=5)
+                            try:
+                                app.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                app.kill()
+                                app.wait(timeout=5)
             finally:
-                server.terminate()
-                server.wait(timeout=5)
+                if server.poll() is None:
+                    server.terminate()
+                    try:
+                        server.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        server.kill()
+                        server.wait(timeout=5)
 
 
 if __name__ == "__main__":

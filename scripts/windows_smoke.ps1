@@ -1,9 +1,19 @@
 param(
     [Parameter(Mandatory = $true)][string]$Binary,
     [Parameter(Mandatory = $true)][string]$Artifacts,
-    [switch]$InspectAccessibility
+    [switch]$InspectAccessibility,
+    [string]$Inspector,
+    [ValidateSet('classic','siege')][string]$ThemePalette = 'classic',
+    [ValidateRange(0.75,2.0)][double]$FontScale = 1.0,
+    [switch]$Light,
+    [switch]$HighContrast,
+    [switch]$Review,
+    [switch]$CleanTracked
 )
 $ErrorActionPreference = 'Stop'
+if ($CleanTracked -and (-not $Review -or -not $Inspector)) {
+    throw 'CleanTracked acceptance requires Review and Inspector.'
+}
 $executable = (Resolve-Path -LiteralPath $Binary).Path
 $nativeUpdates = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'recorde\updates'
 $updateState = Join-Path $nativeUpdates 'state.json'
@@ -27,7 +37,7 @@ $rule = New-Object Security.AccessControl.FileSystemAccessRule($owner, 'FullCont
 $acl.AddAccessRule($rule)
 Set-Acl -LiteralPath $smokeRoot -AclObject $acl
 New-Item -ItemType Directory -Path $repo, "$smokeRoot\appdata" | Out-Null
-$environmentNames = @('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT', 'APPDATA')
+$environmentNames = @('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT', 'APPDATA', 'EGUI_INSPECTION', 'EGUI_INSPECTION_ADDR')
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $smokeProcess = $null
@@ -36,6 +46,23 @@ try {
     $env:GIT_CONFIG_NOSYSTEM = '1'
     $env:GIT_TERMINAL_PROMPT = '0'
     $env:APPDATA = "$smokeRoot\appdata"
+    $profile = Join-Path $env:APPDATA 'recorde'
+    New-Item -ItemType Directory -Path $profile | Out-Null
+    $dark = if ($Light) { 'false' } else { 'true' }
+    $contrast = if ($HighContrast) { 'true' } else { 'false' }
+    $scale = $FontScale.ToString('0.0#', [Globalization.CultureInfo]::InvariantCulture)
+    $fixtureConfig = "dark_theme = $dark`ntheme_palette = '$ThemePalette'`nfont_scale = $scale`nhigh_contrast = $contrast`n"
+    [IO.File]::WriteAllText((Join-Path $profile 'config.toml'), $fixtureConfig, (New-Object Text.UTF8Encoding($false)))
+    $env:EGUI_INSPECTION = $null
+    $env:EGUI_INSPECTION_ADDR = $null
+    if ($Inspector) {
+        $inspectionClient = (Resolve-Path -LiteralPath $Inspector).Path
+        $probe = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0)
+        $probe.Start()
+        $inspectionAddress = "127.0.0.1:$($probe.LocalEndpoint.Port)"
+        $probe.Stop()
+        $env:EGUI_INSPECTION = $inspectionAddress
+    }
     # Config/account metadata are isolated; OS-vault/repository/update locks
     # intentionally keep their stable native per-user locations.
     git -C $repo init -b main *> "$smokeRoot\fixture.log"
@@ -46,7 +73,42 @@ try {
     git -C $repo add -- hello.txt
     git -C $repo -c commit.gpgsign=false commit -m fixture >> "$smokeRoot\fixture.log"
     if ($LASTEXITCODE -ne 0) { throw 'Fixture commit failed.' }
-    Set-Content -LiteralPath "$repo\hello.txt" -Value 'edited'
+    # More than one row is required for native graph keyboard-navigation checks.
+    Set-Content -LiteralPath "$repo\second.txt" -Value 'second'
+    git -C $repo add -- second.txt
+    git -C $repo -c commit.gpgsign=false commit -m 'second fixture' >> "$smokeRoot\fixture.log"
+    if ($LASTEXITCODE -ne 0) { throw 'Second fixture commit failed.' }
+    if ($CleanTracked) {
+        # Keep a file available to the editor without blocking reviewed history
+        # operations, which correctly refuse dirty tracked files.
+        Set-Content -LiteralPath "$repo\file.txt" -Value 'untracked editor fixture'
+        # A second isolated tab and a workspace excluding the primary repository
+        # let native acceptance cancel navigation while a primary draft is dirty.
+        $workspaceRepo = Join-Path $smokeRoot 'workspace-repo'
+        New-Item -ItemType Directory -Path $workspaceRepo | Out-Null
+        git -C $workspaceRepo init -b main >> "$smokeRoot\fixture.log"
+        if ($LASTEXITCODE -ne 0) { throw 'Workspace fixture initialization failed.' }
+        git -C $workspaceRepo config user.name 'Recorde Smoke'
+        git -C $workspaceRepo config user.email 'smoke@example.invalid'
+        Set-Content -LiteralPath "$workspaceRepo\workspace.txt" -Value 'isolated workspace fixture'
+        git -C $workspaceRepo add -- workspace.txt
+        git -C $workspaceRepo -c commit.gpgsign=false commit -m 'workspace fixture' >> "$smokeRoot\fixture.log"
+        if ($LASTEXITCODE -ne 0) { throw 'Workspace fixture commit failed.' }
+        # Rust canonicalizes Windows worktree paths to their extended form.
+        # Match those keys so restoring the primary tab cannot create a duplicate.
+        $primaryConfigPath = if ($repo.StartsWith('\\?\')) { $repo } elseif ($repo.StartsWith('\\')) { '\\?\UNC\' + $repo.Substring(2) } else { '\\?\' + $repo }
+        $workspaceConfigPath = if ($workspaceRepo.StartsWith('\\?\')) { $workspaceRepo } elseif ($workspaceRepo.StartsWith('\\')) { '\\?\UNC\' + $workspaceRepo.Substring(2) } else { '\\?\' + $workspaceRepo }
+        $workspaceName = 'Recorde native workspace ' + (Split-Path -Leaf $smokeRoot)
+        $primaryToml = ConvertTo-Json -InputObject $primaryConfigPath -Compress
+        $workspaceToml = ConvertTo-Json -InputObject $workspaceConfigPath -Compress
+        $workspaceNameToml = ConvertTo-Json -InputObject $workspaceName -Compress
+        $fixtureConfig += "active_repo = $primaryToml`nopen_repos = [$primaryToml, $workspaceToml]`n[workspaces]`n$workspaceNameToml = [$workspaceToml]`n"
+        [IO.File]::WriteAllText((Join-Path $profile 'config.toml'), $fixtureConfig, (New-Object Text.UTF8Encoding($false)))
+        $navigationFixture = @{ workspace_name=$workspaceName; primary_repository=$primaryConfigPath; secondary_repository=$workspaceConfigPath } | ConvertTo-Json
+        [IO.File]::WriteAllText((Join-Path $smokeRoot 'navigation-fixture.json'), $navigationFixture, (New-Object Text.UTF8Encoding($false)))
+    } else {
+        Set-Content -LiteralPath "$repo\hello.txt" -Value 'edited'
+    }
     $smokeProcess = Start-Process -FilePath $executable -ArgumentList ('"' + $repo + '"') -WindowStyle Hidden -PassThru -RedirectStandardOutput "$smokeRoot\stdout.log" -RedirectStandardError "$smokeRoot\stderr.log"
     Start-Sleep -Seconds 8
     $smokeProcess.Refresh()
@@ -55,8 +117,28 @@ try {
     if ($smokeProcess.HasExited -or $smokeProcess.MainWindowHandle -eq 0 -or $smokeProcess.MainWindowTitle -cne 'Recorde') {
         throw "Native startup failed or displayed an error dialog; see $smokeRoot"
     }
-    if (-not (Test-Path -LiteralPath "$smokeRoot\appdata\recorde" -PathType Container)) {
+    $savedProfile = Get-Content -LiteralPath "$smokeRoot\appdata\recorde\config.toml" -Raw
+    if (-not ($savedProfile.Contains($repo) -or $savedProfile.Contains($repo.Replace('\', '\\')))) {
         throw 'Application did not use the isolated profile directory.'
+    }
+    if ($Inspector) {
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = $inspectionClient
+        $info.Arguments = '"' + $inspectionAddress + '" "' + $smokeRoot + '" --graph' + $(if ($Review) { ' --review' } else { '' })
+        if ($CleanTracked) { $info.Arguments += ' --clean-tracked' }
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $info.RedirectStandardOutput = $true
+        $info.RedirectStandardError = $true
+        $client = [Diagnostics.Process]::Start($info)
+        @{ Purpose='Native UI inspection client'; ProcessId=$client.Id; ParentProcessId=$PID; Executable=$inspectionClient; Address=$inspectionAddress } |
+            ConvertTo-Json | Set-Content -LiteralPath "$smokeRoot\inspector-ownership.json"
+        $out = $client.StandardOutput.ReadToEndAsync()
+        $err = $client.StandardError.ReadToEndAsync()
+        $client.WaitForExit()
+        [IO.File]::WriteAllText("$smokeRoot\inspector.stdout.log", $out.GetAwaiter().GetResult())
+        [IO.File]::WriteAllText("$smokeRoot\inspector.stderr.log", $err.GetAwaiter().GetResult())
+        if ($client.ExitCode -ne 0) { throw "Native UI inspector failed; see $smokeRoot" }
     }
     if ($InspectAccessibility) {
         # Run on an interactive Windows test desktop (for example the hosted
@@ -75,12 +157,20 @@ try {
             Start-Sleep -Milliseconds 200
         } while ([DateTime]::UtcNow -lt $deadline)
         $rows | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath "$smokeRoot\native-uia.json"
-        if ($null -eq $commit -or !($rows.Name -match '^Branch main') -or !($rows.Name -match 'Fetch')) {
+        $expectedCurrentBranch = if ($CleanTracked) { 'Local branch develop, current branch' } else { 'Local branch main, current branch' }
+        if ($null -eq $commit -or !($rows.Name -contains $expectedCurrentBranch) -or !($rows.Name -match 'Fetch')) {
             throw "Windows UI Automation is missing commit, branch or action labels; see $smokeRoot"
         }
+        $window.SetFocus()
         $commit.SetFocus()
-        Start-Sleep -Milliseconds 250
-        $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+        $focusDeadline = [DateTime]::UtcNow.AddSeconds(3)
+        do {
+            Start-Sleep -Milliseconds 100
+            $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+            if ($focused.Current.ProcessId -eq $smokeProcess.Id -and $focused.Current.Name -like 'Commit * by *') { break }
+        } while ([DateTime]::UtcNow -lt $focusDeadline)
+        @{ RequestedName=$commit.Current.Name; RequestedFocusable=$commit.Current.IsKeyboardFocusable; ActualName=$focused.Current.Name; ActualProcess=$focused.Current.ProcessId; ExpectedProcess=$smokeProcess.Id } |
+            ConvertTo-Json | Set-Content -LiteralPath "$smokeRoot\native-uia-focus.json"
         if ($focused.Current.ProcessId -ne $smokeProcess.Id -or $focused.Current.Name -notlike 'Commit * by *') {
             throw 'Native UI Automation focus did not reach the labelled commit row.'
         }

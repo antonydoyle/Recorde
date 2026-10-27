@@ -193,13 +193,38 @@ pub enum ModalKind {
     ConfirmDeleteBranch {
         branch_name: String,
     },
+    ConfirmForceDeleteBranch {
+        branch_name: String,
+    },
+    /// Remote-tracking shorthand such as `origin/feature`.
+    ConfirmDeleteRemoteBranch {
+        name: String,
+    },
+    ConfirmDeleteRemoteTag {
+        tag_name: String,
+    },
+    ResetToCommit {
+        oid: String,
+    },
+    /// Restore recovery checkpoint `id`, the next undo or redo step.
+    ConfirmUndo {
+        id: String,
+        label: String,
+        redo: bool,
+    },
+    ConfirmCommitSequence {
+        preview: crate::git::branches::CommitSequencePreview,
+    },
     CreateTag {
         from_oid: Option<String>,
     },
     ConfirmDeleteTag {
         tag_name: String,
     },
-    MergeBranch,
+    /// Merge with options; `branch` preselects the branch to merge.
+    MergeBranch {
+        branch: Option<String>,
+    },
     RebaseOnto,
     CloneRepo,
     InitRepo,
@@ -211,7 +236,10 @@ pub enum ModalKind {
     },
     StashWithMessage,
     CreateBranchFromStash {
-        stash_index: usize,
+        target: crate::git::branches::StashTarget,
+    },
+    ConfirmDropStash {
+        target: crate::git::branches::StashTarget,
     },
     Reflog,
     Bisect,
@@ -219,6 +247,7 @@ pub enum ModalKind {
         base_oid: String,
         compare_oid: String,
     },
+    GitFlow,
 }
 
 #[derive(Default)]
@@ -236,6 +265,9 @@ pub struct AppState {
     pub error: Option<String>,
 
     pub selected_commit: Option<String>,
+    /// Commits chosen with Ctrl/Cmd- or Shift-click. Empty unless two or more
+    /// are selected; `selected_commit` remains the most recently clicked one.
+    pub selected_commits: Vec<String>,
     pub selected_commit_detail: Option<CommitDetail>,
     pub selected_file: Option<String>,
     pub current_diff: Option<Arc<FileDiff>>,
@@ -250,6 +282,8 @@ pub struct AppState {
 
     pub conflicted_files: Vec<ConflictedFile>,
     pub pending_conflict_editor: Option<String>,
+    /// Working-tree file to open in the built-in editor.
+    pub pending_file_edit: Option<String>,
     pub pending_commit_settings: bool,
     pub merged_into_head: std::collections::HashSet<String>,
     pub modal: ModalKind,
@@ -274,6 +308,14 @@ pub struct AppState {
     pub focused_pane: u8,
     /// Set by the graph context menu to trigger opening the rebase modal.
     pub pending_open_rebase: Option<String>,
+    /// Selected commits to combine with an interactive rebase.
+    pub pending_squash: Option<Vec<String>>,
+    pub pending_drop: Option<Vec<String>>,
+    /// Next undo and redo steps as (checkpoint ID, label), read on refresh.
+    pub undo_step: Option<(String, String)>,
+    pub redo_step: Option<(String, String)>,
+    /// Git Flow branch configuration, read on refresh.
+    pub git_flow: Option<crate::git::gitflow::FlowConfig>,
     /// Deleted branches backed by durable protected refs, restorable after restart.
     pub deleted_branches: Vec<DeletedBranch>,
 
@@ -323,6 +365,8 @@ pub struct AppState {
     /// Bisect state (set when `git bisect start` is active).
     pub bisect_in_progress: bool,
     pub bisect_current_oid: Option<String>,
+    /// Set once an active bisect session has identified the first bad commit.
+    pub bisect_first_bad: Option<String>,
 
     // ── Phase 12: Submodules and Worktrees ───────────────────────────────────
     pub submodules: Vec<SubmoduleInfo>,
@@ -332,6 +376,17 @@ pub struct AppState {
 pub type SharedState = Arc<Mutex<AppState>>;
 
 impl AppState {
+    /// The multi-selection ordered oldest first (bottom of the graph first).
+    pub fn selected_commits_oldest_first(&self) -> Vec<String> {
+        let mut oids = self.selected_commits.clone();
+        if let Some(graph) = &self.commit_graph {
+            oids.sort_by_key(|oid| {
+                std::cmp::Reverse(graph.oid_to_row.get(oid).copied().unwrap_or(0))
+            });
+        }
+        oids
+    }
+
     pub fn invalidate_provider_data(&mut self) {
         for view in self.repo_views.values_mut() {
             view.pr_loaded = false;
