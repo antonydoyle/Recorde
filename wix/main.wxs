@@ -55,6 +55,11 @@
                   KeyPath='yes'/>
           </Component>
 
+          <Component Id='InstallKind' Guid='*'>
+            <File Id='InstallKindFile' Name='recorde-install.json'
+                  Source='packaging\install-msi.json' KeyPath='yes'/>
+          </Component>
+
           <Directory Id='FontLicensesFolder' Name='licenses'>
             <Component Id='InterFontLicense' Guid='*'>
               <File Id='InterLicense' Source='assets\fonts\Inter-LICENSE.txt' KeyPath='yes'/>
@@ -111,6 +116,7 @@
              Absent='disallow'>
       <ComponentRef Id='binary0'/>
       <ComponentRef Id='License'/>
+      <ComponentRef Id='InstallKind'/>
       <ComponentRef Id='InterFontLicense'/>
       <ComponentRef Id='MaterialFontLicense'/>
       <ComponentRef Id='NotoEmojiFontLicense'/>

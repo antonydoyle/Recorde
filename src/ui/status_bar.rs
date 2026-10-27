@@ -1,4 +1,4 @@
-use egui::{Context, RichText, Stroke};
+use egui::{RichText, Stroke};
 
 use crate::icons;
 use crate::state::SharedState;
@@ -13,11 +13,11 @@ impl StatusBar {
         Self { state }
     }
 
-    pub fn show(&self, ctx: &Context) {
-        egui::TopBottomPanel::bottom("status_bar")
-            .exact_height(28.0)
-            .frame(egui::Frame::none().fill(theme::bg_titlebar()))
-            .show(ctx, |ui| {
+    pub fn show(&self, root_ui: &mut egui::Ui) {
+        egui::Panel::bottom("status_bar")
+            .exact_size(28.0)
+            .frame(egui::Frame::NONE.fill(theme::bg_titlebar()))
+            .show(root_ui, |ui| {
                 let r = ui.max_rect();
                 ui.painter().line_segment(
                     [r.left_top(), r.right_top()],
@@ -56,7 +56,20 @@ impl StatusBar {
                     let ab = s.ahead_behind;
                     let dirty = s.dirty_count;
                     let remote_op = s.remote_op.clone();
-                    let error = s.error.as_deref().map(crate::auth::redact::text);
+                    let fetching = s
+                        .active_ops
+                        .iter()
+                        .any(|op| op.background && s.repo_path.as_ref() == Some(&op.repo_path));
+                    let fetch_error = s
+                        .background_fetch
+                        .as_ref()
+                        .filter(|status| s.repo_path.as_ref() == Some(&status.repo_path))
+                        .map(|status| crate::auth::redact::text(&status.message));
+                    let error = s
+                        .error
+                        .as_deref()
+                        .or_else(|| s.errors.front().map(|error| error.message.as_str()))
+                        .map(crate::auth::redact::text);
                     drop(s);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -74,6 +87,23 @@ impl StatusBar {
                             ui.add_space(8.0);
                         }
 
+                        if fetching {
+                            ui.label(
+                                RichText::new("Fetching…")
+                                    .color(theme::text_muted())
+                                    .size(12.0),
+                            );
+                            ui.add_space(8.0);
+                        } else if let Some(message) = &fetch_error {
+                            ui.label(
+                                RichText::new("Last fetch failed")
+                                    .color(theme::accent_yellow())
+                                    .size(12.0),
+                            )
+                            .on_hover_text(message);
+                            ui.add_space(8.0);
+                        }
+
                         if dirty > 0 {
                             ui.label(
                                 RichText::new(format!("● {}", dirty))
@@ -81,7 +111,11 @@ impl StatusBar {
                                     .size(12.0),
                             );
                             ui.add_space(8.0);
-                        } else if error.is_none() && remote_op.is_none() {
+                        } else if error.is_none()
+                            && remote_op.is_none()
+                            && !fetching
+                            && fetch_error.is_none()
+                        {
                             ui.label(RichText::new("✓").color(theme::accent_green()).size(12.0));
                             ui.add_space(8.0);
                         }

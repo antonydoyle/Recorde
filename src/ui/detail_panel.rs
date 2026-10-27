@@ -17,6 +17,10 @@ impl DetailPanel {
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, theme::bg_surface());
 
+        if self.show_multi_selection(ui) {
+            return;
+        }
+
         // Snapshot everything we need, then release the lock.
         let (selected_commit, detail, selected_file) = {
             let s = self.state.lock().unwrap();
@@ -71,7 +75,7 @@ impl DetailPanel {
                         .small_button(RichText::new("Copy").color(theme::text_muted()).size(12.0))
                         .clicked()
                     {
-                        ui.output_mut(|o| o.copied_text = detail.oid.clone());
+                        ui.ctx().copy_text(detail.oid.clone());
                     }
                 });
 
@@ -93,8 +97,8 @@ impl DetailPanel {
                     .trim_start_matches('\n')
                     .trim_end();
 
-                egui::Frame::none()
-                    .inner_margin(egui::Margin::symmetric(12.0, 0.0))
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(12, 0))
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new(first_line)
@@ -106,8 +110,8 @@ impl DetailPanel {
 
                 if !rest.is_empty() {
                     ui.add_space(6.0);
-                    egui::Frame::none()
-                        .inner_margin(egui::Margin::symmetric(12.0, 0.0))
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin::symmetric(12, 0))
                         .show(ui, |ui| {
                             ui.label(
                                 RichText::new(rest)
@@ -172,9 +176,24 @@ impl DetailPanel {
 
                     row_resp.context_menu(|ui| {
                         ui.set_min_width(175.0);
+                        if ui.button("Open in External Diff Tool").clicked() {
+                            let repo_path = self.state.lock().unwrap().repo_path.clone();
+                            if let Some(repo_path) = repo_path {
+                                if let Err(error) = crate::external::open_diff_tool(
+                                    &repo_path,
+                                    crate::external::DiffToolArgs::Commit {
+                                        path: &file.path,
+                                        oid: &detail.oid,
+                                    },
+                                ) {
+                                    self.state.lock().unwrap().error = Some(error);
+                                }
+                            }
+                            ui.close();
+                        }
                         if ui.button("Show File History").clicked() {
                             load_file_history(&file.path, self.state.clone());
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("Blame").clicked() {
                             {
@@ -183,7 +202,7 @@ impl DetailPanel {
                                 s.show_blame = true;
                             }
                             load_blame(&file.path, self.state.clone());
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -200,6 +219,75 @@ impl DetailPanel {
             }
             load_diff(&detail.oid, &path, self.state.clone());
         }
+    }
+}
+
+impl DetailPanel {
+    /// Summary and actions for two or more selected commits.
+    fn show_multi_selection(&mut self, ui: &mut Ui) -> bool {
+        let rows: Vec<(String, String, String)> = {
+            let s = self.state.lock().unwrap();
+            if s.selected_commits.len() < 2 {
+                return false;
+            }
+            let graph = s.commit_graph.clone();
+            s.selected_commits_oldest_first()
+                .into_iter()
+                .rev()
+                .map(|oid| {
+                    let node = graph
+                        .as_ref()
+                        .and_then(|g| g.oid_to_row.get(&oid).map(|&row| &g.nodes[row]));
+                    (
+                        oid.clone(),
+                        node.map(|n| n.summary.clone()).unwrap_or_default(),
+                        node.map(|n| n.author.clone()).unwrap_or_default(),
+                    )
+                })
+                .collect()
+        };
+        egui::ScrollArea::vertical()
+            .id_salt("multi_selection")
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!("{} commits selected", rows.len()))
+                                .color(theme::text_primary())
+                                .size(14.0)
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "Ctrl/Cmd-click toggles a commit; Shift-click selects a range.",
+                            )
+                            .color(theme::text_muted())
+                            .size(12.0),
+                        );
+                        ui.add_space(8.0);
+                        for (oid, summary, author) in &rows {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(&oid[..7.min(oid.len())])
+                                        .font(FontId::monospace(12.0))
+                                        .color(theme::accent_blue()),
+                                );
+                                ui.label(
+                                    RichText::new(summary)
+                                        .color(theme::text_secondary())
+                                        .size(13.0),
+                                )
+                                .on_hover_text(author);
+                            });
+                        }
+                        ui.add_space(10.0);
+                        ui.separator();
+                        crate::ui::commit_graph::multi_selection_actions(ui, &self.state);
+                    });
+            });
+        true
     }
 }
 

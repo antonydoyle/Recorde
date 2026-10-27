@@ -135,6 +135,10 @@ impl ProviderEditor {
             ui.separator();
             if self.submitting.is_some() { ui.spinner(); ui.label("Submitting. Waiting for the provider's result..."); }
             let github = context.provider == ProviderType::GitHub;
+            let gitlab = context.provider == ProviderType::GitLab;
+            let azure = context.provider == ProviderType::AzureDevOps;
+            let bitbucket = context.provider == ProviderType::Bitbucket;
+            if azure || bitbucket { ui.small("Votes apply to the pull request. Source and target are checked before and after submission; enable provider policies that reset approvals on new pushes."); }
             ui.add_enabled_ui(!self.confirming && self.submitting.is_none(), |ui| {
                 match &mut self.action {
                     Action::Create { title, body, source, target, draft, source_project, target_project } => {
@@ -144,7 +148,7 @@ impl ProviderEditor {
                             });
                             ui.text_edit_singleline(project);
                         }
-                        ui.small("Projects must share this provider host and belong to a compatible fork network.");
+                        if azure { ui.small("Use organization/project/repository names. Forks must belong to the same Azure organization."); } else { ui.small("Projects must share this provider host and belong to a compatible fork network."); }
                         ui.label("Source branch (must already be pushed)");
                         ui.text_edit_singleline(source);
                         ui.label("Target branch"); ui.text_edit_singleline(target);
@@ -158,7 +162,7 @@ impl ProviderEditor {
                         ui.horizontal(|ui| {
                             ui.selectable_value(decision, Decision::Comment, "Comment");
                             ui.selectable_value(decision, Decision::Approve, "Approve");
-                            if github { ui.selectable_value(decision, Decision::RequestChanges, "Request changes"); }
+                            if !gitlab { ui.selectable_value(decision, Decision::RequestChanges, "Request changes"); }
                         });
                         if *decision == Decision::Comment {
                             let mut enabled = inline.is_some();
@@ -167,7 +171,7 @@ impl ProviderEditor {
                             }
                             if let Some(comment) = inline {
                                 ui.label("File path in the diff"); ui.text_edit_singleline(&mut comment.path);
-                                if !github { ui.label("Previous path if renamed (otherwise leave blank)"); ui.text_edit_singleline(&mut comment.old_path); }
+                                if gitlab { ui.label("Previous path if renamed (otherwise leave blank)"); ui.text_edit_singleline(&mut comment.old_path); }
                                 ui.horizontal(|ui| {
                                     ui.label("New line (0 for deletion)"); ui.add(egui::DragValue::new(&mut comment.new_line).range(0..=10000000));
                                     ui.label("Old line (0 for addition)"); ui.add(egui::DragValue::new(&mut comment.old_line).range(0..=10000000));
@@ -182,12 +186,13 @@ impl ProviderEditor {
                     Action::Merge { number, head, target, method, queue } => {
                         ui.label(format!("Merge #{number} into {target}"));
                         ui.label(format!("Expected source commit: {head}"));
-                        ui.checkbox(queue, if github { "Use merge queue" } else { "Use merge train" });
+                        if github || gitlab { ui.checkbox(queue, if github { "Use merge queue" } else { "Use merge train" }); } else { *queue = false; }
+                        if bitbucket { ui.colored_label(crate::theme::accent_red(), "Bitbucket cannot atomically guard the source commit on merge. Open this pull request in Bitbucket to merge."); }
                         if *queue { ui.label("The repository must have a merge queue/train enabled. The provider runs checks before merging; source branches are retained."); }
                         ui.add_enabled_ui(!(*queue && github), |ui| { ui.horizontal(|ui| {
-                            ui.selectable_value(method, MergeMethod::Merge, if github { "Merge commit" } else { "Project merge strategy" });
+                            ui.selectable_value(method, MergeMethod::Merge, if gitlab { "Project merge strategy" } else { "Merge commit" });
                             ui.selectable_value(method, MergeMethod::Squash, "Squash");
-                            if github { ui.selectable_value(method, MergeMethod::Rebase, "Rebase" ); }
+                            if github || azure { ui.selectable_value(method, MergeMethod::Rebase, "Rebase" ); }
                         }); });
                         if *queue && github { ui.small("The repository's merge queue configuration chooses the merge method."); }
                         ui.label("The provider enforces permissions and branch rules. The source branch is retained.");

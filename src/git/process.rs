@@ -4,7 +4,8 @@ use command_group::CommandGroup;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 thread_local! {
@@ -39,12 +40,14 @@ fn cancelled(explicit: &AtomicBool) -> bool {
 
 /// All unattended programs must start here, including probes and test fixtures.
 pub(crate) fn background_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut command = Command::new(program);
+    let command = Command::new(program);
     #[cfg(windows)]
-    {
+    let command = {
         use std::os::windows::process::CommandExt;
+        let mut command = command;
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
+        command
+    };
     command
 }
 
@@ -90,15 +93,143 @@ pub(crate) fn git(path: &Path, args: &[&str], cancel: &AtomicBool) -> Result<Out
     }
 }
 
-fn drain(mut reader: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Deadline {
+    Total(Duration),
+    Idle(Duration),
+    None,
+}
+
+/// Network transfers have no total deadline, but must produce output every five minutes.
+pub(crate) fn git_network(
+    path: &Path,
+    args: &[&str],
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<Output, GitError> {
+    let mut command = command(path);
+    if let Some((verb, rest)) = args.split_first() {
+        command.arg(verb);
+        if matches!(*verb, "clone" | "fetch" | "push") {
+            command.arg("--progress");
+        }
+        command.args(rest);
+    }
+    let output = run_network(&mut command, cancel, on_progress)?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(GitError::Command {
+            cmd: "Git network operation".into(),
+            stderr: crate::auth::redact::text(&String::from_utf8_lossy(&output.stderr)),
+        })
+    }
+}
+
+/// Prepared commands must add --progress themselves, preserving native path arguments.
+pub(crate) fn run_network(
+    command: &mut Command,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<Output, GitError> {
+    run_inner(
+        command,
+        cancel,
+        Deadline::Idle(Duration::from_secs(300)),
+        Stdio::null(),
+        None,
+        None,
+        Some(on_progress),
+    )
+}
+
+/// Return recognized short labels, never arbitrary remote diagnostics or URLs.
+fn parse_progress(input: &str) -> Vec<(String, Option<u8>)> {
+    input
+        .split(['\r', '\n'])
+        .filter_map(|line| {
+            let labels = [
+                "Receiving objects",
+                "Resolving deltas",
+                "Writing objects",
+                "Counting objects",
+                "Compressing objects",
+                "Enumerating objects",
+                "Filtering content",
+                "Updating files",
+            ];
+            let label = labels.iter().find(|label| line.contains(**label)).copied();
+            let label = label.or_else(|| {
+                line.to_ascii_lowercase()
+                    .contains("lfs")
+                    .then_some("Transferring LFS objects")
+            })?;
+            let pct = line.find('%').and_then(|end| {
+                let digits = line[..end]
+                    .trim_end()
+                    .rsplit(|c: char| !c.is_ascii_digit())
+                    .next()?;
+                digits.parse::<u8>().ok().filter(|pct| *pct <= 100)
+            });
+            Some((label.to_string(), pct))
+        })
+        .collect()
+}
+
+type Progress = (String, Option<u8>);
+
+fn send_progress(tx: &mpsc::SyncSender<Progress>, line: &[u8]) {
+    let line = crate::auth::redact::text(&String::from_utf8_lossy(line));
+    for update in parse_progress(&line) {
+        let _ = tx.try_send(update);
+    }
+}
+
+#[cfg(test)]
+fn drain(reader: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+    drain_active(reader, Instant::now(), Arc::new(AtomicU64::new(0)), None)
+}
+
+fn drain_active(
+    mut reader: impl Read,
+    start: Instant,
+    activity: Arc<AtomicU64>,
+    progress: Option<mpsc::SyncSender<Progress>>,
+) -> std::io::Result<(Vec<u8>, bool)> {
     // Keep the last MiB for diagnostics while draining all bytes to avoid deadlock.
     const LIMIT: usize = 1024 * 1024;
     let mut output = Vec::new();
     let mut truncated = false;
     let mut buffer = [0; 8192];
+    let mut line = Vec::new();
+    let mut overlong = false;
     loop {
         let count = reader.read(&mut buffer)?;
+        if count > 0 {
+            activity.fetch_max(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+        }
+        if let Some(tx) = &progress {
+            for &byte in &buffer[..count] {
+                if byte == b'\r' || byte == b'\n' {
+                    if !overlong {
+                        send_progress(tx, &line);
+                    }
+                    line.clear();
+                    overlong = false;
+                } else if line.len() < 4096 && !overlong {
+                    line.push(byte);
+                } else {
+                    line.clear();
+                    overlong = true;
+                }
+            }
+        }
         if count == 0 {
+            if let Some(tx) = &progress {
+                if !overlong {
+                    send_progress(tx, &line);
+                }
+            }
             return Ok((output, truncated));
         }
         output.extend_from_slice(&buffer[..count]);
@@ -123,7 +254,33 @@ pub(crate) fn run_with_stdin(
     timeout: Duration,
     stdin: Stdio,
 ) -> Result<Output, GitError> {
-    run_inner(command, cancel, timeout, stdin, None)
+    run_inner(
+        command,
+        cancel,
+        Deadline::Total(timeout),
+        stdin,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Stream machine-readable listings into a private file without applying the
+/// diagnostic buffer limit. Cancellation and descendant cleanup remain shared.
+pub(crate) fn run_to_file(
+    command: &mut Command,
+    output: std::fs::File,
+    timeout: Duration,
+) -> Result<Output, GitError> {
+    run_inner(
+        command,
+        &AtomicBool::new(false),
+        Deadline::Total(timeout),
+        Stdio::null(),
+        None,
+        Some(output),
+        None,
+    )
 }
 
 pub(crate) fn run_with_input(
@@ -134,18 +291,30 @@ pub(crate) fn run_with_input(
     run_inner(
         command,
         &AtomicBool::new(false),
-        timeout,
+        Deadline::Total(timeout),
         Stdio::piped(),
         Some(input.to_vec()),
+        None,
+        None,
     )
+}
+
+pub(crate) fn run_with_deadline(
+    command: &mut Command,
+    cancel: &AtomicBool,
+    deadline: Deadline,
+) -> Result<Output, GitError> {
+    run_inner(command, cancel, deadline, Stdio::null(), None, None, None)
 }
 
 fn run_inner(
     command: &mut Command,
     cancel: &AtomicBool,
-    timeout: Duration,
+    deadline: Deadline,
     stdin: Stdio,
     input: Option<Vec<u8>>,
+    output_file: Option<std::fs::File>,
+    mut on_progress: Option<&mut dyn FnMut(&str, Option<u8>)>,
 ) -> Result<Output, GitError> {
     if cancelled(cancel) {
         return Err(GitError::Cancelled);
@@ -156,7 +325,7 @@ fn run_inner(
     };
     command
         .stdin(stdin)
-        .stdout(Stdio::piped())
+        .stdout(output_file.map_or_else(Stdio::piped, Stdio::from))
         .stderr(Stdio::piped());
     let mut group = command.group();
     // command-group replaces Command's creation flags when it creates the job.
@@ -166,10 +335,10 @@ fn run_inner(
     let mut child = group.spawn().map_err(failure)?;
     // Never log arguments, stdin or environment: credential helpers carry secrets.
     log::debug!(
-        "Background process started: pid={}, program={:?}, timeout={}s, ports=none requested",
+        "Background process started: pid={}, program={:?}, deadline={:?}, ports=none requested",
         child.id(),
         command.get_program(),
-        timeout.as_secs()
+        deadline
     );
     let writer = input.map(|bytes| {
         let mut stdin = child.inner().stdin.take().expect("piped stdin");
@@ -178,24 +347,81 @@ fn run_inner(
             stdin.write_all(&bytes)
         })
     });
-    let stdout = child.inner().stdout.take().expect("piped stdout");
-    let stderr = child.inner().stderr.take().expect("piped stderr");
-    let out_reader = std::thread::spawn(move || drain(stdout));
-    let err_reader = std::thread::spawn(move || drain(stderr));
     let start = Instant::now();
+    let activity = Arc::new(AtomicU64::new(0));
+    let (progress_tx, progress_rx) = mpsc::sync_channel(32);
+    let stdout = child.inner().stdout.take();
+    let stderr = child.inner().stderr.take().expect("piped stderr");
+    let out_activity = activity.clone();
+    let out_reader = stdout
+        .map(|stdout| std::thread::spawn(move || drain_active(stdout, start, out_activity, None)));
+    let err_activity = activity.clone();
+    let progress_tx = on_progress.as_ref().map(|_| progress_tx);
+    let err_reader =
+        std::thread::spawn(move || drain_active(stderr, start, err_activity, progress_tx));
+    let mut last_progress = None;
+    let mut pending_progress = None;
     let mut interrupted = None;
     let status = loop {
+        for update in progress_rx.try_iter().take(32) {
+            pending_progress = Some(update);
+        }
+        if last_progress.is_none_or(|last: Instant| last.elapsed() >= Duration::from_millis(100)) {
+            if let (Some(callback), Some((message, pct))) =
+                (on_progress.as_mut(), pending_progress.take())
+            {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(&message, pct);
+                }));
+                if result.is_err() {
+                    interrupted = Some(GitError::Command {
+                        cmd: "Git process".into(),
+                        stderr:
+                            "Progress reporting stopped unexpectedly; the transfer was stopped."
+                                .into(),
+                    });
+                    break None;
+                }
+                last_progress = Some(Instant::now());
+            }
+        }
         if cancelled(cancel) {
             interrupted = Some(GitError::Cancelled);
             break None;
         }
-        if start.elapsed() >= timeout {
-            interrupted = Some(GitError::Command {
-                cmd: "Git process".into(),
-                stderr: format!(
+        let expired = match deadline {
+            Deadline::Total(timeout) => start.elapsed() >= timeout,
+            Deadline::Idle(timeout) => {
+                start
+                    .elapsed()
+                    .saturating_sub(Duration::from_millis(activity.load(Ordering::Relaxed)))
+                    >= timeout
+            }
+            Deadline::None => false,
+        };
+        if expired {
+            let message = match deadline {
+                Deadline::Idle(timeout) if timeout == Duration::from_secs(300) => concat!(
+                    "No output from Git for 5 minutes; the transfer was stopped. ",
+                    "Check your connection and retry."
+                )
+                .into(),
+                Deadline::Idle(timeout) => format!(
+                    concat!(
+                        "Inactivity timeout: no output from Git for {} milliseconds; ",
+                        "the transfer was stopped. Check your connection and retry."
+                    ),
+                    timeout.as_millis()
+                ),
+                Deadline::Total(timeout) => format!(
                     "Timed out after {} seconds; inspect repository state before retrying.",
                     timeout.as_secs()
                 ),
+                Deadline::None => unreachable!(),
+            };
+            interrupted = Some(GitError::Command {
+                cmd: "Git process".into(),
+                stderr: message,
             });
             break None;
         }
@@ -217,10 +443,13 @@ fn run_inner(
             .join()
             .unwrap_or_else(|_| Err(std::io::Error::other("stdin writer stopped")))
     });
-    let (stdout, stdout_truncated) = out_reader
-        .join()
-        .map_err(|_| failure(std::io::Error::other("stdout reader stopped")))?
-        .map_err(failure)?;
+    let (stdout, stdout_truncated) = match out_reader {
+        Some(reader) => reader
+            .join()
+            .map_err(|_| failure(std::io::Error::other("stdout reader stopped")))?
+            .map_err(failure)?,
+        None => (Vec::new(), false),
+    };
     let (stderr, _) = err_reader
         .join()
         .map_err(|_| failure(std::io::Error::other("stderr reader stopped")))?
@@ -246,6 +475,146 @@ fn run_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn deadline_fixture() -> bool {
+        let Ok(mode) = std::env::var("RECORDE_IDLE_FIXTURE") else {
+            return false;
+        };
+        use std::io::Write;
+        // Writes every 100 ms for 3 s: well inside, then well past, a 1.5 s idle window.
+        for _ in 0..30 {
+            match mode.as_str() {
+                "stdout" => {
+                    std::io::stdout().write_all(b"x").unwrap();
+                    std::io::stdout().flush().unwrap();
+                }
+                "stderr" => {
+                    std::io::stderr().write_all(b"x").unwrap();
+                    std::io::stderr().flush().unwrap();
+                }
+                _ => {}
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        true
+    }
+
+    fn idle_fixture_command(test: &str, mode: &str) -> Command {
+        let mut command = background_command(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", test, "--nocapture"])
+            .env("RECORDE_IDLE_FIXTURE", mode);
+        command
+    }
+
+    #[test]
+    fn idle_activity_extends_deadline_on_either_pipe() {
+        if deadline_fixture() {
+            return;
+        }
+        for mode in ["stdout", "stderr"] {
+            let mut command = idle_fixture_command(
+                "git::process::tests::idle_activity_extends_deadline_on_either_pipe",
+                mode,
+            );
+            let output = run_with_deadline(
+                &mut command,
+                &AtomicBool::new(false),
+                Deadline::Idle(Duration::from_millis(1500)),
+            )
+            .unwrap();
+            assert!(output.status.success());
+        }
+    }
+
+    #[test]
+    fn idle_silence_stops_child_with_inactivity_error() {
+        if deadline_fixture() {
+            return;
+        }
+        let mut command = idle_fixture_command(
+            "git::process::tests::idle_silence_stops_child_with_inactivity_error",
+            "silent",
+        );
+        let error = run_with_deadline(
+            &mut command,
+            &AtomicBool::new(false),
+            Deadline::Idle(Duration::from_millis(1500)),
+        )
+        .unwrap_err();
+        let message = error.user_message();
+        assert!(message.contains("Inactivity timeout"), "{message}");
+        assert!(message.contains("1500 milliseconds"), "{message}");
+    }
+
+    #[test]
+    fn unlimited_deadline_still_observes_local_cancellation() {
+        with_cancellation(Arc::new(AtomicBool::new(true)), || {
+            let mut command = background_command("does-not-exist-recorde-test");
+            assert!(matches!(
+                run_with_deadline(&mut command, &AtomicBool::new(false), Deadline::None),
+                Err(GitError::Cancelled)
+            ));
+        });
+        assert!(!cancelled(&AtomicBool::new(false)));
+    }
+
+    #[test]
+    fn progress_parser_handles_git_lfs_percentages_and_carriage_returns() {
+        let updates = parse_progress(concat!(
+            "Receiving objects:  45% (450/1000)\r",
+            "remote: Resolving deltas: 100% (10/10)\r\n",
+            "Writing objects:  12% (3/25)\n",
+            "Counting objects: 10, done.\r",
+            "Compressing objects: 50% (5/10)\r",
+            "Filtering content: 20% (2/10)\r",
+            "Uploading LFS objects: 70% (7/10)\r",
+            "Git LFS: transferring files\n"
+        ));
+        assert_eq!(
+            updates,
+            vec![
+                ("Receiving objects".into(), Some(45)),
+                ("Resolving deltas".into(), Some(100)),
+                ("Writing objects".into(), Some(12)),
+                ("Counting objects".into(), None),
+                ("Compressing objects".into(), Some(50)),
+                ("Filtering content".into(), Some(20)),
+                ("Transferring LFS objects".into(), Some(70)),
+                ("Transferring LFS objects".into(), None),
+            ]
+        );
+        assert!(parse_progress("fatal: unavailable repository").is_empty());
+        assert_eq!(parse_progress("Counting objects: 999%")[0].1, None);
+        assert_eq!(
+            parse_progress("Receiving objects: https://user:secret@example.com/repo 45%"),
+            vec![("Receiving objects".into(), Some(45))]
+        );
+    }
+
+    #[test]
+    fn stderr_progress_retains_diagnostics_and_unterminated_last_line() {
+        let bytes = b"Counting objects\rReceiving objects: 45%\rdiagnostic\nWriting objects: 12%";
+        let (tx, rx) = mpsc::sync_channel(32);
+        let (tail, truncated) = drain_active(
+            &bytes[..],
+            Instant::now(),
+            Arc::new(AtomicU64::new(0)),
+            Some(tx),
+        )
+        .unwrap();
+        assert_eq!(tail, bytes);
+        assert!(!truncated);
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![
+                ("Counting objects".into(), None),
+                ("Receiving objects".into(), Some(45)),
+                ("Writing objects".into(), Some(12)),
+            ]
+        );
+    }
+
     #[test]
     fn bounded_output_reports_truncation() {
         let (bytes, truncated) = drain(&b"small response"[..]).unwrap();

@@ -1,7 +1,9 @@
 # Provider Integrations
 
 Recorde has provider-neutral models for repository metadata and provider-specific
-adapters for GitHub and GitLab.
+adapters for GitHub, GitLab, Bitbucket Cloud and Azure DevOps Services. The
+capability matrix below describes the feature candidate; live-provider acceptance
+has not been completed for that candidate.
 
 ## Supported Providers
 
@@ -9,14 +11,99 @@ adapters for GitHub and GitLab.
 - GitHub Enterprise.
 - GitLab.com.
 - Self-hosted GitLab.
+- Bitbucket Cloud (not Bitbucket Data Center).
+- Azure DevOps Services (not Azure DevOps Server).
+
+| Capability | GitHub / Enterprise | GitLab / self-hosted | Bitbucket Cloud | Azure DevOps Services |
+| --- | --- | --- | --- | --- |
+| Account authentication | PAT or registered-client browser sign-in | PAT or registered-client browser sign-in | Atlassian email and scoped API token | PAT |
+| Review reads | PRs, checks, statuses and decisions | MRs and pipeline details | PRs, participant decisions and source-commit statuses | PRs, votes, policies and statuses |
+| Create and review | Same/fork PRs, drafts, comments, inline, approve/request changes | Same/fork MRs, drafts, comments, inline and approval | Same/fork PRs, drafts, comments, inline, approve/request changes | Same/fork PRs within one organization, drafts, threads, inline, approve/reject |
+| Merge | Expected-source-SHA direct merge and queue | Expected-source-SHA direct merge and train | Browser only; no atomic expected-head guard in the supported merge route | Expected-source-SHA merge/squash/rebase; policies enforced; accepted asynchronous completion is not reported as merged |
+| Queue/train | Merge queue | Merge train | Unavailable | Unavailable |
+| CI | Repository runs | Project pipelines | Current-branch Pipelines | Repository-and-branch Builds |
+| Issues | Repository issues | Project issues | Unavailable; use the linked external tracker | Boards work items for the whole project |
+| Releases | Repository releases | Project releases | Unavailable; use repository tags or Downloads | Classic releases for the whole project |
+
+Browser sign-in currently uses device authorization and requires a registered
+public client ID on the exact provider host. No client secret is bundled. See
+[Browser sign-in](../browser-sign-in.md) for cancellation, refresh, vault limits
+and the untested live-account boundary. Existing PAT accounts remain supported.
+
+Bitbucket and Azure review votes apply to a PR rather than an immutable commit.
+The candidate checks source/target/state before and after review submission and
+reports a changed review; provider policies should reset approvals after pushes.
+Comments and votes are submitted separately. No provider write is retried
+automatically.
+
+Checkout on Bitbucket/Azure fetches the exact resolved source commit and rechecks
+the displayed review before fetch and checkout. A fork commit must be fetchable
+from the selected remote; otherwise checkout fails safely without choosing
+another remote. Azure fork creation stays within one organization. See the
+[detailed cloud provider limits](../provider-support.md).
+
+## Browser sign-in
+
+GitHub and GitLab support device authorization from **Accounts & SSH**. Register
+an application with the provider, enter its public client ID, then start sign-in.
+Recorde displays a short code and opens the provider's verification page. Check
+the account and requested permissions there. After authorization, Recorde shows
+the verified account; choose **Save** to store it or **Discard** to cancel.
+
+Client IDs are public configuration. Access and refresh tokens stay in the OS
+credential vault. Recorde does not embed or request a client secret. Existing
+personal access token accounts remain supported. Refresh failures require
+signing in again; Recorde does not silently switch accounts.
+
+For a GitHub OAuth application:
+
+1. Open [New OAuth application](https://github.com/settings/applications/new)
+   while signed in to the account that should own it.
+2. Use **Recorde** as the name and the project's repository URL as its homepage.
+3. GitHub requires a callback URL even for device authorization. A loopback URL
+   such as `http://127.0.0.1:42813/oauth/callback` can fill that registration field;
+   this device flow does not start a callback listener.
+4. Enable **Device Flow** and copy the public **Client ID** into Recorde. Do not
+   copy a client secret into Recorde, source control or support messages.
+
+GitLab requires a registered public application and a server that supports its
+device authorization endpoints. Recorde requests `api`, `read_user` and
+`write_repository`; GitHub requests `repo`, `read:user`, `workflow` and
+`offline_access`. GitHub refuses HTTPS pushes that change `.github/workflows`
+files without `workflow`; accounts signed in before this scope was added must
+sign in again. Classic personal access tokens need `repo` and `workflow` for the
+same pushes; fine-grained tokens need Contents and Workflows write permission.
+Self-hosted services use their own application registration and exact host/port.
+Bitbucket and Azure currently use token accounts rather than browser sign-in.
+
+Registration does not create accounts on other providers. Live acceptance of
+these flows requires the relevant account and a registered application; mocked
+protocol tests do not establish that a particular enterprise deployment enables
+device authorization.
 
 The account model stores provider kind, host, and username. Tokens are retrieved
 from the OS credential vault when provider panels or native Git HTTPS operations
 need them. Multiple accounts on a host require an explicit repository selection
-or HTTPS URL username. Hostnames and ports match exactly. Account selection and
+or a matching HTTPS URL account username. Canonical transport placeholders
+(`x-access-token` for GitHub and `oauth2` for GitLab) do not select an arbitrary
+profile. Bitbucket clone usernames are protocol hints: a binding or one
+unambiguous saved email identity selects the account; Git uses
+`x-bitbucket-api-token-auth`. Hostnames and ports match exactly. Account selection and
 provider calls run in background tasks, and API requests never forward tokens
 through redirects. See [Configuration](Configuration.md) for migration and the
 shared Git credential-helper behavior.
+
+### SSH public-key upload permissions
+
+GitLab public-key uploads use Bearer authentication, supporting both browser OAuth
+and personal tokens with `api` scope. GitHub's existing browser sign-in scopes do
+not request SSH-key write access. Use Copy and the provider's SSH keys page button,
+or supply a classic PAT with `write:public_key` or a fine-grained token with Git SSH
+keys write permission. Upload refusals explain this fallback; Recorde does not
+expand OAuth scopes or retry writes automatically. These are provider permission
+requirements, not evidence of live-account acceptance. See
+[GitLab API authentication](https://docs.gitlab.com/api/rest/authentication/) and
+[GitHub SSH key permissions](https://docs.github.com/en/rest/users/keys).
 
 ## Remote Parsing
 
@@ -27,13 +114,16 @@ git@github.com:owner/repo
 https://github.com/owner/repo
 https://gitlab.com/group/project
 ssh://git@gitlab.com/group/subgroup/project.git
+https://bitbucket.org/workspace/repository.git
+https://dev.azure.com/organization/project/_git/repository
+git@ssh.dev.azure.com:v3/organization/project/repository
 ```
 
 The parser extracts owner or namespace, repository/project name, and host.
 
-## Pull Requests and Merge Requests
+## Common review models
 
-Recorde models GitHub pull requests and GitLab merge requests as `PrItem`:
+Recorde models supported pull requests and merge requests as `PrItem`:
 
 - Number.
 - Title.
@@ -93,7 +183,7 @@ and updates `AppState`.
 
 
 
-## Current read and checkout behavior
+## GitHub and GitLab read and checkout behavior
 
 Repository Settings selects the provider remote independently from the push
 remote. Lists follow GitHub Link and GitLab pagination headers, bounded to
@@ -111,7 +201,7 @@ Checkout Review fetches `refs/pull/<number>/head` on GitHub or
 and safely creates a local review branch. Fork branch names are not assumed to
 exist locally. Changed review heads and local branch commits are not overwritten.
 
-## Create, review and merge
+## GitHub and GitLab create, review and merge
 
 The PR/MR window includes creation, review and merge forms. Each form captures
 its repository, remote and account. Review the populated action, then confirm

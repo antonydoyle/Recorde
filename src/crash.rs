@@ -17,7 +17,7 @@ pub fn install() {
             info,
         );
 
-        if let Some(data_dir) = dirs::data_dir() {
+        if let Some(data_dir) = crate::app_dirs::data_dir() {
             let crash_dir = data_dir.join("recorde");
             let _ = std::fs::create_dir_all(&crash_dir);
             let path = crash_dir.join(format!("crash-{}.txt", ts));

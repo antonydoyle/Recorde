@@ -60,6 +60,8 @@ pub const INFO: char = '\u{E88E}';
 pub const HELP: char = '\u{E887}';
 
 pub const EDIT: char = '\u{E3C9}';
+pub const UNDO: char = '\u{E166}';
+pub const REDO: char = '\u{E15A}';
 pub const DELETE: char = '\u{E872}';
 pub const COPY: char = '\u{E14D}';
 pub const VISIBILITY: char = '\u{E8F4}';
@@ -80,7 +82,7 @@ pub fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "inter-regular".into(),
-        egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.ttf")),
+        egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.ttf")).into(),
     );
     fonts
         .families
@@ -103,7 +105,7 @@ pub fn font_definitions() -> egui::FontDefinitions {
     ] {
         fonts
             .font_data
-            .insert(name.into(), egui::FontData::from_static(bytes));
+            .insert(name.into(), egui::FontData::from_static(bytes).into());
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             fonts.families.entry(family).or_default().push(name.into());
         }
@@ -112,7 +114,7 @@ pub fn font_definitions() -> egui::FontDefinitions {
     // doesn't need assets/ alongside it (fixes the deb/AppImage install crash).
     fonts.font_data.insert(
         "material-icons".into(),
-        egui::FontData::from_static(include_bytes!("../assets/MaterialIcons.ttf")),
+        egui::FontData::from_static(include_bytes!("../assets/MaterialIcons.ttf")).into(),
     );
     let mut material_family = vec!["material-icons".into()];
     // egui also needs a replacement glyph when initializing an icon font.
@@ -134,14 +136,20 @@ mod tests {
     fn embedded_fonts_cover_every_icon_and_ui_symbol() {
         let ctx = egui::Context::default();
         ctx.set_fonts(super::font_definitions());
-        ctx.begin_frame(Default::default());
+        ctx.begin_pass(Default::default());
         let re = regex::Regex::new(r"pub const (\w+): char = '\\u\{([0-9A-F]+)\}'").unwrap();
         let mut count = 0;
-        ctx.fonts(|fonts| {
+        // Inspect actual family charmaps: egui 0.36 has_glyph compares face
+        // IDs with the replacement face and can reject its valid symbols.
+        ctx.fonts_mut(|fonts| {
             for capture in re.captures_iter(include_str!("icons.rs")) {
                 let c = char::from_u32(u32::from_str_radix(&capture[2], 16).unwrap()).unwrap();
                 assert!(
-                    fonts.has_glyph(&super::font(18.0), c),
+                    fonts
+                        .fonts
+                        .font(&super::font(18.0).family)
+                        .characters()
+                        .contains_key(&c),
                     "Missing Material icon: {} ({c})",
                     &capture[1]
                 );
@@ -152,12 +160,12 @@ mod tests {
                 let font = egui::FontId::new(14.0, family);
                 for c in "⚠✓✕×→←↑↓▼▶▾●★⌘⌥⇧⎇📁🔒📋".chars() {
                     assert!(
-                        fonts.has_glyph(&font, c),
+                        fonts.fonts.font(&font.family).characters().contains_key(&c),
                         "Missing UI symbol {c} in {font:?}"
                     );
                 }
             }
         });
-        let _ = ctx.end_frame();
+        ctx.end_pass().textures_delta.clear();
     }
 }

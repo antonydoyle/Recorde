@@ -56,11 +56,40 @@ pub fn bisect_is_active(repo_path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Read the current bisect step commit OID (from BISECT_HEAD), if any.
+/// The commit under test. Git checks each candidate out, so HEAD is the
+/// candidate once a bad and a good commit are known. `--no-checkout` sessions
+/// record it in BISECT_HEAD instead. None once the first bad commit is found.
 pub fn bisect_current(repo_path: &Path) -> Option<String> {
     let repo = git2::Repository::open(repo_path).ok()?;
-    let oid = std::fs::read_to_string(repo.path().join("BISECT_HEAD")).ok()?;
-    Some(oid.trim().to_string())
+    if let Ok(oid) = std::fs::read_to_string(repo.path().join("BISECT_HEAD")) {
+        return Some(oid.trim().to_string());
+    }
+    if bisect_first_bad(repo_path).is_some() {
+        return None;
+    }
+    let has_bad = repo.find_reference("refs/bisect/bad").is_ok();
+    let has_good = repo
+        .references_glob("refs/bisect/good-*")
+        .ok()?
+        .next()
+        .is_some();
+    if !(has_bad && has_good) {
+        return None;
+    }
+    let head = repo.head().ok()?;
+    head.target().map(|oid| oid.to_string())
+}
+
+/// The first bad commit, once a bisect session has found it. Git records it in
+/// BISECT_LOG, so the result survives a restart until the session is reset.
+pub fn bisect_first_bad(repo_path: &Path) -> Option<String> {
+    let repo = git2::Repository::open(repo_path).ok()?;
+    let log = std::fs::read_to_string(repo.path().join("BISECT_LOG")).ok()?;
+    log.lines().rev().find_map(|line| {
+        let rest = line.strip_prefix("# first bad commit: [")?;
+        let oid = git2::Oid::from_str(rest.split(']').next()?).ok()?;
+        Some(oid.to_string())
+    })
 }
 
 #[cfg(test)]

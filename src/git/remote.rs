@@ -11,6 +11,99 @@ use crate::state::SharedState;
 #[path = "remote_tests.rs"]
 mod tests;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EffectivePull {
+    #[default]
+    Merge,
+    MergeNoFf,
+    Rebase,
+    FastForwardOnly,
+}
+
+impl EffectivePull {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Merge => "Pull (merge)",
+            Self::MergeNoFf => "Pull (merge, no fast-forward)",
+            Self::Rebase => "Pull (rebase)",
+            Self::FastForwardOnly => "Pull (fast-forward only)",
+        }
+    }
+
+    fn strategy(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::MergeNoFf => "merge-no-ff",
+            Self::Rebase => "rebase",
+            Self::FastForwardOnly => "ff-only",
+        }
+    }
+}
+
+/// Branch configuration takes precedence even when it explicitly disables rebase.
+fn effective_pull(
+    branch_rebase: Option<&str>,
+    rebase: Option<&str>,
+    ff: Option<&str>,
+) -> EffectivePull {
+    match branch_rebase.or(rebase) {
+        Some("merges" | "interactive" | "i") => return EffectivePull::Rebase,
+        Some(value) => match git2::Config::parse_bool(value) {
+            Ok(true) => return EffectivePull::Rebase,
+            Ok(false) => {}
+            Err(_) => return EffectivePull::Merge,
+        },
+        None => {}
+    }
+    match ff {
+        Some("only") => EffectivePull::FastForwardOnly,
+        Some(value) if git2::Config::parse_bool(value).ok() == Some(false) => {
+            EffectivePull::MergeNoFf
+        }
+        _ => EffectivePull::Merge,
+    }
+}
+
+/// Called by background capability refreshes and the pull worker, never during rendering.
+pub fn configured_pull(
+    repo: &git2::Repository,
+    setting: &crate::config::PullStrategy,
+) -> EffectivePull {
+    use crate::config::PullStrategy;
+    match setting {
+        PullStrategy::Merge => EffectivePull::Merge,
+        PullStrategy::Rebase => EffectivePull::Rebase,
+        PullStrategy::FfOnly => EffectivePull::FastForwardOnly,
+        PullStrategy::GitConfig => {
+            let Ok(config) = repo.config() else {
+                return EffectivePull::Merge;
+            };
+            let branch_rebase = repo
+                .head()
+                .ok()
+                .filter(|head| head.is_branch())
+                .and_then(|head| {
+                    pull_config_value(
+                        &config,
+                        &format!("branch.{}.rebase", head.shorthand().ok()?),
+                    )
+                });
+            let rebase = pull_config_value(&config, "pull.rebase");
+            let ff = pull_config_value(&config, "pull.ff");
+            effective_pull(branch_rebase.as_deref(), rebase.as_deref(), ff.as_deref())
+        }
+    }
+}
+
+fn pull_config_value(config: &git2::Config, key: &str) -> Option<String> {
+    // get_bool also handles an implicit true (a key without an '=' value).
+    config
+        .get_bool(key)
+        .map(|value| value.to_string())
+        .or_else(|_| config.get_string(key))
+        .ok()
+}
+
 // ── Public API (called from app.rs) ──────────────────────────────────────────
 
 pub fn fetch_all(runner: &mut GitRunner, state: &SharedState) {
@@ -20,12 +113,8 @@ pub fn fetch_all(runner: &mut GitRunner, state: &SharedState) {
 
 pub fn pull_branch(runner: &mut GitRunner, state: &SharedState) {
     let Some(path) = repo_path(state) else { return };
-    let kind = match crate::config::Config::load().pull_strategy {
-        crate::config::PullStrategy::Merge => JobKind::PullBranch,
-        crate::config::PullStrategy::Rebase => JobKind::PullWithRebase,
-        crate::config::PullStrategy::FfOnly => JobKind::PullFfOnly,
-    };
-    runner.submit(kind, path);
+    // Resolve configuration on the worker so repository reads stay off the UI thread.
+    runner.submit(JobKind::PullBranch, path);
 }
 
 pub fn pull_with_rebase(runner: &mut GitRunner, state: &SharedState) {
@@ -64,42 +153,103 @@ fn repo_path(state: &SharedState) -> Option<PathBuf> {
 
 // ── Runner dispatch functions (called from runner::dispatch) ──────────────────
 
+/// One throttle per job, shared across all of its remotes and subprocesses.
+fn progress_callback(id: JobId, tx: &Sender<JobProgress>) -> impl FnMut(&str, Option<u8>) + '_ {
+    let mut last = None;
+    move |message, pct| {
+        if last.is_none_or(|time: std::time::Instant| {
+            time.elapsed() >= std::time::Duration::from_millis(100)
+        }) {
+            let _ = tx.send(JobProgress::Update {
+                id,
+                message: crate::auth::redact::text(message),
+                pct,
+            });
+            last = Some(std::time::Instant::now());
+        }
+    }
+}
+
 pub fn run_pull_with_rebase(
     path: &Path,
     cancel: &Arc<AtomicBool>,
-    _id: JobId,
-    _tx: &Sender<JobProgress>,
+    id: JobId,
+    tx: &Sender<JobProgress>,
 ) -> Result<(), GitError> {
-    pull(path, cancel, "rebase")
+    let mut progress = progress_callback(id, tx);
+    super::process::with_cancellation(cancel.clone(), || {
+        pull_progress(path, cancel, "rebase", &mut progress)
+    })
 }
 pub fn run_pull_ff_only(
     path: &Path,
     cancel: &Arc<AtomicBool>,
-    _id: JobId,
-    _tx: &Sender<JobProgress>,
+    id: JobId,
+    tx: &Sender<JobProgress>,
 ) -> Result<(), GitError> {
-    pull(path, cancel, "ff-only")
+    pull_progress(path, cancel, "ff-only", &mut progress_callback(id, tx))
 }
 pub fn run_pull(
     path: &Path,
     cancel: &Arc<AtomicBool>,
-    _id: JobId,
-    _tx: &Sender<JobProgress>,
+    id: JobId,
+    tx: &Sender<JobProgress>,
 ) -> Result<(), GitError> {
-    pull(path, cancel, "merge")
+    run_configured_pull(
+        path,
+        cancel,
+        &crate::config::Config::load().pull_strategy,
+        &mut progress_callback(id, tx),
+    )
 }
+
+fn run_configured_pull(
+    path: &Path,
+    cancel: &Arc<AtomicBool>,
+    setting: &crate::config::PullStrategy,
+    on_progress: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<(), GitError> {
+    let repo = git2::Repository::open(path)?;
+    let strategy = configured_pull(&repo, setting);
+    super::process::with_cancellation(cancel.clone(), || {
+        pull_progress(path, cancel, strategy.strategy(), on_progress)
+    })
+}
+#[cfg(test)]
 fn pull(path: &Path, cancel: &AtomicBool, strategy: &str) -> Result<(), GitError> {
+    pull_progress(path, cancel, strategy, &mut |_, _| {})
+}
+
+fn pull_progress(
+    path: &Path,
+    cancel: &AtomicBool,
+    strategy: &str,
+    on_progress: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<(), GitError> {
     let (remote, _, _) = upstream(path)?;
-    fetch_remote(
+    fetch_remote_progress(
         path,
         &remote,
         cancel,
         crate::config::Config::load().fetch_prune,
+        on_progress,
     )?;
+    if strategy == "rebase" {
+        super::rebase::verify_merge_resolutions(path, "@{upstream}")
+            .map_err(|e| git2::Error::from_str(&e))?;
+    }
     let args: &[&str] = match strategy {
-        "rebase" => &["rebase", "--no-autostash", "@{upstream}"],
+        "rebase" => &[
+            "-c",
+            "rebase.updateRefs=false",
+            "rebase",
+            "--rebase-merges",
+            "--no-autostash",
+            "@{upstream}",
+        ],
         "ff-only" => &["merge", "--ff-only", "@{upstream}"],
-        _ => &["merge", "--no-edit", "@{upstream}"],
+        "merge-no-ff" => &["merge", "--no-ff", "--no-edit", "@{upstream}"],
+        _ => &["merge", "--ff", "--no-edit", "@{upstream}"],
     };
     super::process::git(path, args, cancel).map(|_| ())
 }
@@ -174,30 +324,60 @@ pub fn run_push_with_lease(
     lease: &PushLease,
     cancel: &AtomicBool,
 ) -> Result<(), GitError> {
+    push_with_lease_progress(path, lease, cancel, &mut |_, _| {})
+}
+
+pub(crate) fn run_push_with_lease_progress(
+    path: &Path,
+    lease: &PushLease,
+    cancel: &AtomicBool,
+    id: JobId,
+    tx: &Sender<JobProgress>,
+) -> Result<(), GitError> {
+    push_with_lease_progress(path, lease, cancel, &mut progress_callback(id, tx))
+}
+
+fn push_with_lease_progress(
+    path: &Path,
+    lease: &PushLease,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<(), GitError> {
     let expectation = format!(
         "--force-with-lease={}:{}",
         lease.destination, lease.expected
     );
     let spec = format!("{}:{}", lease.source, lease.destination);
-    super::process::git(
+    super::process::git_network(
         path,
         &["push", &expectation, "--", &lease.remote, &spec],
         cancel,
+        on_progress,
     )
     .map(|_| ())
 }
 pub fn run_push(
     path: &Path,
     cancel: &Arc<AtomicBool>,
-    _id: JobId,
-    _tx: &Sender<JobProgress>,
+    id: JobId,
+    tx: &Sender<JobProgress>,
 ) -> Result<(), GitError> {
-    push(path, cancel)
+    push_progress(path, cancel, &mut progress_callback(id, tx))
 }
+#[cfg(test)]
 fn push(path: &Path, cancel: &AtomicBool) -> Result<(), GitError> {
+    push_progress(path, cancel, &mut |_, _| {})
+}
+
+fn push_progress(
+    path: &Path,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<(), GitError> {
     let (remote, source, destination) = push_target(path)?;
     let spec = format!("{source}:{destination}");
-    super::process::git(path, &["push", "--", &remote, &spec], cancel).map(|_| ())
+    super::process::git_network(path, &["push", "--", &remote, &spec], cancel, on_progress)
+        .map(|_| ())
 }
 
 fn push_target(path: &Path) -> Result<(String, String, String), GitError> {
@@ -239,14 +419,15 @@ fn push_target(path: &Path) -> Result<(String, String, String), GitError> {
 pub fn run_push_set_upstream(
     path: &Path,
     cancel: &Arc<AtomicBool>,
-    _id: JobId,
-    _tx: &Sender<JobProgress>,
+    id: JobId,
+    tx: &Sender<JobProgress>,
 ) -> Result<(), GitError> {
     let (remote, _, _) = push_target(path)?;
-    super::process::git(
+    super::process::git_network(
         path,
         &["push", "--set-upstream", "--", &remote, "HEAD"],
         cancel,
+        &mut progress_callback(id, tx),
     )
     .map(|_| ())
 }
@@ -259,27 +440,41 @@ pub fn run_fetch_all(
 ) -> Result<(), GitError> {
     let prune = crate::config::Config::load().fetch_prune;
     let repo = git2::Repository::open(path)?;
+    let mut progress = progress_callback(job_id, tx);
     for remote in repo.remotes()?.iter().flatten().flatten() {
-        let _ = tx.send(JobProgress::Update {
-            id: job_id,
-            message: format!("Fetching {remote}..."),
-            pct: None,
-        });
-        fetch_remote(path, remote, cancel, prune)?;
+        progress(&format!("Fetching {remote}..."), None);
+        fetch_remote_progress(path, remote, cancel, prune, &mut progress)?;
     }
     if cancel.load(Ordering::Relaxed) {
         return Err(GitError::Cancelled);
     }
     Ok(())
 }
+#[cfg(test)]
 fn fetch_remote(
     path: &Path,
     remote: &str,
     cancel: &AtomicBool,
     prune: bool,
 ) -> Result<(), GitError> {
+    fetch_remote_progress(path, remote, cancel, prune, &mut |_, _| {})
+}
+
+fn fetch_remote_progress(
+    path: &Path,
+    remote: &str,
+    cancel: &AtomicBool,
+    prune: bool,
+    on_progress: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<(), GitError> {
     let prune_arg = if prune { "--prune" } else { "--no-prune" };
-    super::process::git(path, &["fetch", prune_arg, "--", remote], cancel).map(|_| ())
+    super::process::git_network(
+        path,
+        &["fetch", prune_arg, "--", remote],
+        cancel,
+        on_progress,
+    )
+    .map(|_| ())
 }
 
 // ── Ahead / behind (called from operations::load_repo_inner) ─────────────────
@@ -431,4 +626,180 @@ fn remote_selection_keys(config: &git2::Config, remote: &str) -> Result<Vec<Stri
         }
     }
     Ok(keys)
+}
+
+#[cfg(test)]
+mod pull_config_tests {
+    use super::*;
+    use crate::config::PullStrategy;
+    use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn effective_pull_obeys_rebase_precedence_and_ff_rules() {
+        use EffectivePull::{FastForwardOnly, Merge, MergeNoFf, Rebase};
+        let cases = [
+            (None, None, None, Merge),
+            (None, None, Some("only"), FastForwardOnly),
+            (None, None, Some("false"), MergeNoFf),
+            (None, None, Some("true"), Merge),
+            (None, None, Some("unknown"), Merge),
+            (None, Some("false"), Some("only"), FastForwardOnly),
+            (None, Some("false"), Some("false"), MergeNoFf),
+            (None, Some("false"), None, Merge),
+            (None, Some("true"), Some("only"), Rebase),
+            (None, Some("merges"), Some("false"), Rebase),
+            (None, Some("interactive"), None, Rebase),
+            (None, Some("i"), None, Rebase),
+            (None, Some("unknown"), Some("only"), Merge),
+            (Some("false"), Some("true"), Some("only"), FastForwardOnly),
+            (Some("true"), Some("false"), Some("only"), Rebase),
+            (Some("merges"), Some("false"), None, Rebase),
+            (Some("interactive"), Some("false"), None, Rebase),
+            (Some("i"), Some("false"), None, Rebase),
+            (Some("unknown"), Some("true"), Some("only"), Merge),
+        ];
+        for (branch, rebase, ff, expected) in cases {
+            assert_eq!(
+                effective_pull(branch, rebase, ff),
+                expected,
+                "branch.rebase={branch:?}, pull.rebase={rebase:?}, pull.ff={ff:?}"
+            );
+        }
+        for value in ["true", "yes", "on", "1", "2", "-1", "TRUE", "Yes", "ON"] {
+            assert_eq!(effective_pull(None, Some(value), None), Rebase, "{value}");
+            assert_eq!(effective_pull(None, None, Some(value)), Merge, "{value}");
+        }
+        for value in ["false", "no", "off", "0", "FALSE", "No", "OFF", ""] {
+            assert_eq!(effective_pull(None, Some(value), None), Merge, "{value}");
+            assert_eq!(
+                effective_pull(None, None, Some(value)),
+                MergeNoFf,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn configured_pull_reads_branch_override_and_respects_explicit_app_choices() {
+        let fixture = TestRepo::new();
+        fixture.commit("base.txt", b"base\n");
+        let repo = fixture.open();
+        let mut config = repo.config().unwrap();
+        config.set_bool("pull.rebase", true).unwrap();
+        config.set_bool("branch.main.rebase", false).unwrap();
+        config.set_str("pull.ff", "only").unwrap();
+        assert_eq!(
+            configured_pull(&repo, &PullStrategy::GitConfig),
+            EffectivePull::FastForwardOnly
+        );
+        assert_eq!(
+            configured_pull(&repo, &PullStrategy::Merge),
+            EffectivePull::Merge
+        );
+        assert_eq!(
+            configured_pull(&repo, &PullStrategy::Rebase),
+            EffectivePull::Rebase
+        );
+        assert_eq!(
+            configured_pull(&repo, &PullStrategy::FfOnly),
+            EffectivePull::FastForwardOnly
+        );
+        config.remove("branch.main.rebase").unwrap();
+        assert_eq!(
+            configured_pull(&repo, &PullStrategy::GitConfig),
+            EffectivePull::Rebase
+        );
+    }
+
+    #[test]
+    fn git_config_pull_refuses_divergence_when_ff_only_is_configured() {
+        let local = TestRepo::new();
+        local.commit("base.txt", b"base\n");
+        let remote_dir = tempfile::tempdir().unwrap();
+        git2::Repository::init_bare(remote_dir.path()).unwrap();
+        local.git_ok(&[
+            "remote",
+            "add",
+            "upstream",
+            remote_dir.path().to_str().unwrap(),
+        ]);
+        local.git_ok(&["push", "-u", "upstream", "main:trunk"]);
+        let peer = TestRepo::new();
+        peer.git_ok(&[
+            "remote",
+            "add",
+            "upstream",
+            remote_dir.path().to_str().unwrap(),
+        ]);
+        peer.git_ok(&["fetch", "upstream"]);
+        peer.git_ok(&["checkout", "-B", "main", "upstream/trunk"]);
+        peer.commit("peer.txt", b"peer\n");
+        peer.git_ok(&["push", "upstream", "main:trunk"]);
+        let before = local.commit("local.txt", b"local\n");
+        let repo = local.open();
+        let mut config = repo.config().unwrap();
+        config.set_bool("branch.main.rebase", false).unwrap();
+        config.set_str("pull.ff", "only").unwrap();
+        // Exercise the same configured worker as pull_branch without changing app config.
+        let result = run_configured_pull(
+            local.path(),
+            &Arc::new(AtomicBool::new(false)),
+            &PullStrategy::GitConfig,
+            &mut |_, _| {},
+        );
+        assert!(result.is_err());
+        assert_eq!(local.head(), before);
+        assert_eq!(
+            repo.head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .parent_count(),
+            1
+        );
+        assert!(!repo.path().join("MERGE_HEAD").exists());
+        assert!(!local.path().join("peer.txt").exists());
+        assert_eq!(local.index_bytes("local.txt"), b"local\n");
+    }
+
+    #[test]
+    fn git_config_no_ff_creates_a_merge_even_for_a_fast_forward() {
+        let local = TestRepo::new();
+        let base = local.commit("base.txt", b"base\n");
+        let remote_dir = tempfile::tempdir().unwrap();
+        git2::Repository::init_bare(remote_dir.path()).unwrap();
+        local.git_ok(&[
+            "remote",
+            "add",
+            "upstream",
+            remote_dir.path().to_str().unwrap(),
+        ]);
+        local.git_ok(&["push", "-u", "upstream", "main:trunk"]);
+        let peer = TestRepo::new();
+        peer.git_ok(&[
+            "remote",
+            "add",
+            "upstream",
+            remote_dir.path().to_str().unwrap(),
+        ]);
+        peer.git_ok(&["fetch", "upstream"]);
+        peer.git_ok(&["checkout", "-B", "main", "upstream/trunk"]);
+        let upstream = peer.commit("peer.txt", b"peer\n");
+        peer.git_ok(&["push", "upstream", "main:trunk"]);
+        let repo = local.open();
+        let mut config = repo.config().unwrap();
+        config.set_bool("branch.main.rebase", false).unwrap();
+        config.set_bool("pull.ff", false).unwrap();
+        run_configured_pull(
+            local.path(),
+            &Arc::new(AtomicBool::new(false)),
+            &PullStrategy::GitConfig,
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.parent_count(), 2);
+        assert_eq!(head.parent_id(0).unwrap(), base);
+        assert_eq!(head.parent_id(1).unwrap(), upstream);
+    }
 }

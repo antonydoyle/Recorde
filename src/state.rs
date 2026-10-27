@@ -1,8 +1,17 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::git::capabilities::RepoCapabilities;
 use crate::git::graph::CommitGraph;
 use crate::git::job::ActiveOp;
+use crate::ui::error_notice::{classify, ErrorKind};
+
+/// A redacted failure waiting for the user to dismiss it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserError {
+    pub kind: ErrorKind,
+    pub message: String,
+}
 
 /// A file in the working directory, with separate staged and unstaged status.
 /// A file may appear in both sections simultaneously (partially staged).
@@ -74,6 +83,7 @@ pub struct StashEntry {
 pub enum RebaseAction {
     Pick,
     Reword,
+    Edit,
     Squash,
     Fixup,
     Drop,
@@ -84,6 +94,7 @@ impl RebaseAction {
         match self {
             Self::Pick => "pick",
             Self::Reword => "reword",
+            Self::Edit => "edit / split",
             Self::Squash => "squash",
             Self::Fixup => "fixup",
             Self::Drop => "drop",
@@ -191,13 +202,38 @@ pub enum ModalKind {
     ConfirmDeleteBranch {
         branch_name: String,
     },
+    ConfirmForceDeleteBranch {
+        branch_name: String,
+    },
+    /// Remote-tracking shorthand such as `origin/feature`.
+    ConfirmDeleteRemoteBranch {
+        name: String,
+    },
+    ConfirmDeleteRemoteTag {
+        tag_name: String,
+    },
+    ResetToCommit {
+        oid: String,
+    },
+    /// Restore recovery checkpoint `id`, the next undo or redo step.
+    ConfirmUndo {
+        id: String,
+        label: String,
+        redo: bool,
+    },
+    ConfirmCommitSequence {
+        preview: crate::git::branches::CommitSequencePreview,
+    },
     CreateTag {
         from_oid: Option<String>,
     },
     ConfirmDeleteTag {
         tag_name: String,
     },
-    MergeBranch,
+    /// Merge with options; `branch` preselects the branch to merge.
+    MergeBranch {
+        branch: Option<String>,
+    },
     RebaseOnto,
     CloneRepo,
     InitRepo,
@@ -209,7 +245,10 @@ pub enum ModalKind {
     },
     StashWithMessage,
     CreateBranchFromStash {
-        stash_index: usize,
+        target: crate::git::branches::StashTarget,
+    },
+    ConfirmDropStash {
+        target: crate::git::branches::StashTarget,
     },
     Reflog,
     Bisect,
@@ -217,6 +256,7 @@ pub enum ModalKind {
         base_oid: String,
         compare_oid: String,
     },
+    GitFlow,
 }
 
 #[derive(Default)]
@@ -232,8 +272,12 @@ pub struct AppState {
     pub diff_load_id: u64,
     pub commit_graph: Option<std::sync::Arc<CommitGraph>>,
     pub error: Option<String>,
+    pub errors: VecDeque<UserError>,
 
     pub selected_commit: Option<String>,
+    /// Commits chosen with Ctrl/Cmd- or Shift-click. Empty unless two or more
+    /// are selected; `selected_commit` remains the most recently clicked one.
+    pub selected_commits: Vec<String>,
     pub selected_commit_detail: Option<CommitDetail>,
     pub selected_file: Option<String>,
     pub current_diff: Option<Arc<FileDiff>>,
@@ -248,6 +292,8 @@ pub struct AppState {
 
     pub conflicted_files: Vec<ConflictedFile>,
     pub pending_conflict_editor: Option<String>,
+    /// Working-tree file to open in the built-in editor.
+    pub pending_file_edit: Option<String>,
     pub pending_commit_settings: bool,
     pub merged_into_head: std::collections::HashSet<String>,
     pub modal: ModalKind,
@@ -259,6 +305,10 @@ pub struct AppState {
     pub remote_op: Option<String>,
     /// In-flight jobs dispatched through GitRunner.
     pub active_ops: Vec<ActiveOp>,
+    /// Last failed background fetch, scoped to its repository.
+    pub background_fetch: Option<crate::git::job::BackgroundFetchStatus>,
+    /// Optional (message, percentage) for local jobs, keyed by their job ID.
+    pub local_job_progress: std::collections::HashMap<u64, (String, Option<u8>)>,
     /// Capabilities detected when the repo was last opened.
     pub capabilities: Option<RepoCapabilities>,
     /// Log lines shown in the Console tab.
@@ -272,6 +322,14 @@ pub struct AppState {
     pub focused_pane: u8,
     /// Set by the graph context menu to trigger opening the rebase modal.
     pub pending_open_rebase: Option<String>,
+    /// Selected commits to combine with an interactive rebase.
+    pub pending_squash: Option<Vec<String>>,
+    pub pending_drop: Option<Vec<String>>,
+    /// Next undo and redo steps as (checkpoint ID, label), read on refresh.
+    pub undo_step: Option<(String, String)>,
+    pub redo_step: Option<(String, String)>,
+    /// Git Flow branch configuration, read on refresh.
+    pub git_flow: Option<crate::git::gitflow::FlowConfig>,
     /// Deleted branches backed by durable protected refs, restorable after restart.
     pub deleted_branches: Vec<DeletedBranch>,
 
@@ -321,6 +379,8 @@ pub struct AppState {
     /// Bisect state (set when `git bisect start` is active).
     pub bisect_in_progress: bool,
     pub bisect_current_oid: Option<String>,
+    /// Set once an active bisect session has identified the first bad commit.
+    pub bisect_first_bad: Option<String>,
 
     // ── Phase 12: Submodules and Worktrees ───────────────────────────────────
     pub submodules: Vec<SubmoduleInfo>,
@@ -330,6 +390,35 @@ pub struct AppState {
 pub type SharedState = Arc<Mutex<AppState>>;
 
 impl AppState {
+    /// Collect the producer slot without replacing failures already being shown.
+    pub fn take_pending_error(&mut self) {
+        let Some(message) = self.error.take() else {
+            return;
+        };
+        let message = crate::auth::redact::text(&message);
+        let error = UserError {
+            kind: classify(&message),
+            message,
+        };
+        if self.errors.back() != Some(&error) {
+            self.errors.push_back(error);
+        }
+        while self.errors.len() > 5 {
+            self.errors.pop_front();
+        }
+    }
+
+    /// The multi-selection ordered oldest first (bottom of the graph first).
+    pub fn selected_commits_oldest_first(&self) -> Vec<String> {
+        let mut oids = self.selected_commits.clone();
+        if let Some(graph) = &self.commit_graph {
+            oids.sort_by_key(|oid| {
+                std::cmp::Reverse(graph.oid_to_row.get(oid).copied().unwrap_or(0))
+            });
+        }
+        oids
+    }
+
     pub fn invalidate_provider_data(&mut self) {
         for view in self.repo_views.values_mut() {
             view.pr_loaded = false;
@@ -483,4 +572,82 @@ pub fn new_shared_state() -> SharedState {
         git_user_initials,
         ..Default::default()
     }))
+}
+
+#[cfg(test)]
+mod error_queue_tests {
+    use super::*;
+
+    #[test]
+    fn pending_errors_collapse_only_consecutive_duplicates() {
+        let mut state = AppState::default();
+        for message in [
+            "first failure",
+            "first failure",
+            "second failure",
+            "first failure",
+        ] {
+            state.error = Some(message.into());
+            state.take_pending_error();
+            assert!(state.error.is_none());
+        }
+        let messages: Vec<_> = state
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            ["first failure", "second failure", "first failure"]
+        );
+        state.take_pending_error();
+        assert_eq!(state.errors.len(), 3);
+    }
+
+    #[test]
+    fn pending_errors_keep_the_five_newest_in_order() {
+        let mut state = AppState::default();
+        for index in 0..7 {
+            state.error = Some(format!("failure {index}"));
+            state.take_pending_error();
+        }
+        let messages: Vec<_> = state
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "failure 2",
+                "failure 3",
+                "failure 4",
+                "failure 5",
+                "failure 6"
+            ]
+        );
+        state.error = Some("failure 6".into());
+        state.take_pending_error();
+        assert_eq!(state.errors.len(), 5);
+        assert_eq!(state.errors.front().unwrap().message, "failure 2");
+    }
+
+    #[test]
+    fn pending_errors_are_redacted_before_classification_and_deduplication() {
+        let mut state = AppState::default();
+        for userinfo in ["user:secret", "other:password"] {
+            state.error = Some(format!(
+                "fatal: Authentication failed for 'https://{userinfo}@host/o/r.git/'"
+            ));
+            state.take_pending_error();
+        }
+        assert!(state.error.is_none());
+        assert_eq!(state.errors.len(), 1);
+        let error = state.errors.front().unwrap();
+        assert_eq!(error.kind, ErrorKind::SignIn);
+        assert!(error.message.contains("https://[redacted]@host/o/r.git/"));
+        for secret in ["user", "secret", "other", "password"] {
+            assert!(!error.message.contains(secret));
+        }
+    }
 }

@@ -31,23 +31,64 @@ pub fn mark_resolved(file_path: &str, state: SharedState) {
     });
 }
 
-/// Launch the configured merge tool for a conflicted file (fire-and-forget).
+const MERGE_TOOL_GUIDANCE: &str =
+    "Choose a merge tool in App Settings or set merge.tool in Git, or use Resolve in Recorde.";
+
+fn merge_tool(repo: &git2::Repository, configured: &str) -> Result<Option<String>, String> {
+    let tool = crate::external::configured_git_tool(repo, configured, "merge")?
+        .ok_or(MERGE_TOOL_GUIDANCE)?;
+    if matches!(
+        tool.to_ascii_lowercase().as_str(),
+        "vimdiff" | "nvimdiff" | "emerge" | "vimdiff1" | "vimdiff2" | "vimdiff3"
+    ) {
+        return Err(MERGE_TOOL_GUIDANCE.into());
+    }
+    let config = repo.config().map_err(|e| e.to_string())?;
+    if configured.trim().is_empty()
+        && config
+            .get_string("merge.tool")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        Ok(None)
+    } else {
+        Ok(Some(tool))
+    }
+}
+
+/// Launch the configured merge tool without occupying the mutation queue.
 pub fn open_mergetool(file_path: &str, repo_path: &Path, state: SharedState) {
-    let path = repo_path.to_path_buf();
-    let file = file_path.to_string();
-    crate::git::mutation::spawn_operation(path, state, move |path| {
-        run_git_seq(
-            path,
-            &[
-                "--literal-pathspecs",
-                "mergetool",
-                "--no-prompt",
-                "--",
-                &file,
-            ],
-        )
-        .map_err(|e| e.user_message())
-    });
+    let result = (|| {
+        super::safe_path::relative(file_path)?;
+        let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
+        let tool = merge_tool(&repo, &crate::config::Config::load().merge_tool)?;
+        let args = crate::external::merge_tool_args(tool.as_deref(), file_path);
+        crate::external::spawn_git_tool(repo_path, &args)
+    })();
+    match result {
+        Ok(mut child) => {
+            let path = repo_path.to_path_buf();
+            std::thread::spawn(move || {
+                let result = child.wait();
+                let current = state.lock().unwrap().repo_path.as_ref() == Some(&path);
+                if current {
+                    match result {
+                        Err(error) => {
+                            state.lock().unwrap().error =
+                                Some(format!("Merge tool failed: {error}"));
+                        }
+                        Ok(status) if !status.success() => {
+                            state.lock().unwrap().error =
+                                Some(format!("Merge tool exited with {status}."));
+                        }
+                        Ok(_) => {}
+                    }
+                    crate::git::operations::refresh_worktree(state);
+                }
+            });
+        }
+        Err(error) => state.lock().unwrap().error = Some(error),
+    }
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
@@ -101,7 +142,14 @@ pub(crate) fn version(path: &Path, file: &str) -> Result<Version, String> {
             if !metadata.is_file() {
                 return Err("Resolve directory conflicts using an external tool.".into());
             }
-            let mut input = std::fs::File::open(&target).map_err(|e| e.to_string())?;
+            let mut input = super::safe_path::ScopedFile::new(
+                repo.workdir()
+                    .ok_or("Conflict resolution requires a worktree.")?,
+                file,
+            )?
+            .open()
+            .map_err(|e| e.to_string())?;
+            let metadata = input.metadata().map_err(|e| e.to_string())?;
             let mut hasher = Sha256::new();
             let mut buffer = [0u8; 65536];
             loop {
@@ -111,7 +159,7 @@ pub(crate) fn version(path: &Path, file: &str) -> Result<Version, String> {
                 }
                 hasher.update(&buffer[..count]);
             }
-            let after = std::fs::symlink_metadata(&target).map_err(|e| e.to_string())?;
+            let after = input.metadata().map_err(|e| e.to_string())?;
             if after.file_type() != metadata.file_type()
                 || after.len() != metadata.len()
                 || after.modified().ok() != metadata.modified().ok()
@@ -203,6 +251,42 @@ fn resolve_choice(path: &Path, file: &str, side: &str, expected: Version) -> Res
 mod tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn merge_tool_requires_a_non_terminal_selection() {
+        let fixture = TestRepo::new();
+        let repo = fixture.open();
+        let mut config = repo.config().unwrap();
+        // Local empty values shadow any tool configured in the developer's Git config.
+        config.set_str("merge.tool", "").unwrap();
+        config.set_str("merge.guitool", "").unwrap();
+        assert_eq!(merge_tool(&repo, "").unwrap_err(), MERGE_TOOL_GUIDANCE);
+        assert_eq!(
+            merge_tool(&repo, "vimdiff").unwrap_err(),
+            MERGE_TOOL_GUIDANCE
+        );
+        config.set_str("merge.tool", "vimdiff").unwrap();
+        assert_eq!(merge_tool(&repo, "").unwrap_err(), MERGE_TOOL_GUIDANCE);
+        assert_eq!(
+            merge_tool(&repo, "gvimdiff").unwrap().as_deref(),
+            Some("gvimdiff")
+        );
+    }
+
+    #[test]
+    fn merge_launcher_does_not_enter_mutation_queue() {
+        let source = include_str!("conflicts.rs");
+        let launcher = source
+            .split("pub fn open_mergetool(")
+            .nth(1)
+            .unwrap()
+            .split("// ── Internal")
+            .next()
+            .unwrap();
+        assert!(!launcher.contains("mutation::"));
+        assert!(!launcher.contains("reserve("));
+        assert!(launcher.contains("external::spawn_git_tool"));
+    }
 
     fn deleted_by_theirs(file: &str) -> TestRepo {
         let repo = TestRepo::new();

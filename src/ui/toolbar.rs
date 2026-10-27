@@ -1,7 +1,7 @@
 use crate::ui::button::Button;
 use std::path::PathBuf;
 
-use egui::{Context, RichText, Stroke};
+use egui::{RichText, Stroke};
 
 use crate::icons;
 use crate::state::SharedState;
@@ -36,6 +36,8 @@ pub enum ToolbarAction {
     OpenReflog,
     OpenBisect,
     OpenProvider,
+    Undo,
+    Redo,
 }
 
 // ── Overflow item kind (Clone+Copy so we can collect them without owning actions) ──
@@ -90,22 +92,27 @@ impl Toolbar {
 
     pub fn show(
         &mut self,
-        ctx: &Context,
+        root_ui: &mut egui::Ui,
         recent_repos: &[PathBuf],
         dark_theme: bool,
         search_active: bool,
         show_all_branches: bool,
+        enabled: bool,
+        pull_strategy: crate::git::remote::EffectivePull,
     ) -> Option<ToolbarAction> {
         let mut action: Option<ToolbarAction> = None;
 
-        egui::TopBottomPanel::top("toolbar")
-            .exact_height(62.0)
+        egui::Panel::top("toolbar")
+            .exact_size(62.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(theme::bg_toolbar())
-                    .inner_margin(egui::Margin::symmetric(12.0, 0.0)),
+                    .inner_margin(egui::Margin::symmetric(12, 0)),
             )
-            .show(ctx, |ui| {
+            .show(root_ui, |ui| {
+                if !enabled {
+                    ui.disable();
+                }
                 let r = ui.max_rect();
                 ui.painter().line_segment(
                     [r.left_bottom(), r.right_bottom()],
@@ -172,25 +179,25 @@ impl Toolbar {
                                     if repo_path.is_some() {
                                         if ui.button("Copy Path").clicked() {
                                             action = Some(ToolbarAction::CopyRepoPath);
-                                            ui.close_menu();
+                                            ui.close();
                                         }
-                                        if ui.button("Open Terminal").clicked() {
+                                        if ui.button("Open External Terminal").clicked() {
                                             action = Some(ToolbarAction::OpenTerminal);
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         if ui.button("Reveal in File Manager").clicked() {
                                             action = Some(ToolbarAction::RevealInFolder);
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         ui.separator();
                                     }
                                     if ui.button("Clone Repository…").clicked() {
                                         action = Some(ToolbarAction::CloneRepo);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if ui.button("Initialize Repository…").clicked() {
                                         action = Some(ToolbarAction::InitRepo);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 });
 
@@ -238,32 +245,35 @@ impl Toolbar {
                                     "Pull",
                                     has_repo && !busy,
                                 )
-                                .on_hover_text("Fetch + fast-forward  (Ctrl+Shift+P)");
+                                .on_hover_text(format!(
+                                    "{}  (Ctrl+Shift+P)",
+                                    pull_strategy.label()
+                                ));
                                 if pull_btn.clicked() {
                                     action = Some(ToolbarAction::Pull);
                                 }
                                 pull_btn.context_menu(|ui| {
                                     ui.set_min_width(190.0);
-                                    if ui.button("Pull (fast-forward)").clicked() {
+                                    if ui.button(pull_strategy.label()).clicked() {
                                         action = Some(ToolbarAction::Pull);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if ui.button("Pull with Rebase").clicked() {
                                         action = Some(ToolbarAction::PullWithRebase);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
-                                    if ui.button("Pull (ff-only)").clicked() {
+                                    if ui.button("Pull (fast-forward only)").clicked() {
                                         action = Some(ToolbarAction::PullFfOnly);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     ui.separator();
                                     if ui.button("Merge Branch…").clicked() {
                                         action = Some(ToolbarAction::MergeBranch);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if ui.button("Rebase Onto…").clicked() {
                                         action = Some(ToolbarAction::RebaseOnto);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 });
 
@@ -283,15 +293,15 @@ impl Toolbar {
                                     ui.set_min_width(200.0);
                                     if ui.button("Push").clicked() {
                                         action = Some(ToolbarAction::Push);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if ui.button("Force Push with Lease").clicked() {
                                         action = Some(ToolbarAction::PushWithLease);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if ui.button("Push and Set Upstream").clicked() {
                                         action = Some(ToolbarAction::PushSetUpstream);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 });
 
@@ -416,16 +426,11 @@ impl Toolbar {
                                     18.0,
                                     "More actions",
                                 );
-                                if more_btn.clicked() {
-                                    ui.ctx().memory_mut(|m| m.toggle_popup(more_id));
-                                }
                                 let mut overflow_action: Option<ToolbarAction> = None;
-                                egui::popup_below_widget::<()>(
-                                    ui,
-                                    more_id,
-                                    &more_btn,
-                                    egui::PopupCloseBehavior::CloseOnClickOutside,
-                                    |ui: &mut egui::Ui| {
+                                egui::Popup::from_toggle_button_response(&more_btn)
+                                    .id(more_id)
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .show(|ui: &mut egui::Ui| {
                                         ui.set_min_width(190.0);
                                         for item in &overflow {
                                             if ui
@@ -442,11 +447,10 @@ impl Toolbar {
                                                 .clicked()
                                             {
                                                 overflow_action = Some(item.kind.to_action());
-                                                ui.ctx().memory_mut(|m| m.close_popup());
+                                                ui.close();
                                             }
                                         }
-                                    },
-                                );
+                                    });
                                 if overflow_action.is_some() {
                                     action = overflow_action;
                                 }
@@ -465,6 +469,44 @@ impl Toolbar {
                         }
 
                         ui.add_space(8.0);
+                        vsep(ui);
+                        ui.add_space(8.0);
+
+                        // Right-to-left: Redo is placed first so Undo appears on its left.
+                        let (undo, redo) = {
+                            let s = self.state.lock().unwrap();
+                            (s.undo_step.clone(), s.redo_step.clone())
+                        };
+                        let key = if cfg!(target_os = "macos") {
+                            "Cmd"
+                        } else {
+                            "Ctrl"
+                        };
+                        for (step, icon, redo, idle) in [
+                            (&redo, icons::REDO, true, "Nothing to redo"),
+                            (&undo, icons::UNDO, false, "Nothing to undo"),
+                        ] {
+                            let tip = match step {
+                                Some((_, label)) if redo => format!("{label}  ({key}+Shift+Z)"),
+                                Some((_, label)) => format!("{label}  ({key}+Z)"),
+                                None => idle.to_string(),
+                            };
+                            let response = ui
+                                .add_enabled_ui(has_repo && step.is_some() && !busy, |ui| {
+                                    widgets::icon_btn_mat(ui, icon, 18.0, &tip)
+                                })
+                                .inner;
+                            if response.clicked() {
+                                action = Some(if redo {
+                                    ToolbarAction::Redo
+                                } else {
+                                    ToolbarAction::Undo
+                                });
+                            }
+                            ui.add_space(2.0);
+                        }
+
+                        ui.add_space(6.0);
                         vsep(ui);
                         ui.add_space(8.0);
 
@@ -594,7 +636,7 @@ pub fn recent_repositories_menu(
     let mut action = None;
     ui.set_width(
         400.0_f32
-            .min(ui.ctx().screen_rect().width() - 48.0)
+            .min(ui.ctx().content_rect().width() - 48.0)
             .max(240.0),
     );
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
@@ -616,8 +658,8 @@ pub fn recent_repositories_menu(
     ui.add_space(6.0);
     ui.separator();
     egui::ScrollArea::vertical()
-        .id_source("recent_repository_list")
-        .max_height((ui.ctx().screen_rect().height() - 280.0).clamp(112.0, 360.0))
+        .id_salt("recent_repository_list")
+        .max_height((ui.ctx().content_rect().height() - 280.0).clamp(112.0, 360.0))
         .auto_shrink([false, true])
         .show(ui, |ui| {
             if recent.is_empty() {
@@ -660,6 +702,7 @@ pub fn recent_repositories_menu(
                                     row.rect,
                                     7.0,
                                     Stroke::new(1.0, theme::accent_blue()),
+                                    egui::StrokeKind::Middle,
                                 );
                             }
                         }
@@ -727,7 +770,7 @@ pub fn recent_repositories_menu(
                             if !active {
                                 action = Some(ToolbarAction::OpenRepo(path.clone()));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if widgets::icon_btn_mat(
                             ui,
@@ -740,7 +783,7 @@ pub fn recent_repositories_menu(
                         .clicked()
                         {
                             action = Some(ToolbarAction::RemoveFromRecent(path.clone()));
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 });
@@ -750,7 +793,7 @@ pub fn recent_repositories_menu(
     ui.add_space(4.0);
     if widgets::toolbar_btn_icon(ui, icons::FOLDER_OPEN, "Open another repository…", true).clicked()
     {
-        ui.close_menu();
+        ui.close();
         if let Some(path) = rfd::FileDialog::new().pick_folder() {
             action = Some(ToolbarAction::OpenRepo(path));
         }

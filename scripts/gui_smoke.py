@@ -1,6 +1,9 @@
 """Linux startup smoke test with an isolated repository/config and private Xvfb.
 
-Usage: python3 scripts/gui_smoke.py /path/to/recorde /path/to/artifacts [--image-preview | --line-selection]
+Usage: python3 scripts/gui_smoke.py /path/to/recorde /path/to/artifacts [--siege] [--light] [--dpi=1.5] [--review]
+Run through scripts/linux_task.py for bounded ownership and descendant cleanup.
+--review requires RECORDE_UI_INSPECTOR and an app built with ui-inspection; it
+adds native Help, column preferences and repository-browser acceptance captures.
 Requires Xvfb. Image mode also requires libXtst and selects a working image,
 verifying both snapshots' colors in the framebuffer. Line mode checks selected
 index bytes and worktree preservation. Other mode checks startup.
@@ -44,18 +47,35 @@ def main():
     binary, artifacts = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
     recent_menu = "--recent-menu" in sys.argv[3:]
     assert not recent_menu or "--design-review" in sys.argv[3:], "Recent menu fixture requires --design-review"
-    design_review = "--design-review" in sys.argv[3:]
+    feature_review = "--review" in sys.argv[3:]
+    design_review = "--design-review" in sys.argv[3:] or feature_review
     ui_scale = 1.25 if "--scaled" in sys.argv[3:] else 1.0
+    native_scale = float(next((arg.split("=", 1)[1] for arg in sys.argv[3:] if arg.startswith("--dpi=")), "1"))
+    assert native_scale in (1.0, 1.25, 1.5, 2.0), "Supported native DPI: 1, 1.25, 1.5, 2"
+    inspector = os.environ.get("RECORDE_UI_INSPECTOR")
+    assert not feature_review or inspector, "--review requires RECORDE_UI_INSPECTOR pointing to the native inspect_ui example"
+    inspection_address = None
+    if inspector:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            inspection_address = f"127.0.0.1:{probe.getsockname()[1]}"
     compact = "--compact" in sys.argv[3:]
     welcome = "--welcome" in sys.argv[3:]
     light = "--light" in sys.argv[3:]
+    palette = "siege" if "--siege" in sys.argv[3:] else "classic"
     image_preview = "--image-preview" in sys.argv[3:]
     split_selection = "--split-selection" in sys.argv[3:]
     line_selection = "--line-selection" in sys.argv[3:] or split_selection
     frame_profile = "--frame-profile" in sys.argv[3:]
     repository_settings = "--repository-settings" in sys.argv[3:]
     assert not (image_preview and line_selection), "Select one GUI fixture"
+    assert not feature_review or not (welcome or image_preview or line_selection or recent_menu or repository_settings or frame_profile), "--review requires the standard design fixture without welcome or another action fixture"
     artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "smoke-settings.json").write_text(json.dumps({
+        "palette": palette, "dark_theme": not light, "native_scale": native_scale,
+        "ui_scale": ui_scale, "feature_review": feature_review,
+        "inspection": bool(inspector), "binary": str(binary),
+    }, indent=2))
     with tempfile.TemporaryDirectory(prefix="recorde-gui-") as temporary:
         root = Path(temporary)
         repo = root / "fixture"
@@ -65,6 +85,12 @@ def main():
         env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(root / "gitconfig"),
             XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"),
             XDG_RUNTIME_DIR=str(root / "runtime"), RUST_LOG="warn")
+        env["WINIT_X11_SCALE_FACTOR"] = str(native_scale)
+        env.pop("EGUI_INSPECTION_ADDR", None)
+        if inspection_address:
+            env["EGUI_INSPECTION"] = inspection_address
+        else:
+            env.pop("EGUI_INSPECTION", None)
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("WAYLAND_SOCKET", None)
         if frame_profile:
@@ -120,7 +146,7 @@ def main():
             (repo / "accessibility-notes-with-a-long-filename.md").write_text('Keyboard and icon review\n')
         settings = root / "config" / "recorde"
         settings.mkdir(parents=True, exist_ok=True)
-        (settings / "config.toml").write_text(f'dark_theme = {str(not light).lower()}\nfont_scale = {ui_scale}\n')
+        (settings / "config.toml").write_text(f'dark_theme = {str(not light).lower()}\ntheme_palette = "{palette}"\nfont_scale = {ui_scale}\n')
         if recent_menu:
             recent_paths = [repo, root / 'projects' / 'recorde', root / 'archive' / 'recorde', root / 'team' / 'a-repository-with-a-very-long-name', root / 'labs' / 'café-client']
             recent_paths += [root / 'projects' / name for name in ['website', 'shared-components', 'documentation']]
@@ -140,6 +166,7 @@ def main():
         auth.chmod(0o600)
         env.update(DISPLAY=f"127.0.0.1:{display}", XAUTHORITY=str(auth))
         width, height = ((1100, 760) if compact else (1440, 900)) if design_review else (1280, 800)
+        width, height = int(width * native_scale), int(height * native_scale)
         with (artifacts / "xvfb.log").open("w") as server_log:
             server = subprocess.Popen(["Xvfb", f":{display}", "-screen", "0", f"{width}x{height}x24",
                 "-nolisten", "unix", "-listen", "tcp", "-auth", str(auth), "-fbdir", temporary],
@@ -165,6 +192,10 @@ x.XDefaultRootWindow.restype = ctypes.c_ulong
 x.XQueryTree.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)), ctypes.POINTER(ctypes.c_uint)]
 x.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_char_p)]
 x.XResizeWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_uint, ctypes.c_uint]
+x.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+class Attributes(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_int) for name in ('x', 'y', 'width', 'height', 'border_width', 'depth')] + [('visual', ctypes.c_void_p), ('root', ctypes.c_ulong)] + [(name, ctypes.c_int) for name in ('window_class', 'bit_gravity', 'win_gravity', 'backing_store')] + [('backing_planes', ctypes.c_ulong), ('backing_pixel', ctypes.c_ulong), ('save_under', ctypes.c_int), ('colormap', ctypes.c_ulong), ('map_installed', ctypes.c_int), ('map_state', ctypes.c_int)] + [(name, ctypes.c_long) for name in ('all_event_masks', 'your_event_mask', 'do_not_propagate_mask')] + [('override_redirect', ctypes.c_int), ('screen', ctypes.c_void_p)]
+x.XGetWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(Attributes)]
 x.XFlush.argtypes = [ctypes.c_void_p]
 x.XCloseDisplay.argtypes = [ctypes.c_void_p]
 x.XFree.argtypes = [ctypes.c_void_p]
@@ -179,8 +210,12 @@ while True:
         name = ctypes.c_char_p()
         x.XFetchName(d, children[i], ctypes.byref(name))
         if name.value and b'Recorde' in name.value:
-            x.XResizeWindow(d, children[i], WIDTH, HEIGHT)
-            found = True
+            attributes = Attributes()
+            x.XGetWindowAttributes(d, children[i], ctypes.byref(attributes))
+            if attributes.map_state == 2:  # IsViewable; a created window may not yet be mapped.
+                x.XResizeWindow(d, children[i], WIDTH, HEIGHT)
+                x.XSetInputFocus(d, children[i], 1, 0)
+                found = True
         if name: x.XFree(name)
     if children: x.XFree(children)
     if found:
@@ -215,7 +250,7 @@ x.XFlush(d)
 x.XCloseDisplay(d)
 '''
                             if design_review:
-                                click = click.replace("1090, 258", f"{int(width - 190 * ui_scale)}, {int(294 * ui_scale)}")
+                                click = click.replace("1090, 258", f"{int(width - 190 * ui_scale * native_scale)}, {int(294 * ui_scale * native_scale)}")
 
                             subprocess.run([sys.executable, "-c", click], env=env, check=True)
                             time.sleep(2)
@@ -230,7 +265,7 @@ x.XCloseDisplay(d)
                         if recent_menu:
                             # Fixed native fixture: open the toolbar's repository chevron.
                             # Verify removal only changes history, then open another real repo.
-                            base_click = click.replace(f"{int(width - 190 * ui_scale)}, {int(294 * ui_scale)}", "1090, 258")
+                            base_click = click.replace(f"{int(width - 190 * ui_scale * native_scale)}, {int(294 * ui_scale * native_scale)}", "1090, 258")
                             def menu_click(px, py):
                                 subprocess.run([sys.executable, "-c", base_click.replace("1090, 258", f"{px}, {py}")], env=env, check=True)
                                 time.sleep(0.7)
@@ -323,6 +358,18 @@ x.XCloseDisplay(d)'''
                             assert colors.count(bytes((0, 0, 255))) > 100, "Before image was not rendered"
                             assert colors.count(bytes((255, 0, 0))) > 100, "After image was not rendered"
                         png_from_xwd(root / "Xvfb_screen0", artifacts / "gui-smoke.png")
+                        if inspector:
+                            inspector_args = [inspector, inspection_address, str(artifacts)]
+                            if design_review and not welcome:
+                                inspector_args.append("--graph")
+                            if feature_review:
+                                inspector_args.append("--review")
+                            with (artifacts / "inspector.stdout.log").open("w") as inspector_out, (artifacts / "inspector.stderr.log").open("w") as inspector_err:
+                                subprocess.run(inspector_args, env=env, check=True, timeout=120, stdout=inspector_out, stderr=inspector_err)
+                            display_info = json.loads((artifacts / "display.json").read_text())
+                            assert abs(display_info["pixels_per_point"] - native_scale * ui_scale) < 0.01, display_info
+                            capture = (artifacts / "native-frame.png").read_bytes()
+                            assert struct.unpack(">II", capture[16:24]) == (width, height), "Native screenshot has wrong DPI dimensions"
                         if frame_profile:
                             deadline = time.monotonic() + 20
                             while "RECORDE_FRAME_METRICS" not in (artifacts / "gui-smoke.log").read_text(errors="replace"):
@@ -337,10 +384,19 @@ x.XCloseDisplay(d)'''
                     finally:
                         if app.poll() is None:
                             app.terminate()
-                            app.wait(timeout=5)
+                            try:
+                                app.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                app.kill()
+                                app.wait(timeout=5)
             finally:
-                server.terminate()
-                server.wait(timeout=5)
+                if server.poll() is None:
+                    server.terminate()
+                    try:
+                        server.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        server.kill()
+                        server.wait(timeout=5)
 
 
 if __name__ == "__main__":

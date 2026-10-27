@@ -15,6 +15,8 @@ pub struct RepoConfig {
     pub diff_preferences: DiffPreferences,
     #[serde(default)]
     pub layout: Option<RepoLayout>,
+    #[serde(default)]
+    pub graph_preferences: crate::ui::commit_graph::GraphPreferences,
     /// Exact HTTPS authority to selected account username; contains no secrets.
     #[serde(default)]
     pub provider_accounts: std::collections::HashMap<String, String>,
@@ -141,6 +143,7 @@ pub struct RepoLayout {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum PullStrategy {
     #[default]
+    GitConfig,
     Merge,
     Rebase,
     FfOnly,
@@ -149,6 +152,7 @@ pub enum PullStrategy {
 impl PullStrategy {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::GitConfig => "Use Git configuration",
             Self::Merge => "Merge",
             Self::Rebase => "Rebase",
             Self::FfOnly => "Fast-forward only",
@@ -156,8 +160,16 @@ impl PullStrategy {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// A failed load must never turn into an overwrite with default settings.
+    #[serde(skip)]
+    pub load_error: Option<String>,
+    /// Public registration metadata only. Tokens and refresh tokens live in the vault.
+    #[serde(default)]
+    pub oauth_clients: std::collections::BTreeMap<String, crate::auth::oauth::Client>,
+    #[serde(default)]
+    pub shortcuts: crate::commands::Shortcuts,
     #[serde(default)]
     pub favorites: Vec<PathBuf>,
     #[serde(default)]
@@ -171,6 +183,8 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub dark_theme: bool,
     #[serde(default)]
+    pub theme_palette: crate::theme::Palette,
+    #[serde(default)]
     pub high_contrast: bool,
     #[serde(default)]
     pub default_editor: String,
@@ -183,6 +197,9 @@ pub struct Config {
     /// Provider accounts (no tokens — tokens live in the token store).
     #[serde(default)]
     pub accounts: Vec<StoredAccount>,
+    /// Default account selections, replaced when applying a global profile.
+    #[serde(default)]
+    pub provider_accounts: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub pull_strategy: PullStrategy,
     #[serde(default)]
@@ -213,6 +230,15 @@ pub struct Config {
     pub right_panel_width: Option<f32>,
     #[serde(default)]
     pub diff_panel_height: Option<f32>,
+    /// Named commit identities; see Settings > Accounts & SSH.
+    #[serde(default)]
+    pub profiles: Vec<crate::profiles::Profile>,
+    /// Off by default: showing pictures sends a hash of each author's email
+    /// address to Gravatar.
+    #[serde(default)]
+    pub gravatar: bool,
+    #[serde(default)]
+    pub show_terminal: bool,
 }
 
 fn default_true() -> bool {
@@ -229,6 +255,15 @@ fn default_font_scale() -> f32 {
 }
 
 impl Config {
+    /// Repository selections override the active global profile's defaults.
+    pub fn account_binding(&self, repo_path: Option<&Path>, host: &str) -> Option<String> {
+        repo_path
+            .and_then(|path| self.per_repo.get(&path.display().to_string()))
+            .and_then(|repo| repo.provider_accounts.get(host))
+            .or_else(|| self.provider_accounts.get(host))
+            .cloned()
+    }
+
     pub fn remember_layout(&mut self, path: &Path) {
         let layout = RepoLayout {
             show_sidebar: self.show_sidebar,
@@ -256,12 +291,27 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        Self::try_load().unwrap_or_else(|_| toml::from_str("").unwrap_or_default())
+        Self::load_from(&config_path())
+    }
+
+    fn load_from(path: &Path) -> Self {
+        Self::try_load_from(path).unwrap_or_else(|error| {
+            let mut defaults: Self = toml::from_str("").unwrap_or_default();
+            defaults.load_error = Some(format!(
+                "{error} Your existing file is preserved; settings will not be saved. Repair {} and restart Recorde.",
+                path.display()
+            ));
+            defaults
+        })
     }
 
     /// Authentication must not silently ignore a corrupt account binding.
     pub fn try_load() -> Result<Self, String> {
-        match std::fs::read_to_string(config_path()) {
+        Self::try_load_from(&config_path())
+    }
+
+    fn try_load_from(path: &Path) -> Result<Self, String> {
+        match std::fs::read_to_string(path) {
             Ok(content) => toml::from_str(&content).map_err(|_| {
                 "Application configuration is invalid; account selection cannot be resolved.".into()
             }),
@@ -279,8 +329,16 @@ impl Config {
     }
 
     pub fn try_save(&self) -> Result<(), String> {
+        self.try_save_to(&config_path())
+    }
+
+    fn try_save_to(&self, path: &Path) -> Result<(), String> {
         use std::io::Write;
-        let path = config_path();
+        if let Some(error) = &self.load_error {
+            return Err(error.clone());
+        }
+        // Also protect a file edited into an invalid state after startup.
+        Self::try_load_from(path)?;
         let parent = path.parent().ok_or("Invalid configuration path.")?;
         std::fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory.")?;
         let content =
@@ -292,7 +350,7 @@ impl Config {
         temp.as_file()
             .sync_all()
             .map_err(|_| "Cannot sync configuration.")?;
-        temp.persist(&path)
+        temp.persist(path)
             .map_err(|_| "Cannot replace configuration.")?;
         Ok(())
     }
@@ -348,7 +406,7 @@ impl Config {
 }
 
 fn config_path() -> PathBuf {
-    dirs::config_dir()
+    crate::app_dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("recorde")
         .join("config.toml")
@@ -357,6 +415,46 @@ fn config_path() -> PathBuf {
 #[cfg(test)]
 mod session_tests {
     use super::*;
+
+    #[test]
+    fn pull_defaults_to_git_config_and_preserves_saved_choices() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.pull_strategy, PullStrategy::GitConfig);
+        for (saved, expected) in [
+            ("GitConfig", PullStrategy::GitConfig),
+            ("Merge", PullStrategy::Merge),
+            ("Rebase", PullStrategy::Rebase),
+            ("FfOnly", PullStrategy::FfOnly),
+        ] {
+            let config: Config = toml::from_str(&format!("pull_strategy = \"{saved}\"\n")).unwrap();
+            assert_eq!(config.pull_strategy, expected);
+        }
+    }
+
+    #[test]
+    fn corrupt_configuration_is_preserved_across_load_and_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "favorites = [\"important\"]\n[shortcuts\n";
+        std::fs::write(&path, original).unwrap();
+        let mut config = Config::load_from(&path);
+        assert!(config.load_error.is_some());
+        config.dark_theme = false;
+        assert!(config.try_save_to(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        std::fs::write(&path, "favorites = [\"important\"]\n").unwrap();
+        // Restart/reload is required to avoid overwriting repaired data with defaults.
+        assert!(config.try_save_to(&path).is_err());
+        let config = Config::load_from(&path);
+        config.try_save_to(&path).unwrap();
+        assert_eq!(
+            Config::try_load_from(&path).unwrap().favorites,
+            vec![PathBuf::from("important")]
+        );
+        std::fs::write(&path, original).unwrap();
+        assert!(config.try_save_to(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
     #[test]
     fn navigation_round_trip_restores_selection_and_drops_stale_refs() {
         let repo = crate::git::test_support::TestRepo::new();

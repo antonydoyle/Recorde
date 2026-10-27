@@ -182,11 +182,45 @@ pub struct LocalJob {
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Progress is kept beside local jobs so existing LocalJob literals remain compatible.
+#[derive(Clone)]
+pub(crate) struct JobProgressHandle {
+    id: u64,
+    state: Weak<Mutex<crate::state::AppState>>,
+}
+
+impl JobProgressHandle {
+    pub(crate) fn update(&self, message: &str, pct: Option<u8>) {
+        if let Some(state) = self.state.upgrade() {
+            let mut state = state.lock().unwrap();
+            if state.local_jobs.iter().any(|job| job.id == self.id) {
+                state.local_job_progress.insert(
+                    self.id,
+                    (
+                        crate::auth::redact::text(message),
+                        pct.map(|pct| pct.min(100)),
+                    ),
+                );
+            }
+        }
+    }
+}
+
 pub(crate) fn spawn_job<T: Send + 'static>(
     path: PathBuf,
     label: &str,
     state: crate::state::SharedState,
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
+    complete: impl FnOnce(Result<T, String>, crate::state::SharedState) + Send + 'static,
+) {
+    spawn_job_with_progress(path, label, state, move |_| work(), complete);
+}
+
+pub(crate) fn spawn_job_with_progress<T: Send + 'static>(
+    path: PathBuf,
+    label: &str,
+    state: crate::state::SharedState,
+    work: impl FnOnce(JobProgressHandle) -> Result<T, String> + Send + 'static,
     complete: impl FnOnce(Result<T, String>, crate::state::SharedState) + Send + 'static,
 ) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -200,6 +234,10 @@ pub(crate) fn spawn_job<T: Send + 'static>(
         running: false,
         cancel: cancel.clone(),
     });
+    let progress = JobProgressHandle {
+        id,
+        state: Arc::downgrade(&state),
+    };
     std::thread::spawn(move || {
         let locks = if reservation.wait_cancelled(&cancel) {
             reservation.lock_process(&cancel)
@@ -218,7 +256,7 @@ pub(crate) fn spawn_job<T: Send + 'static>(
                     job.running = true;
                 }
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    super::process::with_cancellation(cancel, work)
+                    super::process::with_cancellation(cancel, || work(progress))
                 }))
                 .unwrap_or_else(|_| {
                     Err(
@@ -230,7 +268,11 @@ pub(crate) fn spawn_job<T: Send + 'static>(
             Err(error) => Err(error),
         };
         drop(reservation);
-        state.lock().unwrap().local_jobs.retain(|job| job.id != id);
+        {
+            let mut state = state.lock().unwrap();
+            state.local_jobs.retain(|job| job.id != id);
+            state.local_job_progress.remove(&id);
+        }
         complete(result, state);
     });
 }
@@ -304,6 +346,100 @@ pub(crate) fn spawn_operation(
 mod tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn local_job_cancellation_reaches_an_unlimited_running_process() {
+        if let Some(marker) = std::env::var_os("RECORDE_UNLIMITED_LOCAL_JOB") {
+            std::fs::write(marker, b"started").unwrap();
+            // Bound the fixture even if the parent's cancellation assertion fails.
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("started");
+        let child_marker = marker.clone();
+        let state = crate::state::new_shared_state();
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_job(
+            root.path().into(),
+            "Commit hook cancellation fixture",
+            state.clone(),
+            move || {
+                let mut command =
+                    super::super::process::background_command(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        concat!(
+                            "git::mutation::tests::",
+                            "local_job_cancellation_reaches_an_unlimited_running_process"
+                        ),
+                        "--nocapture",
+                    ])
+                    .env("RECORDE_UNLIMITED_LOCAL_JOB", child_marker);
+                super::super::process::run_with_deadline(
+                    &mut command,
+                    &std::sync::atomic::AtomicBool::new(false),
+                    super::super::process::Deadline::None,
+                )
+                .map(|_| ())
+                .map_err(|error| error.user_message())
+            },
+            move |result, _| tx.send(result).unwrap(),
+        );
+        let cancel = state.lock().unwrap().local_jobs[0].cancel.clone();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        let result = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(marker.exists(), "fixture did not start");
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(state.lock().unwrap().local_jobs.is_empty());
+    }
+
+    #[test]
+    fn local_job_progress_is_published_and_retired_on_completion() {
+        let root = tempfile::tempdir().unwrap();
+        let state = crate::state::new_shared_state();
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        spawn_job_with_progress(
+            root.path().into(),
+            "Clone fixture",
+            state.clone(),
+            move |progress| {
+                progress.update("Receiving objects", Some(45));
+                progress_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .map_err(|error| error.to_string())
+            },
+            move |result, _| done_tx.send(result).unwrap(),
+        );
+        progress_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        {
+            let state = state.lock().unwrap();
+            let job = &state.local_jobs[0];
+            assert_eq!(
+                state.local_job_progress.get(&job.id),
+                Some(&("Receiving objects".into(), Some(45)))
+            );
+        }
+        release_tx.send(()).unwrap();
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert!(state.local_jobs.is_empty());
+        assert!(state.local_job_progress.is_empty());
+    }
+
     #[test]
     fn separate_process_waits_for_repository_lock_and_resumes_after_release() {
         use std::sync::atomic::AtomicBool;

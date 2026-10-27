@@ -2,11 +2,16 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Default)]
 pub struct RepoCapabilities {
+    /// Git's choice for the current branch; the UI applies explicit app overrides.
+    pub pull_strategy: super::remote::EffectivePull,
     pub provider_target: Option<(String, String)>,
     pub is_bare: bool,
     pub is_detached_head: bool,
     pub merge_in_progress: bool,
+    pub squash_merge_in_progress: bool,
     pub rebase_in_progress: bool,
+    pub rebase_edit: bool,
+    pub rebase_split: bool,
     pub cherry_pick_in_progress: bool,
     pub revert_in_progress: bool,
     pub has_submodules: bool,
@@ -24,6 +29,7 @@ pub enum ProviderType {
     GitHub,
     GitLab,
     Bitbucket,
+    AzureDevOps,
     #[default]
     Unknown,
 }
@@ -40,7 +46,8 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
     let is_detached_head = repo.head_detached().unwrap_or(false);
 
     // In-progress state: look for the sentinel files git uses
-    let merge_in_progress = git_dir.join("MERGE_HEAD").exists();
+    let squash_merge_in_progress = super::merge::squash_in_progress(&repo);
+    let merge_in_progress = git_dir.join("MERGE_HEAD").exists() || squash_merge_in_progress;
     let cherry_pick_in_progress = git_dir.join("CHERRY_PICK_HEAD").exists();
     let revert_in_progress = git_dir.join("REVERT_HEAD").exists();
     let rebase_in_progress =
@@ -77,6 +84,10 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
     let provider = detect_provider(&repo);
 
     RepoCapabilities {
+        pull_strategy: super::remote::configured_pull(
+            &repo,
+            &crate::config::PullStrategy::GitConfig,
+        ),
         provider_target: super::remote::provider_remote(&repo).ok().and_then(|name| {
             let url = repo.find_remote(&name).ok()?.url().ok()?.to_string();
             Some((name, url))
@@ -84,7 +95,10 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
         is_bare,
         is_detached_head,
         merge_in_progress,
+        squash_merge_in_progress,
         rebase_in_progress,
+        rebase_edit: super::rebase::is_edit_pause(&repo),
+        rebase_split: git_dir.join("rebase-merge/recorde-split").is_file(),
         cherry_pick_in_progress,
         revert_in_progress,
         has_submodules,
@@ -115,6 +129,7 @@ fn detect_provider(repo: &git2::Repository) -> ProviderType {
         "github.com" => return ProviderType::GitHub,
         "gitlab.com" => return ProviderType::GitLab,
         "bitbucket.org" => return ProviderType::Bitbucket,
+        "dev.azure.com" => return ProviderType::AzureDevOps,
         _ => {}
     }
     let config = crate::config::Config::load();
@@ -137,6 +152,8 @@ fn detect_provider(repo: &git2::Repository) -> ProviderType {
         Some(crate::auth::ProviderKind::GitLabCom | crate::auth::ProviderKind::GitLabSelf) => {
             ProviderType::GitLab
         }
+        Some(crate::auth::ProviderKind::BitbucketCloud) => ProviderType::Bitbucket,
+        Some(crate::auth::ProviderKind::AzureDevOps) => ProviderType::AzureDevOps,
         None => ProviderType::Unknown,
     }
 }

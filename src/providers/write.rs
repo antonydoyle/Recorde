@@ -96,7 +96,13 @@ pub fn prepare(
         crate::git::operations::resolve_repo_info_for_remote(&path, &remote)?;
     let (account, _) = crate::auth::store::lookup_for_api(&remote_url, &path)?
         .ok_or("No account selected for this provider.")?;
-    if !matches!(provider, ProviderType::GitHub | ProviderType::GitLab) {
+    if !matches!(
+        provider,
+        ProviderType::GitHub
+            | ProviderType::GitLab
+            | ProviderType::Bitbucket
+            | ProviderType::AzureDevOps
+    ) {
         return Err("This provider does not support in-app writes.".into());
     }
     let mut projects = vec![format!("{owner}/{project}")];
@@ -144,6 +150,18 @@ pub fn execute(context: &Context, action: &Action) -> Result<String, String> {
     if account != context.account {
         return Err("Selected account changed. Reopen this form before submitting.".into());
     }
+    let (owner_now, project_now, host_now, _, provider_now) =
+        crate::git::operations::resolve_repo_info_for_remote(&context.path, &context.remote)?;
+    if provider_now != context.provider
+        || host_now != context.host
+        || owner_now != context.owner
+        || project_now != context.project
+    {
+        return Err(
+            "Provider destination or account type changed. Reopen this form before submitting."
+                .into(),
+        );
+    }
     let component = super::pagination::component;
     validate(action, &context.provider)?;
     let project_path = match action {
@@ -152,7 +170,10 @@ pub fn execute(context: &Context, action: &Action) -> Result<String, String> {
             target_project,
             ..
         } => {
-            let selected = if context.provider == ProviderType::GitHub {
+            let selected = if matches!(
+                context.provider,
+                ProviderType::GitHub | ProviderType::Bitbucket | ProviderType::AzureDevOps
+            ) {
                 target_project
             } else {
                 source_project
@@ -182,12 +203,37 @@ pub fn execute(context: &Context, action: &Action) -> Result<String, String> {
             context.host,
             component(&project_path)
         ),
+        ProviderType::Bitbucket => super::bitbucket::base(owner, project),
+        ProviderType::AzureDevOps => super::azure::base(owner, project)?,
         _ => return Err("Unsupported provider.".into()),
     };
-    execute_at(&base, &context.provider, &token, action)
+    match context.provider {
+        ProviderType::Bitbucket => {
+            super::bitbucket::execute(&base, &super::bitbucket::basic(&account, &token), action)
+        }
+        ProviderType::AzureDevOps => {
+            super::azure::execute(&base, &super::bitbucket::basic("", &token), action)
+        }
+        _ => execute_at(&base, &context.provider, &token, action),
+    }
 }
 
 pub(crate) fn validate(action: &Action, provider: &ProviderType) -> Result<(), String> {
+    if matches!(
+        provider,
+        ProviderType::Bitbucket | ProviderType::AzureDevOps
+    ) {
+        match action {
+            Action::Merge { .. } if *provider == ProviderType::Bitbucket => return Err("Bitbucket Cloud cannot atomically guard the source commit on merge. Open the pull request in Bitbucket to merge.".into()),
+            Action::Merge { queue: true, .. } => return Err("Merge queues are unavailable for this provider.".into()),
+            Action::Review { decision, body, .. } if *decision != Decision::Comment && !body.trim().is_empty() => return Err("Submit comments separately from review votes.".into()),
+            Action::Create { source_project, target_project, body, .. } if *provider == ProviderType::AzureDevOps => {
+                if source_project.split('/').next() != target_project.split('/').next() { return Err("Azure fork pull requests must stay within one organization.".into()); }
+                if body.chars().count() > 4000 { return Err("Azure descriptions must not exceed 4000 characters.".into()); }
+            }
+            _ => {}
+        }
+    }
     match action {
         Action::Create {
             source_project,
@@ -212,14 +258,17 @@ pub(crate) fn validate(action: &Action, provider: &ProviderType) -> Result<(), S
                     let parts: Vec<_> = project.split('/').collect();
                     if project.len() > 512
                         || parts.len() < 2
-                        || (*provider == ProviderType::GitHub && parts.len() != 2)
+                        || (matches!(provider, ProviderType::GitHub | ProviderType::Bitbucket)
+                            && parts.len() != 2)
+                        || (*provider == ProviderType::AzureDevOps && parts.len() != 3)
                         || parts.iter().any(|p| {
                             p.is_empty()
                                 || *p == "."
                                 || *p == ".."
                                 || p.chars().any(|c| {
                                     c.is_control()
-                                        || c.is_whitespace()
+                                        || (*provider != ProviderType::AzureDevOps
+                                            && c.is_whitespace())
                                         || matches!(c, ':' | '\\' | '?' | '#')
                                 })
                         })
@@ -244,7 +293,10 @@ pub(crate) fn validate(action: &Action, provider: &ProviderType) -> Result<(), S
             inline,
         } => {
             validate_identity(*number, head, target)?;
-            if *decision != Decision::Approve && body.trim().is_empty() {
+            if (*decision == Decision::Comment
+                || (*provider == ProviderType::GitHub && *decision == Decision::RequestChanges))
+                && body.trim().is_empty()
+            {
                 return Err("Enter the review text.".into());
             }
             if body.len() > 60_000 {
@@ -313,16 +365,8 @@ fn execute_at(
     let github = *provider == ProviderType::GitHub;
     let collection = if github { "pulls" } else { "merge_requests" };
     let root = format!("{base}/{collection}");
-    let auth = if github {
-        format!("Bearer {token}")
-    } else {
-        token.into()
-    };
-    let header = if github {
-        "Authorization"
-    } else {
-        "PRIVATE-TOKEN"
-    };
+    let auth = format!("Bearer {token}");
+    let header = "Authorization";
     let mut inline_position = None;
     if let Action::Review {
         number,
@@ -625,7 +669,7 @@ fn execute_at(
     }
 }
 
-fn send(
+pub(super) fn send(
     method: &str,
     url: &str,
     header: &str,
@@ -672,6 +716,7 @@ fn send(
     if !(200..300).contains(&status) {
         let detail = value["message"]
             .as_str()
+            .or_else(|| value["error"]["message"].as_str())
             .or_else(|| value["error"].as_str())
             .unwrap_or("");
         let hint = match status {

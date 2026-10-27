@@ -8,8 +8,10 @@ identity fields and control characters are rejected. Missing-identity errors
 point back to these settings and preserve the commit draft.
 
 Commit signing supports Git's OpenPGP, SSH and X.509 formats, with a key ID,
-public key, or existing key path. It uses your installed signing tool and agent;
-Recorde does not import private keys or collect passphrases. Signing failures
+public key, or existing key path. Signing operations use your installed signing
+tool and agent, which handle any passphrase prompts. The separate SSH key
+generator accepts an optional encryption passphrase, processes it in the app,
+and does not persist the passphrase. Signing failures
 retain the draft and never trigger an unsigned retry. A blank OpenPGP/X.509 key
 removes this scope's key override so Git can use its inherited/default key.
 Saving uses the current worktree's settings when `extensions.worktreeConfig`
@@ -51,12 +53,16 @@ The `Config` model contains:
 - `dark_theme`: enabled by default.
 - `high_contrast`: high contrast UI mode.
 - `default_editor`: external editor command.
-- `terminal`: external terminal command.
-- `diff_tool`: external diff tool command.
-- `merge_tool`: external merge tool command.
+- `terminal`: external terminal executable and optional literal arguments.
+- `diff_tool`: Git diff tool name; falls back to Git's `diff.tool` or `diff.guitool`.
+- `merge_tool`: Git merge tool name; falls back to Git's `merge.tool` or `merge.guitool`.
 - `signoff_default`: default commit sign-off behavior.
 - `protected_branches`: defaults to `main` and `master`.
-- `pull_strategy`: `Merge`, `Rebase`, or `FfOnly`.
+- `pull_strategy`: `GitConfig` (default), `Merge`, `Rebase`, or `FfOnly`. Existing saved choices
+  are preserved. "Use Git configuration (recommended)" honours `branch.<name>.rebase` before
+  `pull.rebase`, then `pull.ff` when rebase is disabled. `pull.ff=only` refuses divergence;
+  `pull.ff=false` creates a merge commit even when a fast-forward is possible. Explicit app
+  strategies override these Git pull settings.
 - `fetch_prune`: fetch pruning preference.
 - `auto_fetch` and `auto_fetch_interval_secs`.
 - `font_scale`.
@@ -129,3 +135,8 @@ Checkout recovery refuses a moved original branch or one checked out elsewhere.
 Continue/Abort/Skip finalize only a checkpoint matching native sequencer files and
 HEAD; external sequencer changes leave a snapshot for manual recovery. Selected
 range discard captures the confirmed diff and refuses changes before execution.
+
+
+### Keyboard shortcut overrides
+
+`shortcuts` stores overrides keyed by command identity. Each value contains `key`, `shift`, and `alt`; the platform command modifier is always required (Control on Windows/Linux, Command on macOS). An absent entry uses the command default, and an empty key disables it. Settings > Keyboard validates conflicts and restores defaults. Unknown command identities are retained for compatibility but never dispatched; conflicting bindings in a hand-edited file do not execute either command.

@@ -172,10 +172,31 @@ fn spawn_repo_load(path: PathBuf, id: u64, state: SharedState) {
         } else {
             None
         };
+        let first_bad = if bisect_active {
+            crate::git::reflog::bisect_first_bad(&path)
+        } else {
+            None
+        };
+        let history = crate::git::recovery::undo_history(&path);
+        let flow = crate::git::gitflow::config(&path);
         let success = result.is_ok();
         let mut s = state.lock().unwrap();
         let switching = s.repo_path.as_ref() != Some(&path);
         apply_repo_result(&mut s, path.clone(), id, result, bisect_active, bisect_oid);
+        if success && s.repo_load_id == id && s.repo_path.as_ref() == Some(&path) {
+            s.bisect_first_bad = first_bad;
+            s.undo_step = history.next(false);
+            s.redo_step = history.next(true);
+            s.git_flow = flow;
+            if let Some(graph) = s.commit_graph.clone() {
+                // Rewritten or hidden commits leave the multi-selection.
+                s.selected_commits
+                    .retain(|oid| graph.oid_to_row.contains_key(oid));
+                if s.selected_commits.len() < 2 {
+                    s.selected_commits.clear();
+                }
+            }
+        }
         let selection = if success
             && s.repo_load_id == id
             && s.repo_path.as_ref() == Some(&path)
@@ -575,6 +596,7 @@ fn collect_status(repo: &git2::Repository) -> Result<(usize, Vec<WorkingDirFile>
         .config()?
         .get_bool("core.sparseCheckout")
         .unwrap_or(false)
+        || !super::replacement::refs(repo)?.is_empty()
     {
         let output = super::process::git(
             repo.workdir().unwrap_or(repo.path()),
@@ -590,7 +612,7 @@ fn collect_status(repo: &git2::Repository) -> Result<(usize, Vec<WorkingDirFile>
         .map_err(|e| git2::Error::from_str(&e.user_message()))?;
         if output.stdout.len() >= 1024 * 1024 {
             return Err(git2::Error::from_str(
-                "Sparse status exceeds the display limit. Narrow the checkout or commit changes.",
+                "Git status exceeds the display limit. Narrow the checkout or commit changes.",
             ));
         }
         let mut records = output
@@ -722,6 +744,32 @@ pub(crate) fn compute_workdir_diff(
     staged: bool,
 ) -> Result<FileDiff, git2::Error> {
     let repo = git2::Repository::open(repo_path)?;
+    if !super::replacement::refs(&repo)?.is_empty()
+        && (staged || repo.index()?.get_path(Path::new(file_path), 0).is_some())
+    {
+        let mut args = vec![
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "-M",
+        ];
+        if staged {
+            args.push("--cached");
+        }
+        args.push("--");
+        let output =
+            super::process::git(repo_path, &args, &std::sync::atomic::AtomicBool::new(false))
+                .map_err(|e| git2::Error::from_str(&e.user_message()))?;
+        return parse_diff(
+            &repo,
+            git2::Diff::from_buffer(&output.stdout)?,
+            "",
+            file_path,
+            !staged,
+        );
+    }
     let mut opts = git2::DiffOptions::new();
     opts.show_binary(true).disable_pathspec_match(true);
     if !staged {
@@ -915,18 +963,29 @@ pub fn load_commit_detail(oid_str: &str, state: SharedState) {
 fn compute_commit_detail(path: &Path, oid_str: &str) -> Result<CommitDetail, git2::Error> {
     let repo = git2::Repository::open(path)?;
     let oid = git2::Oid::from_str(oid_str)?;
-    let commit = repo.find_commit(oid)?;
+    let commit = super::replacement::commit(&repo, oid)?;
 
     let tree = commit.tree()?;
-    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let parent_tree = commit
+        .parent_id(0)
+        .ok()
+        .and_then(|id| super::replacement::commit(&repo, id).ok())
+        .and_then(|p| p.tree().ok());
 
-    let mut diff = repo.diff_tree_to_tree(
-        parent_tree.as_ref(),
-        Some(&tree),
-        Some(git2::DiffOptions::new().ignore_whitespace_change(false)),
-    )?;
+    let mut diff = if super::replacement::refs(&repo)?.is_empty() {
+        repo.diff_tree_to_tree(
+            parent_tree.as_ref(),
+            Some(&tree),
+            Some(git2::DiffOptions::new().ignore_whitespace_change(false)),
+        )?
+    } else {
+        let parent = commit.parent_id(0).ok().map(|id| id.to_string());
+        super::replacement::diff(&repo, parent.as_deref(), oid_str)?
+    };
 
-    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    if super::replacement::refs(&repo)?.is_empty() {
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    }
     let mut changed_files: Vec<ChangedFile> = Vec::new();
 
     diff.foreach(
@@ -1016,16 +1075,27 @@ fn compute_diff(
 ) -> Result<FileDiff, git2::Error> {
     let repo = git2::Repository::open(repo_path)?;
     let oid = git2::Oid::from_str(commit_oid)?;
-    let commit = repo.find_commit(oid)?;
+    let commit = super::replacement::commit(&repo, oid)?;
     let tree = commit.tree()?;
-    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let parent_tree = commit
+        .parent_id(0)
+        .ok()
+        .and_then(|id| super::replacement::commit(&repo, id).ok())
+        .and_then(|p| p.tree().ok());
 
     let mut opts = git2::DiffOptions::new();
     opts.show_binary(true);
 
-    let mut diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+    let mut diff = if super::replacement::refs(&repo)?.is_empty() {
+        repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?
+    } else {
+        let parent = commit.parent_id(0).ok().map(|id| id.to_string());
+        super::replacement::diff(&repo, parent.as_deref(), commit_oid)?
+    };
 
-    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    if super::replacement::refs(&repo)?.is_empty() {
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    }
     parse_diff(&repo, diff, commit_oid, file_path, false)
 }
 
@@ -1101,8 +1171,14 @@ fn compute_compare_files(
     let repo = git2::Repository::open(repo_path)?;
     let base_tree = repo.find_commit(git2::Oid::from_str(base_oid)?)?.tree()?;
     let cmp_tree = repo.find_commit(git2::Oid::from_str(cmp_oid)?)?.tree()?;
-    let mut diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), None)?;
-    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    let mut diff = if super::replacement::refs(&repo)?.is_empty() {
+        repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), None)?
+    } else {
+        super::replacement::diff(&repo, Some(base_oid), cmp_oid)?
+    };
+    if super::replacement::refs(&repo)?.is_empty() {
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    }
     let mut files = Vec::new();
     diff.foreach(
         &mut |delta, _| {
@@ -1174,8 +1250,14 @@ fn compute_compare_diff(
     let cmp_tree = repo.find_commit(git2::Oid::from_str(cmp_oid)?)?.tree()?;
     let mut opts = git2::DiffOptions::new();
     opts.show_binary(true);
-    let mut diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), Some(&mut opts))?;
-    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    let mut diff = if super::replacement::refs(&repo)?.is_empty() {
+        repo.diff_tree_to_tree(Some(&base_tree), Some(&cmp_tree), Some(&mut opts))?
+    } else {
+        super::replacement::diff(&repo, Some(base_oid), cmp_oid)?
+    };
+    if super::replacement::refs(&repo)?.is_empty() {
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    }
     parse_diff(&repo, diff, cmp_oid, file_path, false)
 }
 
@@ -1216,6 +1298,12 @@ pub fn load_prs(state: crate::state::SharedState) {
                 }
                 ProviderType::GitLab => {
                     crate::providers::gitlab::list_mrs(&host, &owner, &repo, &token, api_state)
+                }
+                ProviderType::Bitbucket => {
+                    crate::providers::bitbucket::list_prs(&owner, &repo, &token, api_state)
+                }
+                ProviderType::AzureDevOps => {
+                    crate::providers::azure::list_prs(&owner, &repo, &token, api_state)
                 }
                 _ => Err("Provider is not supported for in-app PR listing.".into()),
             }?;
@@ -1279,6 +1367,12 @@ pub fn load_pr_details(state: SharedState) {
                 capabilities::ProviderType::GitLab => {
                     crate::providers::gitlab::details(&host, &owner, &repo, number, &token)
                 }
+                capabilities::ProviderType::Bitbucket => {
+                    crate::providers::bitbucket::details(&owner, &repo, number, &token)
+                }
+                capabilities::ProviderType::AzureDevOps => {
+                    crate::providers::azure::details(&owner, &repo, number, &token)
+                }
                 _ => Err("Review details are not supported for this provider.".into()),
             }?;
             if queue {
@@ -1299,7 +1393,7 @@ pub fn load_pr_details(state: SharedState) {
                         &item.base_ref,
                         &token,
                     ),
-                    _ => unreachable!(),
+                    _ => Err("Merge queues are unavailable for this provider.".into()),
                 };
                 item.queue_status = Some(match status {
                     Ok(status) => status,
@@ -1392,11 +1486,20 @@ pub(crate) fn resolve_repo_info_for_remote(
         Some(ProviderKind::GitLabCom | ProviderKind::GitLabSelf) => ProviderType::GitLab,
         None if endpoint.host == "github.com" => ProviderType::GitHub,
         None if endpoint.host == "gitlab.com" => ProviderType::GitLab,
+        Some(ProviderKind::BitbucketCloud) => ProviderType::Bitbucket,
+        Some(ProviderKind::AzureDevOps) => ProviderType::AzureDevOps,
+        None if endpoint.host == "bitbucket.org" => ProviderType::Bitbucket,
+        None if endpoint.host == "dev.azure.com" => ProviderType::AzureDevOps,
         _ => {
             return Err(
                 "Choose the provider type for this host in Settings > Accounts & SSH.".into(),
             )
         }
+    };
+    let token = match provider {
+        ProviderType::Bitbucket => crate::providers::bitbucket::basic(&user, &token),
+        ProviderType::AzureDevOps => crate::providers::bitbucket::basic("", &token),
+        _ => token,
     };
     Ok((
         endpoint.namespace,
@@ -1426,6 +1529,8 @@ pub fn load_issues(state: crate::state::SharedState) {
                 ProviderType::GitLab => {
                     crate::providers::gitlab::list_issues(&host, &owner, &repo, &token, api_state)
                 }
+                ProviderType::Bitbucket => Err("Bitbucket Cloud retired its issue tracker in August 2026. Use your linked Jira project in a browser.".into()),
+                ProviderType::AzureDevOps => crate::providers::azure::list_issues(&owner, &token, api_state),
                 _ => Err(format!(
                     "Provider at {} not yet supported for issues.",
                     host
@@ -1473,6 +1578,12 @@ pub fn load_ci_runs(state: crate::state::SharedState) {
                 ProviderType::GitLab => {
                     crate::providers::gitlab::list_pipelines(&host, &owner, &repo, &branch, &token)
                 }
+                ProviderType::Bitbucket => {
+                    crate::providers::bitbucket::list_ci_runs(&owner, &repo, &branch, &token)
+                }
+                ProviderType::AzureDevOps => {
+                    crate::providers::azure::list_ci_runs(&owner, &repo, &branch, &token)
+                }
                 _ => Err(format!("Provider at {} not yet supported for CI.", host)),
             }
         })();
@@ -1514,6 +1625,8 @@ pub fn load_releases(state: crate::state::SharedState) {
                 ProviderType::GitLab => {
                     crate::providers::gitlab::list_releases(&host, &owner, &repo, &token)
                 }
+                ProviderType::Bitbucket => Err("Bitbucket Cloud has no release API. Browse repository tags or Downloads in Bitbucket.".into()),
+                ProviderType::AzureDevOps => crate::providers::azure::list_releases(&owner, &token),
                 _ => Err(format!(
                     "Provider at {} not yet supported for releases.",
                     host

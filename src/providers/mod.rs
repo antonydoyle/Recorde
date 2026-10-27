@@ -1,7 +1,12 @@
+pub mod azure;
+pub mod bitbucket;
+#[cfg(test)]
+mod cloud_tests;
 pub mod github;
 pub mod gitlab;
 mod pagination;
 pub(crate) mod queue;
+pub mod repositories;
 pub mod write;
 
 /// Never forward a PAT to a redirected endpoint, including GitLab's custom header.

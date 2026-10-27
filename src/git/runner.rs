@@ -62,6 +62,10 @@ impl GitRunner {
         events
     }
 
+    pub fn has_any_jobs(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub fn has_jobs(&self, path: &std::path::Path) -> bool {
         self.pending.values().any(|p| p == path)
     }
@@ -78,6 +82,8 @@ fn worker_loop(job_rx: Receiver<RawJob>, progress_tx: Sender<JobProgress>) {
             repo_path: job.repo_path.clone(),
             label,
             cancel,
+            background: matches!(&job.kind, JobKind::BackgroundFetch),
+            fetch: matches!(&job.kind, JobKind::FetchAll | JobKind::BackgroundFetch),
         });
 
         let result = if !job.reservation.wait_cancelled(&job.cancel) {
@@ -109,7 +115,7 @@ fn worker_loop(job_rx: Receiver<RawJob>, progress_tx: Sender<JobProgress>) {
 fn dispatch(job: &RawJob) -> Result<(), GitError> {
     use crate::git::remote;
     match &job.kind {
-        JobKind::FetchAll => {
+        JobKind::FetchAll | JobKind::BackgroundFetch => {
             remote::run_fetch_all(&job.repo_path, &job.cancel, job.id, &job.progress_tx)
         }
         JobKind::PullBranch => {
@@ -124,9 +130,13 @@ fn dispatch(job: &RawJob) -> Result<(), GitError> {
         JobKind::PushBranch => {
             remote::run_push(&job.repo_path, &job.cancel, job.id, &job.progress_tx)
         }
-        JobKind::PushWithLease(lease) => {
-            remote::run_push_with_lease(&job.repo_path, lease, &job.cancel)
-        }
+        JobKind::PushWithLease(lease) => remote::run_push_with_lease_progress(
+            &job.repo_path,
+            lease,
+            &job.cancel,
+            job.id,
+            &job.progress_tx,
+        ),
         JobKind::PushSetUpstream => {
             remote::run_push_set_upstream(&job.repo_path, &job.cancel, job.id, &job.progress_tx)
         }

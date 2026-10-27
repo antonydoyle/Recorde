@@ -12,12 +12,13 @@ DESKTOP_SRC="packaging/recorde.desktop"
 DESKTOP_DIR="$HOME/.local/share/applications"
 
 echo "Building release binary…"
-cargo build --release
+cargo build --release --locked
 
 echo "Installing to $INSTALL_DIR/$BINARY_NAME"
 mkdir -p "$INSTALL_DIR"
 cp "target/release/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
 chmod +x "$INSTALL_DIR/$BINARY_NAME"
+install -m 644 packaging/install-portable.json "$INSTALL_DIR/recorde-install.json"
 
 echo "Installing icon to $ICON_DIR"
 mkdir -p "$ICON_DIR"

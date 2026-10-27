@@ -16,13 +16,26 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install audit tool
         run: cargo install cargo-audit --version 0.22.2 --locked
       - name: Reject vulnerable and unsound dependencies
         run: cargo audit --deny unsound
+      - name: Audit standalone update signer dependencies
+        run: cargo audit --file tools/update-signing/Cargo.lock --deny unsound
+      - name: Validate standalone signature protocol
+        run: cargo test --manifest-path tools/update-signing/Cargo.toml --locked
+      - name: Audit privileged installer dependencies
+        run: cargo audit --file tools/update-installer/Cargo.lock --deny unsound
+      - name: Validate privileged installer without root
+        env:
+          CARGO_BUILD_JOBS: '1'
+          RUST_TEST_THREADS: '1'
+        run: |
+          cargo fmt --manifest-path tools/update-installer/Cargo.toml --all --check
+          python3 scripts/linux_task.py --purpose 'Privileged installer offline fixtures' --artifacts "$RUNNER_TEMP/process-safety" --timeout 600 -- cargo test --manifest-path tools/update-installer/Cargo.toml --locked
   test:
     name: Rust checks (${{ matrix.os }})
     strategy:
@@ -39,11 +52,11 @@ jobs:
       RUST_TEST_THREADS: '1'
       CARGO_BUILD_JOBS: '1'
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check subprocess launch rules
         run: python scripts/check_process_safety.py
       - name: Check Rust formatting
@@ -105,6 +118,9 @@ jobs:
       - name: LFS round trip
         if: runner.os == 'Linux'
         run: python3 scripts/linux_task.py --purpose 'CI LFS round trip' --artifacts "$RUNNER_TEMP/process-safety" --timeout 300 -- cargo test --locked --lib lfs_stage_push_clone_round_trip -- --ignored
+      - name: Authenticated LFS HTTP and failed downloads
+        if: runner.os == 'Linux'
+        run: python3 scripts/linux_task.py --purpose 'CI LFS network failures' --artifacts "$RUNNER_TEMP/process-safety" --timeout 300 -- cargo test --locked --lib authenticated_lfs_http_round_trip_and_failed_downloads -- --ignored
       - name: SSH commit signing round trip
         if: runner.os == 'Linux'
         run: python3 scripts/linux_task.py --purpose 'CI SSH signing' --artifacts "$RUNNER_TEMP/process-safety" --timeout 300 -- cargo test --locked --lib ssh_signed_commit_verifies_with_disposable_key -- --ignored
@@ -112,14 +128,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($fixture in @('lfs_stage_push_clone_round_trip', 'ssh_signed_commit_verifies_with_disposable_key', 'native_vault_round_trip')) {
+          foreach ($fixture in @('lfs_stage_push_clone_round_trip', 'authenticated_lfs_http_round_trip_and_failed_downloads', 'ssh_signed_commit_verifies_with_disposable_key', 'native_vault_round_trip')) {
             ./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--lib', $fixture, '--', '--ignored') -Purpose "CI $fixture" -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 300
           }
-      - name: Windows GUI startup
+      - name: Windows native UI and four-theme acceptance
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          ./scripts/windows_task.ps1 -Executable cargo -Arguments @('build', '--locked') -Purpose 'CI GUI build' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 1200 -MaxMemoryMiB 8192
+          ./scripts/windows_task.ps1 -Executable cargo -Arguments @('build', '--locked', '--features', 'ui-inspection', '--bin', 'recorde', '--example', 'inspect_ui') -Purpose 'CI GUI and development inspector build' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 1200 -MaxMemoryMiB 8192
+          ./scripts/windows_task.ps1 -Executable cargo -Arguments @('test', '--locked', '--features', 'ui-inspection', '--example', 'inspect_ui') -Purpose 'CI native inspector selectors' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 180 -MaxMemoryMiB 8192
           # Hosted Windows runners expose legacy OpenGL without a GPU driver.
           # Pin and verify Mesa; deploy only beside the CI debug executable.
           $mesa = "$env:RUNNER_TEMP/recorde-mesa"
@@ -134,10 +151,17 @@ jobs:
           Copy-Item "$mesa/x64/opengl32.dll", "$mesa/x64/libgallium_wgl.dll" target/debug/
           $env:GALLIUM_DRIVER = 'llvmpipe'
           $env:LIBGL_ALWAYS_SOFTWARE = '1'
-          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts") -Purpose 'CI GUI smoke test' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 120
+          foreach ($palette in @('classic', 'siege')) {
+            foreach ($mode in @('dark', 'light')) {
+              $smokeArgs = @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Inspector', 'target/debug/examples/inspect_ui.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts/$palette-$mode", '-ThemePalette', $palette, '-InspectAccessibility', '-Review')
+              if ($mode -eq 'light') { $smokeArgs += '-Light' }
+              ./scripts/windows_task.ps1 -Executable pwsh -Arguments $smokeArgs -Purpose "CI native UI $palette $mode" -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 180
+            }
+          }
+          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_smoke.ps1', '-Binary', 'target/debug/recorde.exe', '-Inspector', 'target/debug/examples/inspect_ui.exe', '-Artifacts', "$env:RUNNER_TEMP/gui-artifacts/clean-history", '-Review', '-CleanTracked', '-InspectAccessibility') -Purpose 'CI native clean history confirmations' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 180
       - name: Upload Windows process ledgers
         if: always() && runner.os == 'Windows'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-process-safety
           path: ${{ runner.temp }}/process-safety
@@ -149,15 +173,31 @@ jobs:
           for fixture in image-preview line-selection split-selection frame-profile repository-settings; do
             python3 scripts/linux_task.py --purpose "CI GUI $fixture" --artifacts "$RUNNER_TEMP/process-safety" --timeout 120 -- python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/$fixture" "--$fixture"
           done
+      - name: Linux native accessibility and display scales
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/linux_task.py --purpose 'Build development UI inspector' --artifacts "$RUNNER_TEMP/process-safety" --timeout 1200 -- cargo build --locked --features ui-inspection --bin recorde --example inspect_ui
+          python3 scripts/linux_task.py --purpose 'Native inspector selectors' --artifacts "$RUNNER_TEMP/process-safety" --timeout 180 -- cargo test --locked --features ui-inspection --example inspect_ui
+          export RECORDE_UI_INSPECTOR="$GITHUB_WORKSPACE/target/debug/examples/inspect_ui"
+          for dpi in 1 1.25 1.5 2; do
+            for palette in classic siege; do
+              for theme in dark light; do
+                args=()
+                if [[ "$theme" == light ]]; then args+=(--light); fi
+                if [[ "$palette" == siege ]]; then args+=(--siege); fi
+                python3 scripts/linux_task.py --purpose "UI accessibility $palette $theme $dpi" --artifacts "$RUNNER_TEMP/process-safety" --timeout 180 -- python3 scripts/gui_smoke.py target/debug/recorde "$RUNNER_TEMP/gui-artifacts/accessibility-$palette-$theme-$dpi" --design-review --review "--dpi=$dpi" "${args[@]}"
+              done
+            done
+          done
       - name: Upload Linux process ledgers
         if: always() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux-process-safety
           path: ${{ runner.temp }}/process-safety
       - name: Upload GUI smoke artifacts
         if: always() && (runner.os == 'Linux' || runner.os == 'Windows')
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gui-smoke-${{ runner.os }}
           path: ${{ runner.temp }}/gui-artifacts

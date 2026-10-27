@@ -13,7 +13,7 @@ fn protect_index<T>(
     if repo.state() == git2::RepositoryState::Clean
         && !repo.index().map_err(|e| e.to_string())?.has_conflicts()
     {
-        super::recovery::protect(path, label, work)
+        super::recovery::protect_index_only(path, label, work)
     } else {
         work()
     }
@@ -32,26 +32,13 @@ pub fn ignore_file(file: &str, state: SharedState) {
 }
 
 fn add_ignore_rule(path: &Path, file: &str) -> Result<(), String> {
-    use std::io::{Read, Write};
     super::safe_path::relative(file)?;
     if file.contains(['\r', '\n']) {
         return Err("Git ignore rules cannot represent a filename containing a newline.".into());
     }
-    let target = super::safe_path::worktree_file(path, ".gitignore")?;
-    let mut content = Vec::new();
-    match std::fs::File::open(&target) {
-        Ok(input) => {
-            input
-                .take(1_048_577)
-                .read_to_end(&mut content)
-                .map_err(|e| e.to_string())?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.to_string()),
-    }
-    if content.len() > 1_048_576 {
-        return Err("Edit this large .gitignore file with an external editor.".into());
-    }
+    let target = super::safe_path::ScopedFile::new(path, ".gitignore")?;
+    let original = target.read(1_048_576)?;
+    let mut content = original.clone().unwrap_or_default();
     if !content.is_empty() && !content.ends_with(b"\n") {
         content.push(b'\n');
     }
@@ -64,12 +51,7 @@ fn add_ignore_rule(path: &Path, file: &str) -> Result<(), String> {
         content.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
     }
     content.push(b'\n');
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(target.parent().ok_or("Invalid ignore path")?)
-            .map_err(|e| e.to_string())?;
-    temporary.write_all(&content).map_err(|e| e.to_string())?;
-    temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-    temporary.persist(target).map_err(|e| e.to_string())?;
+    target.replace(original.as_deref(), &content)?;
     Ok(())
 }
 
@@ -226,13 +208,17 @@ fn submit_commit(
         state,
         move || {
             let rp = work_path;
+            if git2::Repository::open(&rp).is_ok_and(|repo| super::merge::squash_in_progress(&repo))
+            {
+                return Err("Resolve and stage squash conflicts, then use Continue in the squash merge banner. Commit and Amend are unavailable during a squash merge.".into());
+            }
             if git2::Repository::open(&rp).is_ok_and(|r| r.state() == git2::RepositoryState::Clean)
             {
                 super::recovery::protect(&rp, if amend { "Amend commit" } else { "Commit" }, || {
                     git_commit(&rp, &msg, amend, signoff)
                 })
             } else {
-                git_commit(&rp, &msg, amend, signoff)
+                super::recovery::continue_sequence(&rp, || git_commit(&rp, &msg, amend, signoff))
             }
         },
         move |result, state| {
@@ -560,7 +546,7 @@ fn do_unstage_all(repo_path: &Path) -> Result<(), git2::Error> {
 
 /// Shell out to `git commit -m <msg>` so hooks (pre-commit, commit-msg, post-commit) run.
 /// Returns combined stdout+stderr on success, Err(combined) on failure.
-fn git_commit(
+pub(super) fn git_commit(
     repo_path: &Path,
     message: &str,
     amend: bool,
@@ -575,12 +561,42 @@ fn git_commit(
     if signoff {
         cmd.arg("--signoff");
     }
+    if !amend {
+        let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
+        let rebase = repo.path().join("rebase-merge");
+        if rebase.join("recorde-split").is_file() {
+            let split = super::rebase::split_state(&repo)?;
+            let original = super::replacement::commit(
+                &repo,
+                git2::Oid::from_str(&split.original).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let author = original.author();
+            let time = author.when();
+            let offset = time.offset_minutes();
+            cmd.env("GIT_AUTHOR_NAME", author.name().map_err(|e| e.to_string())?)
+                .env(
+                    "GIT_AUTHOR_EMAIL",
+                    author.email().map_err(|e| e.to_string())?,
+                )
+                .env(
+                    "GIT_AUTHOR_DATE",
+                    format!(
+                        "{} {}{:02}{:02}",
+                        time.seconds(),
+                        if offset < 0 { "-" } else { "+" },
+                        offset.abs() / 60,
+                        offset.abs() % 60
+                    ),
+                );
+        }
+    }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
 
-    let out = super::process::run(
+    let out = super::process::run_with_deadline(
         &mut cmd,
         &std::sync::atomic::AtomicBool::new(false),
-        std::time::Duration::from_secs(600),
+        super::process::Deadline::None,
     )
     .map_err(|e| e.user_message())?;
     let combined = format!(
@@ -659,20 +675,32 @@ mod tests {
     fn ignore_rule_is_literal_and_preserves_existing_bytes() {
         let repo = TestRepo::new();
         repo.write(".gitignore", b"existing");
-        add_ignore_rule(repo.path(), "literal[1]* file ").unwrap();
+        add_ignore_rule(repo.path(), "literal[1] file").unwrap();
         assert_eq!(
             std::fs::read(repo.path().join(".gitignore")).unwrap(),
-            b"existing\n/literal\\[1\\]\\*\\ file\\ \n"
+            b"existing\n/literal\\[1\\]\\ file\n"
         );
         assert!(repo
-            .git(&["check-ignore", "--", "literal[1]* file "])
+            .git(&["check-ignore", "--", "literal[1] file"])
             .status
             .success());
         assert!(!repo
-            .git(&["check-ignore", "--", "literal1-other file "])
+            .git(&["check-ignore", "--", "literal1 file"])
             .status
             .success());
         assert!(add_ignore_rule(repo.path(), "bad\npattern").is_err());
+        #[cfg(unix)]
+        {
+            add_ignore_rule(repo.path(), "star* trailing ").unwrap();
+            assert!(repo
+                .git(&["check-ignore", "--", "star* trailing "])
+                .status
+                .success());
+            assert!(!repo
+                .git(&["check-ignore", "--", "star-other trailing "])
+                .status
+                .success());
+        }
     }
 
     #[test]
@@ -823,6 +851,45 @@ mod tests {
     }
 
     #[test]
+    fn commit_and_amend_refuse_resolved_squash_and_leave_original_recovery_pending() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"base\n");
+        repo.git_ok(&["checkout", "-b", "topic"]);
+        repo.commit("file", b"topic\n");
+        repo.git_ok(&["checkout", "main"]);
+        let head = repo.commit("file", b"main\n");
+        assert!(super::super::merge::do_merge(
+            repo.path(),
+            "topic",
+            super::super::merge::MergeMode::Squash,
+            None
+        )
+        .is_err());
+        repo.write("file", b"resolved\n");
+        repo.git_ok(&["add", "file"]);
+        let count = super::super::recovery::list(repo.path()).len();
+        let state = crate::state::new_shared_state();
+        state.lock().unwrap().repo_path = Some(repo.path().into());
+        for amend in [false, true] {
+            let completion =
+                submit_commit("not a separate commit", amend, false, state.clone()).unwrap();
+            assert!(!completion
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap());
+            assert!(state
+                .lock()
+                .unwrap()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Continue"));
+            assert_eq!(repo.head(), head);
+            assert_eq!(repo.index_bytes("file"), b"resolved\n");
+            assert_eq!(super::super::recovery::list(repo.path()).len(), count);
+        }
+    }
+
+    #[test]
     fn failed_commit_signing_never_falls_back_to_unsigned() {
         let repo = TestRepo::new();
         let head = repo.commit("file", b"base\n");
@@ -910,7 +977,10 @@ mod tests {
             std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let error = git_commit(repo.path(), "keep this message", false, false).unwrap_err();
-        assert!(error.contains("rejected-by-test"));
+        assert!(
+            error.contains(&crate::auth::redact::text("rejected-by-test")),
+            "{error}"
+        );
         assert_eq!(repo.head(), head);
         assert_eq!(repo.index_bytes("file.txt"), b"staged\n");
     }

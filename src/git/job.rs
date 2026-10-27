@@ -15,6 +15,7 @@ pub struct JobHandle {
 #[derive(Debug, Clone)]
 pub enum JobKind {
     FetchAll,
+    BackgroundFetch,
     PullBranch,
     PullWithRebase,
     PullFfOnly,
@@ -26,7 +27,7 @@ pub enum JobKind {
 impl JobKind {
     pub fn label(&self) -> &'static str {
         match self {
-            JobKind::FetchAll => "Fetching…",
+            JobKind::FetchAll | JobKind::BackgroundFetch => "Fetching…",
             JobKind::PullBranch => "Pulling…",
             JobKind::PullWithRebase => "Pulling (rebase)…",
             JobKind::PullFfOnly => "Pulling (ff-only)…",
@@ -44,6 +45,8 @@ pub enum JobProgress {
         repo_path: std::path::PathBuf,
         label: String,
         cancel: Arc<AtomicBool>,
+        background: bool,
+        fetch: bool,
     },
     Update {
         id: JobId,
@@ -67,6 +70,15 @@ pub struct ActiveOp {
     pub progress_pct: Option<u8>,
     pub progress_msg: String,
     pub cancel: Arc<AtomicBool>,
+    pub background: bool,
+    pub fetch: bool,
+}
+
+pub struct BackgroundFetchStatus {
+    pub repo_path: std::path::PathBuf,
+    pub failed_at: std::time::Instant,
+    pub message: String,
+    pub consecutive_failures: u32,
 }
 
 /// Apply every drained event before requesting a refresh. Returning early on
@@ -80,6 +92,8 @@ pub fn apply_progress(state: &mut crate::state::AppState, events: Vec<JobProgres
                 repo_path,
                 label,
                 cancel,
+                background,
+                fetch,
             } => {
                 state
                     .console_log
@@ -91,17 +105,28 @@ pub fn apply_progress(state: &mut crate::state::AppState, events: Vec<JobProgres
                     progress_pct: None,
                     progress_msg: String::new(),
                     cancel,
+                    background,
+                    fetch,
                 });
             }
             JobProgress::Update { id, message, pct } => {
                 if let Some(op) = state.active_ops.iter_mut().find(|o| o.id == id) {
-                    op.progress_msg = message;
+                    op.progress_msg = crate::auth::redact::text(&message);
                     op.progress_pct = pct;
                 }
             }
             JobProgress::Done { id } => {
                 let current = operation_is_current(state, id);
                 let label = operation_label(state, id);
+                if let Some(op) = state.active_ops.iter().find(|op| op.id == id && op.fetch) {
+                    if state
+                        .background_fetch
+                        .as_ref()
+                        .is_some_and(|status| status.repo_path == op.repo_path)
+                    {
+                        state.background_fetch = None;
+                    }
+                }
                 state.active_ops.retain(|o| o.id != id);
                 state.console_log.push(format!("{} done", label));
                 refresh |= current;
@@ -109,12 +134,29 @@ pub fn apply_progress(state: &mut crate::state::AppState, events: Vec<JobProgres
             JobProgress::Failed { id, error } => {
                 let current = operation_is_current(state, id);
                 let label = operation_label(state, id);
+                let background_path = state
+                    .active_ops
+                    .iter()
+                    .find(|op| op.id == id && op.background)
+                    .map(|op| op.repo_path.clone());
                 state.active_ops.retain(|o| o.id != id);
                 let msg = error.user_message();
                 state
                     .console_log
                     .push(format!("error: {} — {}", label, msg));
-                if current {
+                if let Some(repo_path) = background_path {
+                    let consecutive_failures = state
+                        .background_fetch
+                        .as_ref()
+                        .filter(|status| status.repo_path == repo_path)
+                        .map_or(1, |status| status.consecutive_failures.saturating_add(1));
+                    state.background_fetch = Some(BackgroundFetchStatus {
+                        repo_path,
+                        failed_at: std::time::Instant::now(),
+                        message: msg,
+                        consecutive_failures,
+                    });
+                } else if current {
                     state.error = Some(msg);
                 }
                 // A failed command may have changed refs/index or paused on a conflict.
@@ -158,7 +200,138 @@ mod tests {
             id,
             label: format!("operation {}", id),
             cancel: Arc::new(AtomicBool::new(false)),
+            background: false,
+            fetch: false,
         }
+    }
+
+    fn fetch_started(id: JobId, background: bool) -> JobProgress {
+        JobProgress::Started {
+            repo_path: "repo-a".into(),
+            id,
+            label: "Fetching…".into(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            background,
+            fetch: true,
+        }
+    }
+
+    #[test]
+    fn background_failure_is_nonblocking_and_counts_consecutive_failures() {
+        let mut state = crate::state::AppState {
+            repo_path: Some("repo-a".into()),
+            ..Default::default()
+        };
+        for id in 1..=2 {
+            apply_progress(
+                &mut state,
+                vec![
+                    fetch_started(id, true),
+                    JobProgress::Failed {
+                        id,
+                        error: GitError::Command {
+                            cmd: "fetch".into(),
+                            stderr: "offline https://user:secret@example.com/repo".into(),
+                        },
+                    },
+                ],
+            );
+            assert!(state.error.is_none());
+            let status = state.background_fetch.as_ref().unwrap();
+            assert_eq!(status.consecutive_failures, id as u32);
+            assert!(status.message.contains("offline"));
+            assert!(!status.message.contains("secret"));
+            assert!(state.console_log.last().unwrap().contains("offline"));
+            assert!(!state.console_log.last().unwrap().contains("secret"));
+        }
+    }
+
+    #[test]
+    fn foreground_fetch_failure_still_sets_error() {
+        let mut state = crate::state::AppState {
+            repo_path: Some("repo-a".into()),
+            ..Default::default()
+        };
+        apply_progress(
+            &mut state,
+            vec![
+                fetch_started(1, false),
+                JobProgress::Failed {
+                    id: 1,
+                    error: GitError::CredentialFailed,
+                },
+            ],
+        );
+        assert!(state.error.is_some());
+        assert!(state.background_fetch.is_none());
+    }
+
+    #[test]
+    fn successful_manual_or_background_fetch_clears_background_failure() {
+        for background in [false, true] {
+            let mut state = crate::state::AppState {
+                repo_path: Some("repo-a".into()),
+                ..Default::default()
+            };
+            apply_progress(
+                &mut state,
+                vec![
+                    fetch_started(1, true),
+                    JobProgress::Failed {
+                        id: 1,
+                        error: GitError::CredentialFailed,
+                    },
+                    fetch_started(2, background),
+                    JobProgress::Done { id: 2 },
+                ],
+            );
+            assert!(state.error.is_none());
+            assert!(state.background_fetch.is_none());
+            assert!(state.active_ops.is_empty());
+            apply_progress(
+                &mut state,
+                vec![
+                    fetch_started(3, true),
+                    JobProgress::Failed {
+                        id: 3,
+                        error: GitError::CredentialFailed,
+                    },
+                ],
+            );
+            assert_eq!(state.background_fetch.unwrap().consecutive_failures, 1);
+        }
+    }
+
+    #[test]
+    fn fetch_status_is_scoped_to_the_fetch_repository() {
+        let mut state = crate::state::AppState {
+            repo_path: Some("repo-b".into()),
+            ..Default::default()
+        };
+        assert!(!apply_progress(
+            &mut state,
+            vec![
+                fetch_started(1, true),
+                JobProgress::Failed {
+                    id: 1,
+                    error: GitError::CredentialFailed,
+                },
+                JobProgress::Started {
+                    repo_path: "repo-b".into(),
+                    id: 2,
+                    label: "Fetching…".into(),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    background: false,
+                    fetch: true,
+                },
+            ],
+        ));
+        apply_progress(&mut state, vec![JobProgress::Done { id: 2 }]);
+        assert_eq!(
+            state.background_fetch.as_ref().unwrap().repo_path,
+            std::path::PathBuf::from("repo-a")
+        );
+        assert!(state.error.is_none());
     }
 
     #[test]

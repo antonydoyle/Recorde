@@ -45,6 +45,7 @@ impl Vault for NativeVault {
         }
     }
     fn set(&self, host: &str, username: &str, token: &str) -> Result<(), String> {
+        validate_vault_password(token, cfg!(windows))?;
         entry(host, username)?
             .set_password(token)
             .map_err(vault_error)
@@ -157,6 +158,14 @@ impl<V: Vault> Store<V> {
         host: &str,
         username: Option<&str>,
     ) -> Result<Option<(String, String)>, String> {
+        self.lookup_with(host, username, super::oauth::resolve)
+    }
+    fn lookup_with(
+        &self,
+        host: &str,
+        username: Option<&str>,
+        resolve: impl FnOnce(&str, &str, &str) -> Result<(String, Option<String>), String>,
+    ) -> Result<Option<(String, String)>, String> {
         let file = self.migrate()?;
         let mut candidates: Vec<_> = file
             .tokens
@@ -170,10 +179,18 @@ impl<V: Vault> Store<V> {
             return Err("Multiple accounts match this host. Choose an account for this repository in Settings > Accounts & SSH.".into());
         }
         match candidates.first() {
-            Some(user) => self
-                .vault
-                .get(host, user)
-                .map(|token| token.map(|t| ((*user).into(), t))),
+            Some(user) => {
+                let Some(saved) = self.vault.get(host, user)? else {
+                    return Ok(None);
+                };
+                let (access, refreshed) = resolve(&saved, host, user)?;
+                if let Some(refreshed) = refreshed {
+                    self.verified_set(host, user, &refreshed).map_err(|_| {
+                        "Renewed sign-in could not be stored. The provider may have retired the old refresh token; reconnect this account.".to_string()
+                    })?;
+                }
+                Ok(Some(((*user).into(), access)))
+            }
             None => Ok(None),
         }
     }
@@ -194,10 +211,17 @@ fn with_store<T>(
     let _guard = ACCESS
         .lock()
         .map_err(|_| "Credential store is busy; restart and retry.")?;
-    let directory = dirs::data_dir()
+    let directory = crate::app_dirs::data_dir()
         .ok_or("Cannot locate the application data directory.")?
         .join("recorde");
     std::fs::create_dir_all(&directory).map_err(|_| "Cannot create credential directory.")?;
+    // Profile overrides must not split the lock protecting shared OS-vault
+    // entries (including refresh-token rotation for the same provider account).
+    let lock_directory = dirs::data_dir()
+        .ok_or("Cannot locate the credential coordination directory.")?
+        .join("recorde");
+    std::fs::create_dir_all(&lock_directory)
+        .map_err(|_| "Cannot create credential coordination directory.")?;
     let mut options = std::fs::OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
@@ -206,7 +230,7 @@ fn with_store<T>(
         options.mode(0o600);
     }
     let lock = options
-        .open(directory.join("credentials.lock"))
+        .open(lock_directory.join("credentials.lock"))
         .map_err(|_| "Cannot lock credential index.")?;
     fs2::FileExt::lock_exclusive(&lock).map_err(|_| "Cannot lock credential index.")?;
     operation(&Store {
@@ -219,11 +243,45 @@ pub fn migrate() -> Result<(), String> {
     with_store(|store| store.migrate().map(|_| ()))
 }
 pub fn save(host: &str, username: &str, token: &str) -> Result<(), String> {
+    validate_pat(token)?;
     super::redact::remember(token);
     with_store(|store| store.save(host, username, token))
 }
+fn validate_pat(token: &str) -> Result<(), String> {
+    if token.starts_with(super::oauth::ENVELOPE) {
+        return Err(
+            "Enter a personal access token, or use Browser sign-in for an OAuth account.".into(),
+        );
+    }
+    Ok(())
+}
+fn validate_vault_password(value: &str, windows: bool) -> Result<(), String> {
+    // keyring 3.6 Windows set_password uses UTF-16, without a terminator;
+    // WinCred CRED_MAX_CREDENTIAL_BLOB_SIZE is 2560 bytes. Other backends
+    // are not subject to this Windows-specific capacity.
+    if windows && value.encode_utf16().count() > 2560 / 2 {
+        return Err("Credentials exceed the Windows credential store's 2560-byte capacity. Use a shorter personal access token for this account.".into());
+    }
+    Ok(())
+}
+pub(crate) fn validate_oauth_storage(session: &super::oauth::Session) -> Result<(), String> {
+    validate_vault_password(&super::oauth::encode(session)?, cfg!(windows))
+}
+pub(crate) fn save_oauth(session: &super::oauth::Session) -> Result<(), String> {
+    let envelope = super::oauth::encode(session)?;
+    validate_vault_password(&envelope, cfg!(windows))?;
+    with_store(|store| store.save(&session.client.host, &session.username, &envelope))
+}
 pub fn remove(host: &str, username: &str) -> Result<(), String> {
     with_store(|store| store.remove(host, username))
+}
+/// Access token for one saved account, renewing an OAuth sign-in if needed.
+pub fn token_for_account(host: &str, username: &str) -> Result<Option<String>, String> {
+    let token = with_store(|store| store.lookup(host, Some(username)))?.map(|(_, token)| token);
+    if let Some(token) = &token {
+        super::redact::remember(token);
+    }
+    Ok(token)
 }
 pub fn lookup_for_url(
     remote: &str,
@@ -241,22 +299,94 @@ fn lookup(
 ) -> Result<Option<(String, String)>, String> {
     let endpoint = super::endpoint::parse(remote, for_api)?;
     let config = crate::config::Config::try_load()?;
-    let binding = repo_path.and_then(|path| {
-        config
-            .get_repo_config(path)
-            .provider_accounts
-            .get(&endpoint.host)
-            .cloned()
-    });
-    let username = selected_username(endpoint.username.as_deref(), binding.as_deref())?;
-    let result = with_store(|store| store.lookup(&endpoint.host, username))?;
-    if result.is_none() && binding.is_some() {
+    let binding = config.account_binding(repo_path, &endpoint.host);
+    let username = configured_username(&endpoint, repo_path, &config)?;
+    let result = with_store(|store| {
+        let result = store.lookup(&endpoint.host, username)?;
+        if for_api {
+            return Ok(result);
+        }
+        match result {
+            Some((user, token)) => {
+                let saved = store
+                    .vault
+                    .get(&endpoint.host, &user)?
+                    .ok_or("Saved account disappeared; reconnect it.")?;
+                let git_user = transport_username(&endpoint.host, &user, &saved, false)?;
+                Ok(Some((git_user, token)))
+            }
+            None => Ok(None),
+        }
+    })?;
+    if result.is_none() && binding.is_some() && binding.as_deref() == username {
         return Err("No token for this repository's selected account. Update it in Settings > Accounts & SSH.".into());
     }
     if let Some((_, token)) = &result {
         super::redact::remember(token);
     }
     Ok(result)
+}
+
+/// Repository bindings are constraints; global profile accounts are defaults.
+/// In particular, a repository-browser clone carries an explicit account in its
+/// URL and must not be forced back to the active global profile's account.
+fn configured_username<'a>(
+    endpoint: &'a super::endpoint::Endpoint,
+    repo_path: Option<&Path>,
+    config: &'a crate::config::Config,
+) -> Result<Option<&'a str>, String> {
+    let repository_binding = repo_path
+        .and_then(|path| config.per_repo.get(&path.display().to_string()))
+        .and_then(|repo| repo.provider_accounts.get(&endpoint.host))
+        .map(String::as_str);
+    let explicit = remote_username(endpoint, repository_binding, &config.accounts)?;
+    Ok(explicit.or_else(|| {
+        config
+            .provider_accounts
+            .get(&endpoint.host)
+            .map(String::as_str)
+    }))
+}
+
+fn remote_username<'a>(
+    endpoint: &'a super::endpoint::Endpoint,
+    binding: Option<&'a str>,
+    accounts: &[super::StoredAccount],
+) -> Result<Option<&'a str>, String> {
+    // Bitbucket remote usernames are clone-protocol hints, whereas API token
+    // identities are Atlassian email addresses. A binding chooses the account;
+    // without one the store still rejects multiple matching identities.
+    let url_user = endpoint.username.as_deref().filter(|user| {
+        endpoint.host != "bitbucket.org"
+            && !accounts.iter().any(|account| {
+                account.host == endpoint.host
+                    && match account.provider {
+                        super::ProviderKind::GitLabCom | super::ProviderKind::GitLabSelf => {
+                            *user == "oauth2"
+                        }
+                        super::ProviderKind::GitHubCom | super::ProviderKind::GitHubEnterprise => {
+                            *user == "x-access-token"
+                        }
+                        _ => false,
+                    }
+            })
+    });
+    selected_username(url_user, binding)
+}
+
+fn transport_username(
+    host: &str,
+    user: &str,
+    saved: &str,
+    for_api: bool,
+) -> Result<String, String> {
+    if for_api {
+        return Ok(user.into());
+    }
+    if host == "bitbucket.org" {
+        return Ok("x-bitbucket-api-token-auth".into());
+    }
+    Ok(super::oauth::git_username(saved)?.unwrap_or(user).into())
 }
 
 fn selected_username<'a>(

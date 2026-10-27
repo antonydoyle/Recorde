@@ -1,7 +1,8 @@
 [package]
 name = "recorde"
-version = "0.3.10"
+version = "0.4.0"
 edition = "2021"
+rust-version = "1.95"
 authors = ["Antony Doyle <antony@siege21.com>"]
 description = "A cross-platform desktop Git client built with Rust"
 homepage = "https://antonydoyle.com"
@@ -16,13 +17,16 @@ name = "recorde"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.28", default-features = false, features = [
+eframe = { version = "0.36.2", default-features = false, features = [
+    "accesskit",
     "default_fonts",
+    "links",
     "glow",
     "wayland",
     "x11",
 ] }
-egui = "0.28"
+egui = "0.36.2"
+egui_inspection = { version = "0.36.2", default-features = false, optional = true }
 webbrowser = { version = "1.2.2", features = ["hardened"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
 git2 = { version = "0.21", features = ["vendored-libgit2", "vendored-openssl"] }
@@ -37,16 +41,29 @@ serde_json = "1"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 url = "2.5"
 percent-encoding = "2"
+base64 = "0.22"
 fs2 = "0.4"
 sha2 = "0.10"
+ssh-key = { version = "0.6.7", default-features = false, features = ["ed25519", "encryption", "getrandom"] }
+zeroize = "1"
 regex = "1"
 command-group = "5"
 notify = "8"
+semver = "1"
+recorde-update-signing = { path = "tools/update-signing" }
 
 tempfile = "3"
+cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
+cap-tempfile = "4.0.3"
 
-[patch.crates-io]
-eframe = { path = "vendor/eframe" }
+[features]
+# Development-only native AX/input/screenshot inspection; absent from release builds.
+ui-inspection = ["eframe/inspection", "dep:egui_inspection"]
+
+[[example]]
+name = "inspect_ui"
+required-features = ["ui-inspection"]
 
 [profile.release]
 opt-level = 3
@@ -57,9 +74,12 @@ strip = true
 [package.metadata.deb]
 section = "devel"
 priority = "optional"
-depends = "$auto, git, libgl1, libgtk-3-0, libglib2.0-0, libfontconfig1, libfreetype6, libxkbcommon-x11-0"
+depends = "$auto, git, pkexec, libgl1, libgtk-3-0, libglib2.0-0, libfontconfig1, libfreetype6, libxkbcommon-x11-0"
 assets = [
     ["target/release/recorde",    "usr/bin/recorde",                                          "755"],
+    ["packaging/install-deb.json", "usr/bin/recorde-install.json", "644"],
+    ["tools/update-installer/target/release/recorde-update-installer", "usr/lib/recorde/recorde-update-installer", "755"],
+    ["packaging/org.recorde.update.policy", "usr/share/polkit-1/actions/org.recorde.update.policy", "644"],
     ["assets/icon.png",           "usr/share/icons/hicolor/256x256/apps/recorde.png",         "644"],
     ["packaging/recorde.desktop", "usr/share/applications/recorde.desktop",                   "644"],
     ["assets/fonts/*-*.txt", "usr/share/doc/recorde/licenses/", "644"],
@@ -70,3 +90,9 @@ upgrade-guid = "F8B2C4E6-A3D5-4F7E-9B2C-6E8A1C3F5B7D"
 path-guid    = "A9C1E3F5-B7D9-4E6F-8A2C-1B3D5E7F9A2C"
 license      = false
 eula         = false
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }

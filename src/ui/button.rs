@@ -1,4 +1,4 @@
-use egui::{Color32, Response, Rounding, Stroke, Ui, Vec2, Widget, WidgetText};
+use egui::{Color32, CornerRadius, Response, Stroke, Ui, Vec2, Widget, WidgetText};
 
 /// Native button interaction with state-aware custom colours. A fixed egui fill
 /// or stroke overrides its hover visuals, so paint the surface separately.
@@ -6,16 +6,17 @@ pub struct Button<'a> {
     inner: egui::Button<'a>,
     fill: Option<Color32>,
     stroke: Option<Stroke>,
-    rounding: Option<Rounding>,
+    corner_radius: Option<CornerRadius>,
 }
 
 impl<'a> Button<'a> {
     pub fn new(text: impl Into<WidgetText>) -> Self {
+        let text: WidgetText = text.into();
         Self {
             inner: egui::Button::new(text),
             fill: None,
             stroke: None,
-            rounding: None,
+            corner_radius: None,
         }
     }
 
@@ -29,10 +30,10 @@ impl<'a> Button<'a> {
         self
     }
 
-    pub fn rounding(mut self, rounding: impl Into<Rounding>) -> Self {
-        let rounding = rounding.into();
-        self.rounding = Some(rounding);
-        self.inner = self.inner.rounding(rounding);
+    pub fn corner_radius(mut self, corner_radius: impl Into<CornerRadius>) -> Self {
+        let corner_radius = corner_radius.into();
+        self.corner_radius = Some(corner_radius);
+        self.inner = self.inner.corner_radius(corner_radius);
         self
     }
 
@@ -69,12 +70,19 @@ impl Widget for Button<'_> {
             let fill = match self.fill {
                 Some(fill) if highlighted && fill != Color32::TRANSPARENT => {
                     // Preserve primary/destructive colours and their label contrast.
-                    let tint = if response.is_pointer_button_down_on() {
+                    let tint = if fill == crate::theme::primary_fill()
+                        || crate::theme::contrast_text(fill) == Color32::WHITE
+                    {
                         egui::Rgba::BLACK
                     } else {
                         egui::Rgba::WHITE
                     };
-                    Color32::from(egui::Rgba::from(fill) * 0.9 + tint * 0.1)
+                    let amount = if response.is_pointer_button_down_on() {
+                        0.18
+                    } else {
+                        0.1
+                    };
+                    Color32::from(egui::Rgba::from(fill) * (1.0 - amount) + tint * amount)
                 }
                 Some(_) if highlighted => visuals.weak_bg_fill,
                 Some(fill) => fill,
@@ -89,9 +97,10 @@ impl Widget for Button<'_> {
                 background,
                 egui::epaint::RectShape::new(
                     response.rect,
-                    self.rounding.unwrap_or(visuals.rounding),
+                    self.corner_radius.unwrap_or(visuals.corner_radius),
                     fill,
                     stroke,
+                    egui::StrokeKind::Middle,
                 ),
             );
         }
@@ -105,12 +114,20 @@ mod tests {
 
     #[test]
     fn custom_buttons_render_hover_and_focus_without_activating_disabled_controls() {
-        for dark in [false, true] {
-            for fill in [Color32::TRANSPARENT, Color32::from_rgb(49, 88, 198)] {
+        for (palette, dark) in crate::theme::Palette::ALL
+            .into_iter()
+            .flat_map(|palette| [false, true].map(|dark| (palette, dark)))
+        {
+            let primary = if palette == crate::theme::Palette::Siege {
+                crate::theme::SIEGE_ORANGE
+            } else {
+                Color32::from_rgb(49, 88, 198)
+            };
+            for fill in [Color32::TRANSPARENT, primary] {
                 let ctx = egui::Context::default();
-                crate::theme::apply(&ctx, dark, false);
+                crate::theme::apply_palette(&ctx, dark, false, palette);
                 let draw = |events: Vec<egui::Event>, enabled, focus| {
-                    ctx.begin_frame(egui::RawInput {
+                    ctx.begin_pass(egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
                             Vec2::new(400.0, 200.0),
@@ -119,18 +136,26 @@ mod tests {
                         ..Default::default()
                     });
                     let mut response = None;
-                    egui::CentralPanel::default().show(&ctx, |ui| {
-                        let button = ui.add_enabled(
-                            enabled,
-                            Button::new("Action").fill(fill).stroke(Stroke::NONE),
-                        );
-                        if focus {
-                            button.request_focus();
-                        }
-                        response = Some(button);
-                    });
+                    egui::CentralPanel::default().show(
+                        &mut egui::Ui::new(
+                            ctx.clone(),
+                            egui::Id::new("test_root"),
+                            egui::UiBuilder::new().max_rect(ctx.content_rect()),
+                        ),
+                        |ui| {
+                            let button = ui.add_enabled(
+                                enabled,
+                                Button::new("Action").fill(fill).stroke(Stroke::NONE),
+                            );
+                            if focus {
+                                button.request_focus();
+                            }
+                            response = Some(button);
+                        },
+                    );
                     let response = response.unwrap();
-                    let output = ctx.end_frame();
+                    let mut output = ctx.end_pass();
+                    output.textures_delta.clear();
                     let surface = output.shapes.iter().find_map(|shape| match &shape.shape {
                         egui::Shape::Rect(rect)
                             if rect.rect == response.rect && rect.fill != Color32::TRANSPARENT =>
@@ -145,6 +170,15 @@ mod tests {
                 let pointer = idle.rect.center();
                 let (_, hover) = draw(vec![egui::Event::PointerMoved(pointer)], true, false);
                 assert_ne!(normal, hover, "Custom surface must change on hover");
+                if fill != Color32::TRANSPARENT {
+                    let hover_fill = hover.unwrap().0;
+                    assert!(
+                        hover_fill.r() <= fill.r()
+                            && hover_fill.g() <= fill.g()
+                            && hover_fill.b() <= fill.b(),
+                        "White primary labels must retain contrast on hover"
+                    );
+                }
                 draw(vec![egui::Event::PointerGone], true, true);
                 let (_, focused) = draw(vec![], true, false);
                 assert_ne!(normal, focused, "Keyboard focus must be visible");

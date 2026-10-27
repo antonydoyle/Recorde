@@ -1,5 +1,6 @@
 use crate::ui::button::Button;
 use egui::{Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::git::operations::{load_diff, load_workdir_diff};
@@ -12,6 +13,7 @@ const FONT_SIZE: f32 = 13.0;
 const U_GUTTER: f32 = 76.0;
 const BAR_W: f32 = 3.0;
 const S_GUTTER: f32 = 44.0;
+const CONTENT_PADDING: f32 = 8.0;
 
 // ── Unified items ─────────────────────────────────────────────────────────────
 
@@ -71,6 +73,7 @@ enum DiffAction {
 pub struct DiffView {
     state: SharedState,
     items: Vec<Item>,
+    content_width: f32,
     split_rows: Vec<SplitRow>,
     last_diff: Option<Arc<FileDiff>>,
     binary_textures: [Option<egui::TextureHandle>; 2],
@@ -88,6 +91,10 @@ pub struct DiffView {
 }
 
 impl DiffView {
+    pub fn open_search(&mut self) {
+        self.search_open = true;
+    }
+
     pub fn preferences(&self) -> crate::config::DiffPreferences {
         crate::config::DiffPreferences {
             whitespace: self.show_whitespace,
@@ -110,6 +117,7 @@ impl DiffView {
         Self {
             state,
             items: Vec::new(),
+            content_width: 0.0,
             split_rows: Vec::new(),
             last_diff: None,
             binary_textures: [None, None],
@@ -191,7 +199,8 @@ impl DiffView {
 
         // ── Left file list ────────────────────────────────────────────────
         if file_list_w > 0.0 {
-            ui.allocate_ui_at_rect(list_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(list_rect), |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(list_rect));
                 ui.painter()
                     .rect_filled(ui.max_rect(), 0.0, theme::bg_panel());
                 egui::ScrollArea::vertical()
@@ -225,22 +234,23 @@ impl DiffView {
                                     .on_hover_text(status_tooltip(f.status));
                                     ui.add_space(3.0);
                                     let name = f.path.rsplit('/').next().unwrap_or(&f.path);
-                                    let r = ui.selectable_label(
-                                        is_sel,
-                                        egui::RichText::new(name)
-                                            .color(if is_sel {
-                                                theme::text_primary()
-                                            } else {
-                                                theme::text_secondary()
-                                            })
-                                            .size(12.0),
+                                    let r = ui.add(
+                                        egui::Button::selectable(
+                                            is_sel,
+                                            egui::RichText::new(name)
+                                                .color(if is_sel {
+                                                    theme::text_primary()
+                                                } else {
+                                                    theme::text_secondary()
+                                                })
+                                                .size(12.0),
+                                        )
+                                        .truncate(),
                                     );
                                     if r.clicked() {
                                         clicked = true;
                                     }
-                                    if f.path != name {
-                                        r.on_hover_text(&f.path);
-                                    }
+                                    r.on_hover_text(&f.path);
                                 });
                                 if clicked {
                                     let path = f.path.clone();
@@ -287,22 +297,23 @@ impl DiffView {
                                         .on_hover_text(status_tooltip(status));
                                         ui.add_space(3.0);
                                         let name = f.path.rsplit('/').next().unwrap_or(&f.path);
-                                        let r = ui.selectable_label(
-                                            is_sel,
-                                            egui::RichText::new(name)
-                                                .color(if is_sel {
-                                                    theme::bg_app()
-                                                } else {
-                                                    theme::text_secondary()
-                                                })
-                                                .size(12.0),
+                                        let r = ui.add(
+                                            egui::Button::selectable(
+                                                is_sel,
+                                                egui::RichText::new(name)
+                                                    .color(if is_sel {
+                                                        theme::text_primary()
+                                                    } else {
+                                                        theme::text_secondary()
+                                                    })
+                                                    .size(12.0),
+                                            )
+                                            .truncate(),
                                         );
                                         if r.clicked() {
                                             clicked = true;
                                         }
-                                        if f.path != name {
-                                            r.on_hover_text(&f.path);
-                                        }
+                                        r.on_hover_text(&f.path);
                                     });
                                     if clicked {
                                         let path = f.path.clone();
@@ -340,8 +351,11 @@ impl DiffView {
 
             // ── Diff area ─────────────────────────────────────────────────────
         }
-        let mut diff_child =
-            ui.child_ui(diff_rect, egui::Layout::top_down(egui::Align::LEFT), None);
+        let mut diff_child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(diff_rect)
+                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+        );
         let actions = self.show_diff_area(
             &mut diff_child,
             &diff_opt,
@@ -429,6 +443,17 @@ impl DiffView {
                 }
                 self.binary_textures = [None, None];
                 self.items = flatten_unified(diff);
+                let glyph_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        "M".into(),
+                        FontId::monospace(FONT_SIZE),
+                        theme::text_primary(),
+                    )
+                    .size()
+                    .x
+                    .ceil();
+                self.content_width = widest_content_width(&self.items, glyph_width);
                 self.split_rows = flatten_split(diff);
                 for row in &self.split_rows {
                     if let SplitRow::Pair { left, right } = row {
@@ -447,6 +472,7 @@ impl DiffView {
             }
         } else {
             self.items.clear();
+            self.content_width = 0.0;
             self.split_rows.clear();
             self.binary_textures = [None, None];
             if !same_selection {
@@ -457,11 +483,6 @@ impl DiffView {
         }
 
         // ── Header ────────────────────────────────────────────────────────
-        if self.state.lock().unwrap().focused_pane == 4
-            && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F))
-        {
-            self.search_open = true;
-        }
         let header_h = 80.0;
         let header_rect =
             Rect::from_min_size(ui.min_rect().min, Vec2::new(ui.available_width(), header_h));
@@ -475,7 +496,7 @@ impl DiffView {
             header_rect.min + egui::vec2(8.0, 4.0),
             egui::vec2(header_rect.width() - 16.0, 32.0),
         );
-        ui.allocate_ui_at_rect(tabs_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 for (label, mode) in [("Diff", 0), ("Blame", 1), ("Console", 2)] {
                     let active = match mode {
@@ -514,18 +535,18 @@ impl DiffView {
                             .selectable_value(&mut self.split_view, false, "Unified diff")
                             .clicked()
                         {
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui
                             .selectable_value(&mut self.split_view, true, "Split diff")
                             .clicked()
                         {
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.checkbox(&mut self.show_whitespace, "Show whitespace");
                         if ui.button("Find in diff").clicked() {
                             self.search_open = true;
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self.show_console
                             && !console_log.is_empty()
@@ -538,7 +559,7 @@ impl DiffView {
                             {
                                 let _ = std::fs::write(path, console_log.join("\n"));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     })
                     .response
@@ -560,7 +581,7 @@ impl DiffView {
             header_rect.min + egui::vec2(12.0, 42.0),
             egui::vec2(header_rect.width() - 24.0, 32.0),
         );
-        ui.allocate_ui_at_rect(file_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(file_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 let filename = selected_file
                     .as_deref()
@@ -605,7 +626,7 @@ impl DiffView {
             let toolbar =
                 Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 36.0));
             content_rect.min.y += 36.0;
-            ui.allocate_ui_at_rect(toolbar, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar), |ui| {
                 ui.horizontal(|ui| {
                     let changed = ui
                         .add(
@@ -672,7 +693,7 @@ impl DiffView {
             content_rect.min.y += 36.0;
             let mut apply = false;
             let mut discard = false;
-            ui.allocate_ui_at_rect(toolbar, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar), |ui| {
                 ui.horizontal(|ui| {
                     let label = if diff_context == DiffContext::StagedFile { "Unstage" } else { "Stage" };
                     apply = ui.add_enabled(!self.selected_rows.is_empty(), Button::new(format!("{label} ({})", self.selected_rows.len()))).clicked();
@@ -706,7 +727,7 @@ impl DiffView {
 
         // ── Console ───────────────────────────────────────────────────────
         if self.show_console {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false; 2])
                     .stick_to_bottom(true)
@@ -750,7 +771,7 @@ impl DiffView {
 
         // ── Blame ─────────────────────────────────────────────────────────
         if self.show_blame {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
@@ -829,9 +850,9 @@ impl DiffView {
 
         // ── Empty / binary / no-changes ───────────────────────────────────
         if let Some(preview) = diff_opt.as_ref().and_then(|d| d.binary_preview.as_ref()) {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 egui::ScrollArea::vertical()
-                    .id_source("binary_preview")
+                    .id_salt("binary_preview")
                     .show(ui, |ui| {
                         crate::ui::binary_preview::show(
                             ui,
@@ -847,7 +868,7 @@ impl DiffView {
             .as_ref()
             .filter(|d| !d.is_binary && d.hunks.is_empty() && !d.raw_patch.is_empty())
         {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 egui::ScrollArea::both().show(ui, |ui| {
                     ui.label("File metadata changed");
                     ui.monospace(String::from_utf8_lossy(&diff.raw_patch));
@@ -869,7 +890,7 @@ impl DiffView {
             None
         };
         if let Some(msg) = empty_msg {
-            ui.allocate_ui_at_rect(content_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.label(
                         egui::RichText::new(msg)
@@ -888,6 +909,7 @@ impl DiffView {
                 content_rect,
                 &self.split_rows,
                 &self.items,
+                self.content_width,
                 diff_context,
                 &mut self.selected_rows,
                 &mut self.selection_anchor,
@@ -902,6 +924,7 @@ impl DiffView {
                 ui,
                 content_rect,
                 &self.items,
+                self.content_width,
                 diff_context,
                 &mut self.selected_rows,
                 &mut self.selection_anchor,
@@ -921,6 +944,7 @@ fn render_unified(
     ui: &mut Ui,
     rect: Rect,
     items: &[Item],
+    content_width: f32,
     diff_context: DiffContext,
     selected: &mut std::collections::BTreeSet<usize>,
     anchor: &mut Option<usize>,
@@ -930,31 +954,33 @@ fn render_unified(
 ) -> Vec<DiffAction> {
     let is_workdir = diff_context != DiffContext::CommitDiff;
     let is_staged = diff_context == DiffContext::StagedFile;
-    let avail_w = rect.width();
     let total_h = items.len() as f32 * ROW_HEIGHT;
     let actions = std::cell::RefCell::new(Vec::<DiffAction>::new());
 
-    ui.allocate_ui_at_rect(rect, |ui| {
-        egui::ScrollArea::vertical()
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(rect));
+        egui::ScrollArea::both()
+            .content_margin(egui::Margin::same(0))
             .auto_shrink([false; 2])
-            .show(ui, |ui| {
-                let sense = if is_workdir {
-                    Sense::click()
-                } else {
-                    Sense::hover()
-                };
-                let (resp, painter) = ui.allocate_painter(Vec2::new(avail_w, total_h), sense);
+            .show_viewport(ui, |ui, viewport| {
+                let width = unified_content_width(viewport.width(), content_width);
+                // Painted rows must not take keyboard focus: that would also
+                // activate egui_wants_keyboard_input and suppress diff copying.
+                let (resp, painter) = ui.allocate_painter(
+                    Vec2::new(width, total_h.max(viewport.height())),
+                    Sense::CLICK,
+                );
                 let origin = resp.rect.min;
+                let clip = painter.clip_rect();
                 if let Some(row) = scroll_to {
                     ui.scroll_to_rect(
                         Rect::from_min_size(
-                            Pos2::new(origin.x, origin.y + row as f32 * ROW_HEIGHT),
-                            Vec2::new(avail_w, ROW_HEIGHT),
+                            Pos2::new(clip.left(), origin.y + row as f32 * ROW_HEIGHT),
+                            Vec2::new(clip.width(), ROW_HEIGHT),
                         ),
                         Some(egui::Align::Center),
                     );
                 }
-                let clip = painter.clip_rect();
 
                 let click_pos = if resp.clicked() {
                     resp.interact_pointer_pos()
@@ -970,7 +996,7 @@ fn render_unified(
                 for i in first..last {
                     let y = origin.y + i as f32 * ROW_HEIGHT;
                     let row_rect =
-                        Rect::from_min_size(Pos2::new(origin.x, y), Vec2::new(avail_w, ROW_HEIGHT));
+                        Rect::from_min_size(Pos2::new(origin.x, y), Vec2::new(width, ROW_HEIGHT));
 
                     match &items[i] {
                         Item::HunkHeader { text, hunk_index } => {
@@ -983,14 +1009,14 @@ fn render_unified(
                                 Stroke::new(0.5, theme::border()),
                             );
                             let text_end_x = if is_workdir {
-                                avail_w - 220.0
+                                clip.right() - 220.0
                             } else {
-                                avail_w - 10.0
+                                origin.x + width - 10.0
                             };
                             painter
                                 .with_clip_rect(Rect::from_min_max(
                                     Pos2::new(origin.x + 10.0, y),
-                                    Pos2::new(origin.x + text_end_x, y + ROW_HEIGHT),
+                                    Pos2::new(text_end_x, y + ROW_HEIGHT),
                                 ))
                                 .text(
                                     Pos2::new(origin.x + 10.0, y + ROW_HEIGHT / 2.0),
@@ -1014,7 +1040,7 @@ fn render_unified(
                                 let btn_w = 94.0;
                                 let btn_h = ROW_HEIGHT - 4.0;
                                 let mut btn_x =
-                                    origin.x + avail_w - (btns.len() as f32 * (btn_w + 4.0)) - 4.0;
+                                    clip.right() - (btns.len() as f32 * (btn_w + 4.0)) - 4.0;
 
                                 for (label, col, is_discard) in btns {
                                     let btn_rect = Rect::from_min_size(
@@ -1031,7 +1057,12 @@ fn render_unified(
                                             Color32::TRANSPARENT
                                         },
                                     );
-                                    painter.rect_stroke(btn_rect, 3.0, Stroke::new(1.0, *col));
+                                    painter.rect_stroke(
+                                        btn_rect,
+                                        3.0,
+                                        Stroke::new(1.0, *col),
+                                        egui::StrokeKind::Middle,
+                                    );
                                     painter.text(
                                         btn_rect.center(),
                                         egui::Align2::CENTER_CENTER,
@@ -1123,7 +1154,7 @@ fn render_unified(
                             super::highlight::paint(
                                 &painter.with_clip_rect(Rect::from_min_max(
                                     Pos2::new(cx, y),
-                                    Pos2::new(origin.x + avail_w - 4.0, y + ROW_HEIGHT),
+                                    Pos2::new(origin.x + width - 4.0, y + ROW_HEIGHT),
                                 )),
                                 Pos2::new(cx, cy),
                                 content,
@@ -1156,6 +1187,7 @@ fn render_unified(
                                                 anchor,
                                                 i,
                                                 ui.input(|input| input.modifiers),
+                                                true,
                                             );
                                         } else if row_rect.contains(cp) {
                                             let hi = *hunk_index;
@@ -1170,6 +1202,16 @@ fn render_unified(
                                     }
                                 }
                             }
+                            if !is_workdir && click_pos.is_some_and(|p| row_rect.contains(p)) {
+                                select_line(
+                                    items,
+                                    selected,
+                                    anchor,
+                                    i,
+                                    ui.input(|input| input.modifiers),
+                                    false,
+                                );
+                            }
                         }
 
                         Item::Binary => {
@@ -1183,6 +1225,12 @@ fn render_unified(
                         }
                     }
                 }
+                let pointer_row = resp.interact_pointer_pos().and_then(|p| {
+                    let row = ((p.y - origin.y) / ROW_HEIGHT).floor() as usize;
+                    matches!(items.get(row), Some(Item::Line { .. })).then_some(row)
+                });
+                copy_menu(ui, &resp, items, selected, pointer_row);
+                copy_shortcut(ui, items, selected, resp.hovered());
             });
     });
 
@@ -1197,24 +1245,22 @@ fn select_line(
     anchor: &mut Option<usize>,
     row: usize,
     modifiers: egui::Modifiers,
+    changes_only: bool,
 ) {
     if modifiers.shift {
         let start = anchor.unwrap_or(row);
-        if !modifiers.command {
+        if !modifiers.command && !modifiers.ctrl {
             selected.clear();
         }
         for index in start.min(row)..=start.max(row) {
             if matches!(
                 items.get(index),
-                Some(Item::Line {
-                    origin: '+' | '-',
-                    ..
-                })
+                Some(Item::Line { origin, .. }) if !changes_only || matches!(*origin, '+' | '-')
             ) {
                 selected.insert(index);
             }
         }
-    } else if modifiers.command {
+    } else if modifiers.command || modifiers.ctrl {
         if !selected.remove(&row) {
             selected.insert(row);
         }
@@ -1231,6 +1277,7 @@ fn render_split(
     rect: Rect,
     rows: &[SplitRow],
     items: &[Item],
+    content_width: f32,
     context: DiffContext,
     selected: &mut std::collections::BTreeSet<usize>,
     anchor: &mut Option<usize>,
@@ -1250,27 +1297,30 @@ fn render_split(
         })
     });
     let mut actions = Vec::new();
-    let avail_w = rect.width();
-    let half = (avail_w / 2.0).floor();
     let total_h = rows.len() as f32 * ROW_HEIGHT;
 
-    ui.allocate_ui_at_rect(rect, |ui| {
-        egui::ScrollArea::vertical()
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(rect));
+        egui::ScrollArea::both()
+            .content_margin(egui::Margin::same(0))
             .auto_shrink([false; 2])
-            .show(ui, |ui| {
-                let (resp, painter) =
-                    ui.allocate_painter(Vec2::new(avail_w, total_h), Sense::hover());
+            .show_viewport(ui, |ui, viewport| {
+                let half = split_column_width(viewport.width(), content_width);
+                let (resp, painter) = ui.allocate_painter(
+                    Vec2::new(half * 2.0, total_h.max(viewport.height())),
+                    Sense::CLICK,
+                );
                 let origin = resp.rect.min;
+                let clip = painter.clip_rect();
                 if let Some(row) = scroll_to {
                     ui.scroll_to_rect(
                         Rect::from_min_size(
-                            Pos2::new(origin.x, origin.y + row as f32 * ROW_HEIGHT),
-                            Vec2::new(avail_w, ROW_HEIGHT),
+                            Pos2::new(clip.left(), origin.y + row as f32 * ROW_HEIGHT),
+                            Vec2::new(clip.width(), ROW_HEIGHT),
                         ),
                         Some(egui::Align::Center),
                     );
                 }
-                let clip = painter.clip_rect();
 
                 let div_x = origin.x + half;
                 painter.line_segment(
@@ -1291,7 +1341,7 @@ fn render_split(
                         SplitRow::HunkHeader(text) => {
                             let full = Rect::from_min_size(
                                 Pos2::new(origin.x, y),
-                                Vec2::new(avail_w, ROW_HEIGHT),
+                                Vec2::new(half * 2.0, ROW_HEIGHT),
                             );
                             painter.rect_filled(full, 0.0, theme::bg_diff_hunk());
                             painter.line_segment(
@@ -1316,7 +1366,7 @@ fn render_split(
                                 render_split_side(
                                     &painter, x, y, half, side, is_left, code, whitespace,
                                 );
-                                let Some(line) = side.as_ref().filter(|line| line.changed) else {
+                                let Some(line) = side.as_ref() else {
                                     continue;
                                 };
                                 let side_rect = Rect::from_min_size(
@@ -1330,13 +1380,13 @@ fn render_split(
                                         theme::accent_blue().gamma_multiply(0.25),
                                     );
                                 }
-                                if context == DiffContext::CommitDiff {
+                                if context != DiffContext::CommitDiff && !line.changed {
                                     continue;
                                 }
                                 let response = ui.interact(
                                     side_rect.intersect(clip),
                                     ui.id().with(("split_line", i, is_left)),
-                                    Sense::click(),
+                                    Sense::CLICK,
                                 );
                                 response.widget_info(|| {
                                     egui::WidgetInfo::selected(
@@ -1347,9 +1397,10 @@ fn render_split(
                                     )
                                 });
                                 if response.clicked() {
-                                    if response
-                                        .interact_pointer_pos()
-                                        .is_some_and(|p| p.x < x + S_GUTTER)
+                                    if context != DiffContext::CommitDiff
+                                        && response
+                                            .interact_pointer_pos()
+                                            .is_some_and(|p| p.x < x + S_GUTTER)
                                     {
                                         if let Some(Item::Line {
                                             hunk_index,
@@ -1370,13 +1421,32 @@ fn render_split(
                                             anchor,
                                             line.unified_row,
                                             ui.input(|i| i.modifiers),
+                                            context != DiffContext::CommitDiff,
                                         );
                                     }
                                 }
+                                copy_menu(ui, &response, items, selected, Some(line.unified_row));
                             }
                         }
                     }
                 }
+                let pointer_row = resp.interact_pointer_pos().and_then(|p| {
+                    let row = ((p.y - origin.y) / ROW_HEIGHT).floor() as usize;
+                    match rows.get(row) {
+                        Some(SplitRow::Pair { left, right }) => {
+                            let side = if p.x < origin.x + half { left } else { right };
+                            side.as_ref().map(|line| line.unified_row)
+                        }
+                        _ => None,
+                    }
+                });
+                copy_menu(ui, &resp, items, selected, pointer_row);
+                let hovered = ui.input(|i| {
+                    i.pointer
+                        .hover_pos()
+                        .is_some_and(|p| rect.intersect(clip).contains(p))
+                });
+                copy_shortcut(ui, items, selected, hovered);
             });
     });
     actions
@@ -1470,6 +1540,103 @@ fn render_split_side(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Use a rounded-up monospace advance so ASCII lines always fit. Tabs and wide
+/// Unicode are conservatively approximated, including the whitespace display.
+fn widest_content_width(items: &[Item], glyph_width: f32) -> f32 {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Line { content, .. } => Some(
+                content
+                    .chars()
+                    .map(|ch| match ch {
+                        '\t' => 4,
+                        ch if ch.is_ascii() => 1,
+                        _ => 2,
+                    })
+                    .sum::<usize>(),
+            ),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0) as f32
+        * glyph_width
+}
+
+fn unified_content_width(viewport_width: f32, content_width: f32) -> f32 {
+    viewport_width.max(U_GUTTER + 18.0 + content_width + CONTENT_PADDING)
+}
+
+fn split_column_width(viewport_width: f32, content_width: f32) -> f32 {
+    (viewport_width / 2.0).max(S_GUTTER + 16.0 + content_width + CONTENT_PADDING)
+}
+
+fn selected_text(items: &[Item], rows: &BTreeSet<usize>) -> String {
+    rows.iter()
+        .filter_map(|&row| match items.get(row) {
+            Some(Item::Line { content, .. }) => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Rows are selected with the pointer, so copying requires it over the diff; this
+/// leaves Ctrl/Cmd+C elsewhere (labels, other panes) to their own handlers.
+fn copy_shortcut(ui: &Ui, items: &[Item], selected: &BTreeSet<usize>, hovered: bool) {
+    if ui.ctx().egui_wants_keyboard_input() || !hovered || selected.is_empty() {
+        return;
+    }
+    if ui.input(|i| {
+        i.events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Copy))
+    }) {
+        ui.ctx().copy_text(selected_text(items, selected));
+    }
+}
+
+fn copy_menu(
+    ui: &Ui,
+    response: &egui::Response,
+    items: &[Item],
+    selected: &BTreeSet<usize>,
+    pointer_row: Option<usize>,
+) {
+    let id = response.id.with("copy_line");
+    if response.secondary_clicked() {
+        // Capture the content when the menu opens, before the pointer moves to
+        // a menu item (or a newly loaded diff replaces the original rows).
+        let line = pointer_row.and_then(|row| match items.get(row) {
+            Some(Item::Line { content, .. }) => Some(content.clone()),
+            _ => None,
+        });
+        ui.data_mut(|data| data.insert_temp(id, line));
+    }
+    response.context_menu(|ui| {
+        if ui
+            .add_enabled(
+                !selected.is_empty(),
+                egui::Button::new("Copy selected lines"),
+            )
+            .clicked()
+        {
+            ui.ctx().copy_text(selected_text(items, selected));
+            ui.close();
+        }
+        let line = ui.data_mut(|data| data.get_temp::<Option<String>>(id).flatten());
+        if ui
+            .add_enabled(line.is_some(), egui::Button::new("Copy line"))
+            .clicked()
+        {
+            if let Some(line) = line {
+                ui.ctx().copy_text(line);
+            }
+            ui.close();
+        }
+    });
+}
 
 fn line_colors(ch: char) -> (Color32, Color32, Color32) {
     match ch {
@@ -1635,5 +1802,180 @@ fn status_tooltip(status: char) -> &'static str {
         'D' => "Deleted",
         'R' => "Renamed",
         _ => "Modified",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{DiffHunk, DiffLine};
+
+    fn diff(lines: &[(char, &str)]) -> FileDiff {
+        FileDiff {
+            binary_preview: None,
+            raw_patch: Vec::new(),
+            old_path: None,
+            is_rename: false,
+            old_mode: 0o100644,
+            new_mode: 0o100644,
+            commit_oid: String::new(),
+            file_path: "example.rs".into(),
+            hunks: vec![DiffHunk {
+                header: "@@ -1,3 +1,3 @@".into(),
+                lines: lines
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &(origin, content))| DiffLine {
+                        origin,
+                        content: content.into(),
+                        old_lineno: (origin != '+').then_some(index as u32 + 1),
+                        new_lineno: (origin != '-').then_some(index as u32 + 1),
+                    })
+                    .collect(),
+            }],
+            is_binary: false,
+            additions: lines.iter().filter(|(origin, _)| *origin == '+').count(),
+            deletions: lines.iter().filter(|(origin, _)| *origin == '-').count(),
+        }
+    }
+
+    #[test]
+    fn selected_text_skips_headers_and_preserves_contents_order_and_empty_lines() {
+        let items = flatten_unified(&diff(&[
+            (' ', " context\r\n"),
+            ('-', "-source\n"),
+            ('+', "not selected\n"),
+            ('+', "\n"),
+            (' ', "last\n"),
+            ('+', ""),
+        ]));
+        let rows = BTreeSet::from([6, 0, 5, 2, 1, 4, 99]);
+        assert_eq!(selected_text(&items, &rows), " context\n-source\n\nlast\n");
+        assert_eq!(selected_text(&items, &BTreeSet::from([0, 99])), "");
+        assert_eq!(selected_text(&items, &BTreeSet::new()), "");
+    }
+
+    #[test]
+    fn long_lines_expand_both_layouts_and_short_lines_fit_the_viewport() {
+        let long = "M".repeat(400);
+        let items = flatten_unified(&diff(&[('+', &long)]));
+        let width = widest_content_width(&items, 8.0);
+        assert!(width > 800.0);
+        assert!(unified_content_width(800.0, width) > 800.0);
+        assert!(split_column_width(800.0, width) > 400.0);
+
+        let short = flatten_unified(&diff(&[('+', "short")]));
+        let width = widest_content_width(&short, 8.0);
+        assert_eq!(unified_content_width(800.0, width), 800.0);
+        assert_eq!(split_column_width(800.0, width), 400.0);
+        let tabs = flatten_unified(&diff(&[(' ', "\t a")]));
+        assert_eq!(widest_content_width(&tabs, 8.0), 48.0);
+    }
+
+    #[test]
+    fn commit_range_selection_includes_context_but_workdir_selection_keeps_changes_only() {
+        let items = flatten_unified(&diff(&[('-', "old"), (' ', "context"), ('+', "new")]));
+        let mut selected = BTreeSet::new();
+        let mut anchor = Some(1);
+        let shift = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        select_line(&items, &mut selected, &mut anchor, 3, shift, false);
+        assert_eq!(selected_text(&items, &selected), "old\ncontext\nnew");
+        select_line(&items, &mut selected, &mut anchor, 3, shift, true);
+        assert_eq!(selected_text(&items, &selected), "old\nnew");
+
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        select_line(&items, &mut selected, &mut anchor, 1, ctrl, false);
+        assert_eq!(selected, BTreeSet::from([3]));
+        let command = egui::Modifiers {
+            command: true,
+            ..Default::default()
+        };
+        select_line(&items, &mut selected, &mut anchor, 2, command, false);
+        assert_eq!(selected, BTreeSet::from([2, 3]));
+    }
+
+    #[test]
+    fn unified_renderer_allocates_long_rows_beyond_the_viewport() {
+        for (text, should_scroll) in [("M".repeat(400), true), ("short".into(), false)] {
+            let ctx = egui::Context::default();
+            // The diff toolbar draws Material icons, as in the app.
+            ctx.set_fonts(crate::icons::font_definitions());
+            let state = crate::state::new_shared_state();
+            {
+                let mut state = state.lock().unwrap();
+                state.selected_file = Some("example.rs".into());
+                state.current_diff = Some(Arc::new(diff(&[('+', &text)])));
+                state.diff_context = DiffContext::CommitDiff;
+            }
+            let mut view = DiffView::new(state);
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 200.0));
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            });
+            let mut ui = Ui::new(
+                ctx.clone(),
+                egui::Id::new("diff_width_test"),
+                egui::UiBuilder::new().max_rect(rect),
+            );
+            view.show(&mut ui);
+            assert_eq!(view.content_width > rect.width(), should_scroll);
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            // Row backgrounds use exactly the allocated painter width. The
+            // clipping viewport stays narrow even when that allocation grows.
+            let (row_width, clip_width) = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(row)
+                        if row.fill == theme::bg_diff_add() && row.rect.width() > BAR_W =>
+                    {
+                        Some((row.rect.width(), shape.clip_rect.width()))
+                    }
+                    _ => None,
+                })
+                .expect("added line background");
+            assert_eq!(row_width > rect.width(), should_scroll);
+            assert!(clip_width <= rect.width());
+        }
+    }
+
+    #[test]
+    fn copy_shortcut_copies_selected_rows_only_over_the_diff_without_text_focus() {
+        for (focus_text, hovered) in [(false, true), (true, true), (false, false)] {
+            let ctx = egui::Context::default();
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 200.0));
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(rect),
+                events: vec![egui::Event::Copy],
+                ..Default::default()
+            });
+            let mut ui = Ui::new(
+                ctx.clone(),
+                egui::Id::new("diff_copy_test"),
+                egui::UiBuilder::new().max_rect(rect),
+            );
+            if focus_text {
+                let mut text = "editor text".to_string();
+                ui.add(egui::TextEdit::singleline(&mut text))
+                    .request_focus();
+                assert!(ctx.egui_wants_keyboard_input());
+            }
+            let items = flatten_unified(&diff(&[('-', "old"), ('+', "new")]));
+            copy_shortcut(&ui, &items, &BTreeSet::from([1, 2]), hovered);
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            let copied_diff = output.platform_output.commands.iter().any(|command| {
+                matches!(command, egui::OutputCommand::CopyText(text) if text == "old\nnew")
+            });
+            assert_eq!(copied_diff, hovered && !focus_text);
+        }
     }
 }

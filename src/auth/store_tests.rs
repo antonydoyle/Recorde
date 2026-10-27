@@ -209,3 +209,307 @@ fn repository_binding_and_url_username_must_agree() {
     );
     assert!(selected_username(Some("alice"), Some("bob")).is_err());
 }
+
+#[test]
+fn explicit_clone_account_overrides_global_profile_default_but_not_repository_binding() {
+    let mut config = crate::config::Config::default();
+    config
+        .provider_accounts
+        .insert("github.com".into(), "work-user".into());
+    let personal =
+        super::super::endpoint::parse("https://personal-user@github.com/team/project.git", false)
+            .unwrap();
+    let automatic =
+        super::super::endpoint::parse("https://github.com/team/project.git", false).unwrap();
+    let repo = Path::new("fixture/repository");
+    assert_eq!(
+        configured_username(&personal, None, &config).unwrap(),
+        Some("personal-user")
+    );
+    assert_eq!(
+        configured_username(&personal, Some(repo), &config).unwrap(),
+        Some("personal-user")
+    );
+    assert_eq!(
+        configured_username(&automatic, None, &config).unwrap(),
+        Some("work-user")
+    );
+    assert_eq!(
+        configured_username(&automatic, Some(repo), &config).unwrap(),
+        Some("work-user")
+    );
+
+    // Verify routing against an isolated vault with both identities, without
+    // touching the user's global config or native desktop credential vault.
+    let (_dir, store) = fixture();
+    store
+        .save("github.com", "personal-user", "personal-token")
+        .unwrap();
+    store.save("github.com", "work-user", "work-token").unwrap();
+    let username = configured_username(&personal, None, &config).unwrap();
+    assert_eq!(
+        store.lookup(&personal.host, username).unwrap(),
+        Some(("personal-user".into(), "personal-token".into()))
+    );
+    let username = configured_username(&automatic, None, &config).unwrap();
+    assert_eq!(
+        store.lookup(&automatic.host, username).unwrap(),
+        Some(("work-user".into(), "work-token".into()))
+    );
+    let missing =
+        super::super::endpoint::parse("https://missing-user@github.com/team/project.git", false)
+            .unwrap();
+    let username = configured_username(&missing, None, &config).unwrap();
+    assert_eq!(username, Some("missing-user"));
+    assert_eq!(
+        store.lookup(&missing.host, username).unwrap(),
+        None,
+        "an unavailable explicit account must never fall back to the default account"
+    );
+
+    config
+        .per_repo
+        .entry(repo.display().to_string())
+        .or_default()
+        .provider_accounts
+        .insert("github.com".into(), "work-user".into());
+    assert!(configured_username(&personal, Some(repo), &config)
+        .unwrap_err()
+        .contains("conflicts"));
+    config
+        .per_repo
+        .get_mut(&repo.display().to_string())
+        .unwrap()
+        .provider_accounts
+        .insert("github.com".into(), "personal-user".into());
+    assert_eq!(
+        configured_username(&personal, Some(repo), &config).unwrap(),
+        Some("personal-user")
+    );
+    assert_eq!(
+        configured_username(&automatic, Some(repo), &config).unwrap(),
+        Some("personal-user")
+    );
+}
+
+#[test]
+fn global_profile_fallback_respects_transport_aliases_and_exact_authority() {
+    let mut config = crate::config::Config::default();
+    config
+        .provider_accounts
+        .insert("github.com".into(), "work-user".into());
+    config.accounts.push(super::super::StoredAccount {
+        provider: super::super::ProviderKind::GitHubCom,
+        host: "github.com".into(),
+        username: "work-user".into(),
+    });
+    let alias =
+        super::super::endpoint::parse("https://x-access-token@github.com/team/project.git", false)
+            .unwrap();
+    let ssh = super::super::endpoint::parse("git@github.com:team/project.git", true).unwrap();
+    assert_eq!(
+        configured_username(&alias, None, &config).unwrap(),
+        Some("work-user")
+    );
+    assert_eq!(
+        configured_username(&ssh, None, &config).unwrap(),
+        Some("work-user")
+    );
+    for url in [
+        "https://github.com:8443/team/project.git",
+        "https://github.com.evil.test/team/project.git",
+    ] {
+        let endpoint = super::super::endpoint::parse(url, false).unwrap();
+        assert_eq!(
+            configured_username(&endpoint, None, &config).unwrap(),
+            None,
+            "{url}"
+        );
+    }
+    config
+        .provider_accounts
+        .insert("bitbucket.org".into(), "work@example.com".into());
+    let bitbucket = super::super::endpoint::parse(
+        "https://x-bitbucket-api-token-auth@bitbucket.org/team/project.git",
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        configured_username(&bitbucket, None, &config).unwrap(),
+        Some("work@example.com")
+    );
+}
+
+#[test]
+fn oauth_rotation_is_verified_in_vault_before_access_is_returned() {
+    for fail in [false, true] {
+        let (_dir, store) = fixture();
+        store
+            .save("github.com", "fixture", "old-vault-envelope")
+            .unwrap();
+        store
+            .save("github.com", "other", "unrelated-token")
+            .unwrap();
+        store.vault.lose_write.set(fail);
+        let result = store.lookup_with("github.com", Some("fixture"), |saved, host, user| {
+            assert_eq!(
+                (saved, host, user),
+                ("old-vault-envelope", "github.com", "fixture")
+            );
+            Ok(("test-new-access".into(), Some("new-vault-envelope".into())))
+        });
+        if fail {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap().unwrap().1, "test-new-access");
+        }
+        assert_eq!(
+            store.vault.get("github.com", "fixture").unwrap().as_deref(),
+            Some(if fail {
+                "old-vault-envelope"
+            } else {
+                "new-vault-envelope"
+            })
+        );
+        assert_eq!(
+            store.vault.get("github.com", "other").unwrap().as_deref(),
+            Some("unrelated-token")
+        );
+        let index = std::fs::read_to_string(&store.path).unwrap();
+        assert!(!index.contains("envelope") && !index.contains("test-new-access"));
+    }
+}
+
+#[test]
+fn failed_vault_write_after_rotation_requires_reconnection() {
+    let (_dir, store) = fixture();
+    store
+        .save("github.com", "fixture", "old-refresh-envelope")
+        .unwrap();
+    let error = store
+        .lookup_with("github.com", Some("fixture"), |_, _, _| {
+            store.vault.fail_set.set(true);
+            Ok((
+                "new-access-secret".into(),
+                Some("new-refresh-secret".into()),
+            ))
+        })
+        .unwrap_err();
+    assert!(error.contains("reconnect") && error.contains("Renewed"));
+    assert!(!error.contains("secret"));
+    assert_eq!(
+        store.vault.get("github.com", "fixture").unwrap().as_deref(),
+        Some("old-refresh-envelope")
+    );
+}
+
+#[test]
+fn pat_input_cannot_inject_a_saved_oauth_session() {
+    let envelope = format!("{}{{}}", super::super::oauth::ENVELOPE);
+    assert!(validate_pat(&envelope).is_err());
+    // The public entry point rejects before consulting the real store or vault.
+    assert!(save("github.com", "fixture", &envelope).is_err());
+    assert!(validate_pat("ordinary-test-pat").is_ok());
+}
+
+#[test]
+fn windows_vault_capacity_counts_utf16_bytes_only_on_windows() {
+    assert!(validate_vault_password(&"a".repeat(1280), true).is_ok());
+    assert!(validate_vault_password(&"a".repeat(1281), true).is_err());
+    assert!(validate_vault_password(&"🦀".repeat(640), true).is_ok());
+    assert!(validate_vault_password(&"🦀".repeat(641), true).is_err());
+    assert!(validate_vault_password(&"a".repeat(16000), false).is_ok());
+}
+#[test]
+fn transport_usernames_keep_bitbucket_email_for_api_and_pat_identity_unchanged() {
+    assert_eq!(
+        transport_username("bitbucket.org", "user@example.com", "test-pat", false).unwrap(),
+        "x-bitbucket-api-token-auth"
+    );
+    assert_eq!(
+        transport_username("bitbucket.org", "user@example.com", "test-pat", true).unwrap(),
+        "user@example.com"
+    );
+    assert_eq!(
+        transport_username("github.com", "fixture", "test-pat", false).unwrap(),
+        "fixture"
+    );
+}
+
+#[test]
+fn bitbucket_clone_username_is_a_hint_with_bound_single_and_ambiguous_accounts() {
+    let (_dir, store) = fixture();
+    let endpoint =
+        super::super::endpoint::parse("https://alice@bitbucket.org/workspace/repo.git", false)
+            .unwrap();
+    store
+        .save("bitbucket.org", "alice@example.com", "alice-api-token")
+        .unwrap();
+    let selected = remote_username(&endpoint, Some("alice@example.com"), &[]).unwrap();
+    assert_eq!(
+        store.lookup(&endpoint.host, selected).unwrap().unwrap().0,
+        "alice@example.com"
+    );
+    let selected = remote_username(&endpoint, None, &[]).unwrap();
+    assert_eq!(
+        store.lookup(&endpoint.host, selected).unwrap().unwrap().0,
+        "alice@example.com"
+    );
+    store
+        .save("bitbucket.org", "bob@example.com", "bob-api-token")
+        .unwrap();
+    assert!(store.lookup(&endpoint.host, selected).is_err());
+    let selected = remote_username(&endpoint, Some("bob@example.com"), &[]).unwrap();
+    assert_eq!(
+        store.lookup(&endpoint.host, selected).unwrap().unwrap().0,
+        "bob@example.com"
+    );
+    let api_endpoint =
+        super::super::endpoint::parse("https://alice@bitbucket.org/workspace/repo.git", true)
+            .unwrap();
+    assert_eq!(
+        remote_username(&api_endpoint, Some("alice@example.com"), &[]).unwrap(),
+        Some("alice@example.com")
+    );
+}
+
+#[test]
+fn known_oauth_transport_users_require_exact_host_kind_and_unambiguous_account() {
+    use super::super::{ProviderKind, StoredAccount};
+    for (provider, host, placeholder) in [
+        (ProviderKind::GitHubCom, "github.com", "x-access-token"),
+        (ProviderKind::GitLabCom, "gitlab.com", "oauth2"),
+    ] {
+        let (_dir, store) = fixture();
+        store.save(host, "alice", "test-alice-token").unwrap();
+        let endpoint = super::super::endpoint::parse(
+            &format!("https://{placeholder}@{host}/team/repo.git"),
+            false,
+        )
+        .unwrap();
+        let accounts = [StoredAccount {
+            provider,
+            host: host.into(),
+            username: "alice".into(),
+        }];
+        let selected = remote_username(&endpoint, Some("alice"), &accounts).unwrap();
+        assert_eq!(selected, Some("alice"));
+        let selected = remote_username(&endpoint, None, &accounts).unwrap();
+        assert_eq!(store.lookup(host, selected).unwrap().unwrap().0, "alice");
+        store.save(host, "bob", "test-bob-token").unwrap();
+        assert!(store.lookup(host, selected).is_err());
+        assert!(remote_username(&endpoint, Some("alice"), &[]).is_err());
+        let arbitrary = super::super::endpoint::parse(
+            &format!("https://someone-else@{host}/team/repo.git"),
+            false,
+        )
+        .unwrap();
+        assert!(remote_username(&arbitrary, Some("alice"), &accounts).is_err());
+        let mut wrong_host = accounts[0].clone();
+        wrong_host.host = format!("other.{host}");
+        assert!(remote_username(&endpoint, Some("alice"), &[wrong_host]).is_err());
+        let mut wrong_kind = accounts[0].clone();
+        wrong_kind.provider = ProviderKind::AzureDevOps;
+        assert!(remote_username(&endpoint, Some("alice"), &[wrong_kind]).is_err());
+    }
+}

@@ -1,5 +1,6 @@
 pub mod endpoint;
 pub mod helper;
+pub mod oauth;
 pub mod redact;
 pub mod ssh;
 pub mod store;
@@ -13,6 +14,8 @@ pub enum ProviderKind {
     GitHubEnterprise,
     GitLabCom,
     GitLabSelf,
+    BitbucketCloud,
+    AzureDevOps,
 }
 
 impl ProviderKind {
@@ -22,6 +25,8 @@ impl ProviderKind {
             Self::GitHubEnterprise => "GitHub Enterprise",
             Self::GitLabCom => "GitLab.com",
             Self::GitLabSelf => "GitLab (self-hosted)",
+            Self::BitbucketCloud => "Bitbucket Cloud",
+            Self::AzureDevOps => "Azure DevOps",
         }
     }
 
@@ -31,6 +36,8 @@ impl ProviderKind {
             Self::GitHubEnterprise => "",
             Self::GitLabCom => "gitlab.com",
             Self::GitLabSelf => "",
+            Self::BitbucketCloud => "bitbucket.org",
+            Self::AzureDevOps => "dev.azure.com",
         }
     }
 

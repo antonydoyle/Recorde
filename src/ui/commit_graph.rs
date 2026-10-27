@@ -28,6 +28,127 @@ const HEADER_H: f32 = 34.0;
 const NAVIGATION_H: f32 = 52.0;
 const RESIZE_HIT_W: f32 = 14.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum GraphColumn {
+    References,
+    Graph,
+    Commit,
+    Time,
+    Hash,
+}
+
+impl GraphColumn {
+    const ALL: [Self; 5] = [
+        Self::References,
+        Self::Graph,
+        Self::Commit,
+        Self::Time,
+        Self::Hash,
+    ];
+    fn label(self) -> &'static str {
+        match self {
+            Self::References => "Branches / Tags",
+            Self::Graph => "Graph",
+            Self::Commit => "Commit",
+            Self::Time => "Time",
+            Self::Hash => "Hash",
+        }
+    }
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum GraphDateFormat {
+    #[default]
+    Relative,
+    Date,
+    DateTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct GraphPreferences {
+    /// Visible columns in display order; the commit summary is always retained.
+    pub columns: Vec<GraphColumn>,
+    pub date_format: GraphDateFormat,
+}
+
+impl Default for GraphPreferences {
+    fn default() -> Self {
+        Self {
+            columns: GraphColumn::ALL.to_vec(),
+            date_format: GraphDateFormat::Relative,
+        }
+    }
+}
+
+impl GraphPreferences {
+    fn normalize(&mut self) {
+        let mut seen = [false; 5];
+        self.columns.retain(|column| {
+            let old = seen[column.index()];
+            seen[column.index()] = true;
+            !old
+        });
+        if !self.columns.contains(&GraphColumn::Commit) {
+            self.columns.push(GraphColumn::Commit);
+        }
+    }
+}
+
+struct SearchCache {
+    query: String,
+    graph: std::sync::Weak<crate::git::graph::CommitGraph>,
+    nodes_len: usize,
+    matches: std::sync::Arc<Vec<bool>>,
+    count: usize,
+}
+
+impl SearchCache {
+    fn is_valid(
+        &self,
+        query: &str,
+        graph: &std::sync::Arc<crate::git::graph::CommitGraph>,
+    ) -> bool {
+        self.query == query
+            && self.graph.as_ptr() == std::sync::Arc::as_ptr(graph)
+            && self.nodes_len == graph.nodes.len()
+    }
+
+    fn build(query: &str, graph: &std::sync::Arc<crate::git::graph::CommitGraph>) -> Self {
+        let q = query.to_lowercase();
+        let matches: Vec<bool> = graph
+            .nodes
+            .iter()
+            .map(|node| node_matches(node, &q))
+            .collect();
+        let count = matches.iter().filter(|matched| **matched).count();
+        Self {
+            query: query.to_owned(),
+            graph: std::sync::Arc::downgrade(graph),
+            nodes_len: graph.nodes.len(),
+            matches: std::sync::Arc::new(matches),
+            count,
+        }
+    }
+}
+
+fn cached_search<'a>(
+    cache: &'a mut Option<SearchCache>,
+    query: &str,
+    graph: &std::sync::Arc<crate::git::graph::CommitGraph>,
+) -> &'a SearchCache {
+    if !cache
+        .as_ref()
+        .is_some_and(|cache| cache.is_valid(query, graph))
+    {
+        *cache = Some(SearchCache::build(query, graph));
+    }
+    cache.as_ref().unwrap()
+}
+
 pub struct CommitGraphView {
     state: SharedState,
     last_selected: Option<String>,
@@ -48,6 +169,19 @@ pub struct CommitGraphView {
     range_start: String,
     range_end: String,
     ref_query: String,
+    drag: Option<crate::git::graph_action::Drag>,
+    pending_action: Option<crate::git::graph_action::Preview>,
+    viewport_anchor: Option<(String, usize, f32)>,
+    interactions_enabled: bool,
+    confirmation_focus: bool,
+    keyboard_row: Option<String>,
+    search_was_active: bool,
+    search_cache: Option<SearchCache>,
+    /// Where a Shift-click range starts.
+    selection_anchor: Option<String>,
+    preferences: GraphPreferences,
+    preferences_dirty: bool,
+    sidebar_action: Option<crate::ui::sidebar::SidebarAction>,
 }
 
 impl CommitGraphView {
@@ -72,6 +206,204 @@ impl CommitGraphView {
             range_start: String::new(),
             range_end: String::new(),
             ref_query: String::new(),
+            drag: None,
+            pending_action: None,
+            viewport_anchor: None,
+            interactions_enabled: true,
+            confirmation_focus: true,
+            keyboard_row: None,
+            search_was_active: false,
+            search_cache: None,
+            selection_anchor: None,
+            preferences: GraphPreferences::default(),
+            preferences_dirty: false,
+            sidebar_action: None,
+        }
+    }
+
+    pub fn set_interactions_enabled(&mut self, enabled: bool) {
+        self.interactions_enabled = enabled;
+        if !enabled {
+            self.drag = None;
+        }
+    }
+
+    pub fn set_preferences(&mut self, mut preferences: GraphPreferences) {
+        preferences.normalize();
+        self.preferences = preferences;
+        self.preferences_dirty = false;
+    }
+
+    pub fn take_dirty_preferences(&mut self) -> Option<GraphPreferences> {
+        if std::mem::take(&mut self.preferences_dirty) {
+            Some(self.preferences.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn take_sidebar_action(&mut self) -> Option<crate::ui::sidebar::SidebarAction> {
+        self.sidebar_action.take()
+    }
+
+    pub fn has_pending_action(&self) -> bool {
+        self.pending_action.is_some()
+    }
+
+    /// Select `oid`, scroll it into view and load its details. Hidden commits
+    /// clear graph filters so the next refresh can show them.
+    pub fn reveal_commit(&mut self, oid: &str) {
+        let visible = {
+            let mut s = self.state.lock().unwrap();
+            let graph = s.commit_graph.clone();
+            let visible = graph
+                .as_ref()
+                .is_some_and(|graph| graph.oid_to_row.contains_key(oid));
+            s.selected_commit = Some(oid.to_string());
+            if !visible {
+                s.graph_filter = Default::default();
+                // The current-branch view always contains HEAD; other tips need all branches.
+                s.show_all_branches = graph
+                    .and_then(|graph| graph.head_oid.clone())
+                    .is_none_or(|head| head != oid);
+            }
+            visible
+        };
+        self.scroll_to_oid = Some(oid.to_string());
+        if !visible {
+            crate::git::operations::refresh_repo(self.state.clone());
+        }
+        load_commit_detail(oid, self.state.clone());
+    }
+    pub fn cancel_action(&mut self) {
+        self.drag = None;
+        self.pending_action = None;
+        self.confirmation_focus = true;
+    }
+
+    /// Keyboard equivalent of dropping a selected row onto HEAD, or dragging
+    /// the current branch onto that row. Uses exactly the same preview and queue.
+    pub fn preview_selected(&mut self, action: crate::git::graph_action::Action) {
+        let oid = self.state.lock().unwrap().selected_commit.clone();
+        if let Some(oid) = oid {
+            self.preview_endpoint(
+                crate::git::graph_action::Endpoint {
+                    oid,
+                    reference: None,
+                },
+                action,
+            );
+        }
+    }
+
+    // Both keyboard/chip actions and context menus use an explicit immutable
+    // endpoint. A menu never reads a potentially different current selection.
+    fn preview_endpoint(
+        &mut self,
+        selected: crate::git::graph_action::Endpoint,
+        action: crate::git::graph_action::Action,
+    ) {
+        use crate::git::graph_action::{Action, Endpoint, Preview};
+        let (path, epoch, head, branch) = {
+            let s = self.state.lock().unwrap();
+            (
+                s.repo_path.clone(),
+                s.repo_epoch,
+                s.commit_graph.as_ref().and_then(|g| g.head_oid.clone()),
+                s.head_branch.clone(),
+            )
+        };
+        let (Some(path), Some(head), Some(branch)) = (path, head, branch) else {
+            return;
+        };
+        let current = Endpoint {
+            oid: head,
+            reference: Some(format!("refs/heads/{branch}")),
+        };
+        let (source, destination) = if action == Action::Rebase {
+            (current, selected)
+        } else {
+            (selected, current)
+        };
+        match Preview::capture_action(&path, epoch, source, destination, action) {
+            Ok(preview) => {
+                self.pending_action = Some(preview);
+                self.confirmation_focus = true;
+            }
+            Err(error) => self.state.lock().unwrap().error = Some(error),
+        }
+    }
+
+    /// Called by the app after all panels so confirmation remains visible even
+    /// when a different pane gains focus. No mutation happens on drop.
+    pub fn show_action_confirmation(&mut self, ctx: &egui::Context, protected_branches: &[String]) {
+        use crate::git::graph_action::Action;
+        let Some(mut preview) = self.pending_action.clone() else {
+            return;
+        };
+        let current = {
+            let s = self.state.lock().unwrap();
+            s.repo_epoch == preview.epoch
+                && s.repo_path.as_ref() == Some(&preview.path)
+                && matches!(s.modal, crate::state::ModalKind::None)
+                && s.pending_discard.is_none()
+                && s.repo_load_path.is_none()
+        };
+        if !current {
+            self.cancel_action();
+            return;
+        }
+        preview.protected_branches = protected_branches.to_vec();
+        let protected = preview.action == Action::Rebase
+            && protected_branches
+                .iter()
+                .any(|name| preview.head_ref.strip_prefix("refs/heads/") == Some(name.as_str()));
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Area::new(egui::Id::new("graph_confirmation_shield"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(ctx.content_rect().min)
+            .show(ctx, |ui| {
+                let sense = Sense::CLICK | Sense::DRAG;
+                ui.allocate_rect(ctx.content_rect(), sense);
+            });
+        let window = egui::Window::new("Confirm graph operation").order(egui::Order::Foreground).collapsible(false).resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+                ui.set_max_width(540.0);
+                ui.label(format!("Repository: {}", preview.path.display()));
+                ui.label(format!("From: {}", preview.source.label()));
+                ui.label(format!("Destination: {}", preview.destination.label()));
+                ui.horizontal(|ui| {
+                    for action in [Action::Merge, Action::Rebase, Action::CherryPick, Action::Revert] {
+                        ui.add_enabled_ui(preview.allows(action), |ui| { ui.radio_value(&mut preview.action, action, action.label()); });
+                    }
+                });
+                ui.strong(preview.description());
+                ui.label(format!("Expected HEAD: {} ({})", preview.head_ref, &preview.head_oid[..7]));
+                if preview.source_is_merge { ui.label("Cherry-picking or reverting a merge commit requires choosing a mainline parent; use Git for that operation."); }
+                ui.label("Branch protection prevents history rewriting by graph rebase; merges, cherry-picks and reverts remain available.");
+                if preview.action == Action::Rebase { ui.colored_label(theme::accent_orange(), "Rebase rewrites commits on the current branch."); }
+                ui.label("A recovery snapshot preserves staged, unstaged and untracked work. Git may refuse if changes would be overwritten. Conflicts use the existing Continue / Abort controls. Repository, HEAD and both targets are checked again when the queued operation starts.");
+                ui.horizontal(|ui| {
+                    confirm = ui.add_enabled(!protected, Button::new(format!("Confirm {}", preview.action.label()))).clicked();
+                    if protected { ui.label("Protected branch: graph rebase is disabled"); }
+                    let cancel_button = ui.button("Cancel");
+                    if self.confirmation_focus { cancel_button.request_focus(); self.confirmation_focus = false; }
+                    cancel = cancel_button.clicked();
+                });
+                cancel |= ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
+            });
+        if let Some(window) = window {
+            ctx.move_to_top(window.response.layer_id);
+        }
+        if confirm {
+            self.pending_action = None;
+            self.confirmation_focus = true;
+            preview.submit(self.state.clone());
+        } else if cancel {
+            self.cancel_action();
+        } else {
+            self.pending_action = Some(preview);
         }
     }
 
@@ -112,11 +444,7 @@ impl CommitGraphView {
         self.commit_w = COMMIT_W_DEF;
         self.time_w = TIME_W_DEF;
         self.hash_w = HASH_W_DEF;
-        self.last_saved_refs_w = REFS_W_DEF;
-        self.last_saved_graph_w = GRAPH_W_DEF;
-        self.last_saved_time_w = TIME_W_DEF;
-        self.last_saved_hash_w = HASH_W_DEF;
-        self.cols_dirty = false;
+        self.cols_dirty = true;
     }
 
     /// Returns column widths if any changed since last save, then resets the flag.
@@ -141,9 +469,13 @@ impl CommitGraphView {
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
+        if !self.interactions_enabled {
+            ui.disable();
+        }
         let (
             graph_opt,
             selected,
+            multi,
             search_active,
             search_query,
             file_history_path,
@@ -153,6 +485,10 @@ impl CommitGraphView {
             (
                 s.commit_graph.clone(),
                 s.selected_commit.clone(),
+                s.selected_commits
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>(),
                 s.search_active,
                 s.search_query.clone(),
                 s.file_history_path.clone(),
@@ -177,20 +513,11 @@ impl CommitGraphView {
         let avail = ui.available_width();
 
         // ── Search bar ────────────────────────────────────────────────────
-        let want_search = self.state.lock().unwrap().focused_pane != 4
-            && !ui.ctx().wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(Key::F) && i.modifiers.command && !i.modifiers.shift);
-        if want_search {
-            let mut s = self.state.lock().unwrap();
-            s.search_active = !s.search_active;
-            if !s.search_active {
-                s.search_query.clear();
-            }
-        }
-
         let search_h = if search_active { 34.0 } else { 0.0 };
         let mut new_query = search_query.clone();
         let mut close_search = false;
+        let search_just_opened = search_active && !self.search_was_active;
+        self.search_was_active = search_active;
 
         if search_active {
             let bar_rect = Rect::from_min_size(ui.min_rect().min, Vec2::new(avail, search_h));
@@ -199,23 +526,22 @@ impl CommitGraphView {
                 [bar_rect.left_bottom(), bar_rect.right_bottom()],
                 Stroke::new(1.0, theme::border()),
             );
-            ui.allocate_ui_at_rect(bar_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(10.0);
                     ui.label(egui::RichText::new("⌕").size(14.0).color(theme::text_muted()));
                     ui.add_space(6.0);
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut new_query)
+                            .id(egui::Id::new("graph_search"))
                             .desired_width(300.0)
                             .margin(egui::Vec2::new(8.0, 5.0))
                             .hint_text("Search… (message, author:, sha:, after:YYYY-MM-DD, before:YYYY-MM-DD)")
                             .font(FontId::proportional(13.0)),
                     );
-                    r.request_focus();
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape)) { close_search = true; }
+                    if search_just_opened && self.interactions_enabled { r.request_focus(); }
                     if !new_query.is_empty() {
-                        let q = new_query.to_lowercase();
-                        let n = graph.nodes.iter().filter(|n| node_matches(n, &q)).count();
+                        let n = cached_search(&mut self.search_cache, &new_query, &graph).count;
                         ui.add_space(8.0);
                         ui.label(egui::RichText::new(format!("{} match{}", n, if n==1{""} else {"es"})).color(theme::text_muted()).size(12.0));
                     }
@@ -228,7 +554,11 @@ impl CommitGraphView {
             if new_query != search_query {
                 self.state.lock().unwrap().search_query = new_query.clone();
             }
-            if close_search || ui.input(|i| i.key_pressed(Key::Escape)) {
+            let escape = self.interactions_enabled
+                && self.pending_action.is_none()
+                && !egui::Popup::is_any_open(ui.ctx())
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
+            if close_search || escape {
                 let mut s = self.state.lock().unwrap();
                 s.search_active = false;
                 s.search_query.clear();
@@ -252,7 +582,7 @@ impl CommitGraphView {
                 [banner_rect.left_bottom(), banner_rect.right_bottom()],
                 Stroke::new(1.0, theme::border()),
             );
-            ui.allocate_ui_at_rect(banner_rect, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(10.0);
                     let fname = fp.rsplit('/').next().unwrap_or(fp.as_str());
@@ -288,7 +618,7 @@ impl CommitGraphView {
             Pos2::new(ui.min_rect().min.x, navigation_top),
             Vec2::new(avail, NAVIGATION_H),
         );
-        ui.allocate_ui_at_rect(navigation_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(navigation_rect), |ui| {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 ui.add_space(10.0);
@@ -299,21 +629,14 @@ impl CommitGraphView {
                 }
                 if ui.button("Jump to HEAD").clicked() {
                     if let Some(oid) = &graph.head_oid {
-                        self.scroll_to_oid = Some(oid.clone());
-                        {
-                            let mut s = self.state.lock().unwrap();
-                            s.selected_commit = Some(oid.clone());
-                            if !graph.oid_to_row.contains_key(oid) {
-                                s.graph_filter = Default::default(); s.show_all_branches = false;
-                            }
-                        }
-                        if !graph.oid_to_row.contains_key(oid) { crate::git::operations::refresh_repo(self.state.clone()); }
-                        load_commit_detail(oid, self.state.clone());
+                        self.reveal_commit(oid);
                     }
                 }
                 self.filter_menu(ui, &graph);
+                ui.menu_button("Columns", |ui| self.preferences_menu(ui));
                 ui.label(format!("{} commits", graph.nodes.len()));
-                if graph.replacement_refs { ui.colored_label(theme::accent_yellow(), "Original object history").on_hover_text("This repository has replacement refs. The graph and commit detail show stored original objects; native Git operations may honor replacements. Review replacement refs in Git before editing this history."); }
+                if graph.order_may_refine && graph.has_more { ui.label("Progressive history").on_hover_text("History loads without writing an index. As more commits load, rows may move to keep children before parents when commit clocks differ. Optimize History builds Git's index for stable ordering."); }
+                if graph.replacement_refs { ui.colored_label(theme::accent_yellow(), "Replacement history").on_hover_text("This graph and commit detail honor Git replacement objects. Original commit IDs are retained; replacement metadata and ancestry are shown."); }
                 if graph.has_more && ui.add_enabled(!loading, Button::new("More...")).clicked() {
                     crate::git::operations::load_more_history(self.state.clone());
                 }
@@ -334,98 +657,65 @@ impl CommitGraphView {
 
         self.fit_columns(avail);
 
-        let refs_start = header_rect.min.x;
-        let graph_start = refs_start + self.refs_w;
-        let msg_start = graph_start + self.graph_w;
-        let time_x = msg_start + self.commit_w;
-        let hash_x = time_x + self.time_w;
-        let end_x = hash_x + self.hash_w;
+        let (column_starts, column_widths) = self.column_layout();
+        for column in self.preferences.columns.clone() {
+            let x = header_rect.min.x + column_starts[column.index()];
+            let width = column_widths[column.index()];
+            let cell =
+                Rect::from_min_size(Pos2::new(x, header_rect.min.y), Vec2::new(width, HEADER_H));
+            ui.painter()
+                .with_clip_rect(cell.intersect(ui.clip_rect()))
+                .text(
+                    Pos2::new(x + 10.0, header_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    column.label(),
+                    FontId::proportional(12.0),
+                    theme::text_muted(),
+                );
+            ui.interact(
+                cell,
+                egui::Id::new(("graph_header", column.index())),
+                Sense::click(),
+            )
+            .on_hover_text("Right-click to hide, reorder or format columns")
+            .context_menu(|ui| self.preferences_menu(ui));
+        }
+        let columns = self.preferences.columns.clone();
+        for pair in columns.windows(2) {
+            let column = pair[0];
+            let next = pair[1];
+            let x =
+                header_rect.min.x + column_starts[column.index()] + column_widths[column.index()];
+            let auto_width = match column {
+                GraphColumn::References => {
+                    (graph.max_ref_chars as f32 * 6.5 + 40.0).clamp(REFS_W_MIN, REFS_W_MAX)
+                }
+                GraphColumn::Graph => {
+                    ((graph.max_lane as f32 + 1.0) * LANE_W + GRAPH_LEFT + DOT_R * 3.0 + 10.0)
+                        .clamp(GRAPH_W_MIN, GRAPH_W_MAX)
+                }
+                GraphColumn::Commit => COMMIT_W_DEF,
+                GraphColumn::Time => self.time_min_width(),
+                GraphColumn::Hash => HASH_W_DEF,
+            };
+            self.resize_handle(ui, header_rect, x, column, next, auto_width);
+        }
 
-        let hcol = theme::text_muted();
-        let header_font = FontId::proportional(12.0);
-        ui.painter().text(
-            Pos2::new(refs_start + 10.0, header_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            "Branches / Tags",
-            header_font.clone(),
-            hcol,
-        );
-        ui.painter().text(
-            Pos2::new(graph_start + GRAPH_LEFT, header_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            "Graph",
-            header_font.clone(),
-            hcol,
-        );
-        ui.painter().text(
-            Pos2::new(msg_start + 4.0, header_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            "Commit",
-            header_font.clone(),
-            hcol,
-        );
-        ui.painter().text(
-            Pos2::new(time_x + 8.0, header_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            "Time",
-            header_font.clone(),
-            hcol,
-        );
-        ui.painter().text(
-            Pos2::new(hash_x + 8.0, header_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            "Hash",
-            header_font.clone(),
-            hcol,
-        );
-
-        // Compute content-based auto-widths for double-click sizing
-        let auto_refs_w = (graph.max_ref_chars as f32 * 6.5 + 40.0).clamp(REFS_W_MIN, REFS_W_MAX);
-        let auto_graph_w =
-            ((graph.max_lane as f32 + 1.0) * LANE_W + GRAPH_LEFT + DOT_R * 3.0 + 10.0)
-                .clamp(GRAPH_W_MIN, GRAPH_W_MAX);
-
-        self.resize_handle(
-            ui,
-            header_rect,
-            graph_start,
-            ColumnDivider::RefsGraph,
-            auto_refs_w,
-        );
-        self.resize_handle(
-            ui,
-            header_rect,
-            msg_start,
-            ColumnDivider::GraphCommit,
-            auto_graph_w,
-        );
-        self.resize_handle(
-            ui,
-            header_rect,
-            time_x,
-            ColumnDivider::CommitTime,
-            TIME_W_DEF,
-        );
-        self.resize_handle(ui, header_rect, hash_x, ColumnDivider::TimeHash, HASH_W_DEF);
-        ui.painter().line_segment(
-            [
-                Pos2::new(end_x, header_rect.min.y),
-                Pos2::new(end_x, header_rect.max.y),
-            ],
-            Stroke::new(1.0, theme::border()),
-        );
-
-        // ── Scroll area (graph + list) ────────────────────────────────────
         let scroll_start = header_top + HEADER_H;
         let scroll_rect = Rect::from_min_max(
             Pos2::new(ui.min_rect().min.x, scroll_start),
             ui.max_rect().max,
         );
-        let refs_w = self.refs_w;
-        let graph_w = self.graph_w;
-        let commit_w = self.commit_w;
-        let time_w = self.time_w;
-        let hash_w = self.hash_w;
+        let refs_w = column_widths[GraphColumn::References.index()];
+        let graph_w = column_widths[GraphColumn::Graph.index()];
+        let commit_w = column_widths[GraphColumn::Commit.index()];
+        let time_w = column_widths[GraphColumn::Time.index()];
+        let hash_w = column_widths[GraphColumn::Hash.index()];
+        let refs_offset = column_starts[GraphColumn::References.index()];
+        let graph_offset = column_starts[GraphColumn::Graph.index()];
+        let commit_offset = column_starts[GraphColumn::Commit.index()];
+        let time_offset = column_starts[GraphColumn::Time.index()];
+        let hash_offset = column_starts[GraphColumn::Hash.index()];
 
         let nodes = &graph.nodes;
         let show_wip = graph
@@ -435,25 +725,38 @@ impl CommitGraphView {
         let wip_h = if show_wip { ROW_H } else { 0.0 };
         let total_h = nodes.len() as f32 * ROW_H + wip_h;
 
-        let q_lower = if search_active && !search_query.is_empty() {
-            Some(search_query.to_lowercase())
+        let search_matches = if search_active && !new_query.is_empty() {
+            Some(
+                cached_search(&mut self.search_cache, &new_query, &graph)
+                    .matches
+                    .clone(),
+            )
         } else {
             None
         };
 
         let mut new_selection: Option<Option<String>> = None;
+        // Replacement for the multi-selection; plain clicks and keys clear it.
+        let mut new_multi: Option<Vec<String>> = None;
 
         // Arrow-key navigation
         {
             let (up, down) =
                 ui.input(|i| (i.key_pressed(Key::ArrowUp), i.key_pressed(Key::ArrowDown)));
-            if (up || down)
-                && !ui.ctx().wants_keyboard_input()
-                && self.state.lock().unwrap().focused_pane == 2
+            let focused_row = self.keyboard_row.as_ref().filter(|oid| {
+                ui.memory(|memory| memory.has_focus(egui::Id::new(("commit_row", oid))))
+                    && graph.oid_to_row.contains_key(*oid)
+            });
+            if self.interactions_enabled
+                && ui.is_enabled()
+                && (up || down)
+                && (focused_row.is_some()
+                    || (!ui.ctx().egui_wants_keyboard_input()
+                        && self.state.lock().unwrap().focused_pane == 2))
             {
-                let cur = selected
-                    .as_ref()
-                    .and_then(|oid| nodes.iter().position(|n| &n.oid == oid));
+                let cur = focused_row
+                    .or(selected.as_ref())
+                    .and_then(|oid| graph.oid_to_row.get(oid).copied());
                 let nxt = match (cur, up) {
                     (Some(i), true) => i.saturating_sub(1),
                     (Some(i), false) => (i + 1).min(nodes.len().saturating_sub(1)),
@@ -461,7 +764,17 @@ impl CommitGraphView {
                     (None, false) => 0,
                 };
                 if !nodes.is_empty() {
-                    new_selection = Some(Some(nodes[nxt].oid.clone()));
+                    let oid = nodes[nxt].oid.clone();
+                    ui.memory_mut(|memory| {
+                        // A key can arrive on the first focused frame, before the
+                        // row's focus-lock filter takes effect. We handled it.
+                        memory.move_focus(egui::FocusDirection::None);
+                        memory.request_focus(egui::Id::new(("commit_row", &oid)));
+                    });
+                    self.scroll_to_oid = Some(oid.clone());
+                    self.keyboard_row = Some(oid.clone());
+                    self.state.lock().unwrap().focused_pane = 2;
+                    new_selection = Some(Some(oid));
                 }
             }
         }
@@ -478,18 +791,45 @@ impl CommitGraphView {
         if self.palette_repo != repo_key {
             self.color_order = theme::graph_color_order(repo_key.as_deref());
             self.palette_repo = repo_key.clone();
+            self.viewport_anchor = None;
         }
-        ui.allocate_ui_at_rect(scroll_rect, |ui| {
-            egui::ScrollArea::vertical()
-                .id_source(("commit_log_scroll", repo_key))
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
+        let anchor_offset = self
+            .viewport_anchor
+            .as_ref()
+            .and_then(|(oid, old_row, fraction)| {
+                let new_row = graph.oid_to_row.get(oid)?;
+                if old_row == new_row {
+                    None
+                } else {
+                    Some(wip_h + *new_row as f32 * ROW_H + fraction)
+                }
+            });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(scroll_rect), |ui| {
+            let mut scroll = egui::ScrollArea::vertical()
+                .id_salt(("commit_log_scroll", repo_key))
+                .auto_shrink([false; 2]);
+            if let Some(offset) = anchor_offset { scroll = scroll.vertical_scroll_offset(offset); }
+            scroll.show(ui, |ui| {
+                    ui.ctx().accesskit_node_builder(ui.id(), |node| {
+                        node.set_role(egui::accesskit::Role::ListBox);
+                        node.set_label("Commit history");
+                    });
                     let (resp, painter) =
                         ui.allocate_painter(Vec2::new(avail, total_h), Sense::hover());
                     let origin = resp.rect.min + Vec2::new(0.0, wip_h);
+                    let graph_painter = painter.with_clip_rect(Rect::from_min_max(
+                        Pos2::new(origin.x + graph_offset, painter.clip_rect().top()),
+                        Pos2::new(origin.x + graph_offset + graph_w, painter.clip_rect().bottom()),
+                    ).intersect(painter.clip_rect()));
                     if show_wip {
                         let rect = Rect::from_min_size(resp.rect.min, Vec2::new(avail, ROW_H));
                         let response = ui.interact(rect, egui::Id::new("wip_row"), Sense::click());
+                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), selected.is_none(), "Working tree: uncommitted changes"));
+                        ui.ctx().accesskit_node_builder(response.id, |node| {
+                            node.set_role(egui::accesskit::Role::ListBoxOption);
+                            node.set_selected(selected.is_none());
+                            node.clear_toggled();
+                        });
                         if response.clicked() {
                             new_selection = Some(None);
                         }
@@ -510,10 +850,10 @@ impl CommitGraphView {
                             .and_then(|oid| graph.oid_to_row.get(oid))
                             .copied();
                         let lane = head_row.map(|row| nodes[row].lane).unwrap_or(0);
-                        let x = origin.x + refs_w + GRAPH_LEFT + lane as f32 * LANE_W;
+                        let x = origin.x + graph_offset + GRAPH_LEFT + lane as f32 * LANE_W;
                         let center = Pos2::new(x, rect.center().y);
                         if let Some(row) = head_row {
-                            painter.line_segment(
+                            graph_painter.line_segment(
                                 [
                                     center,
                                     Pos2::new(x, origin.y + row as f32 * ROW_H + ROW_H / 2.0),
@@ -521,21 +861,27 @@ impl CommitGraphView {
                                 Stroke::new(2.0, theme::accent_yellow()),
                             );
                         }
-                        painter.circle_stroke(
+                        graph_painter.circle_stroke(
                             center,
                             DOT_R,
                             Stroke::new(2.0, theme::accent_yellow()),
                         );
                         let dirty = self.state.lock().unwrap().dirty_count;
-                        painter.text(
-                            Pos2::new(origin.x + 10.0, rect.center().y),
+                        painter.with_clip_rect(Rect::from_min_max(
+                            Pos2::new(origin.x + refs_offset, rect.top()),
+                            Pos2::new(origin.x + refs_offset + refs_w, rect.bottom()),
+                        ).intersect(painter.clip_rect())).text(
+                            Pos2::new(origin.x + refs_offset + 10.0, rect.center().y),
                             egui::Align2::LEFT_CENTER,
                             "Working tree",
                             FontId::proportional(13.0),
                             theme::accent_yellow(),
                         );
-                        painter.text(
-                            Pos2::new(origin.x + refs_w + graph_w + 4.0, rect.center().y),
+                        painter.with_clip_rect(Rect::from_min_max(
+                            Pos2::new(origin.x + commit_offset, rect.top()),
+                            Pos2::new(origin.x + commit_offset + commit_w, rect.bottom()),
+                        ).intersect(painter.clip_rect())).text(
+                            Pos2::new(origin.x + commit_offset + 4.0, rect.center().y),
                             egui::Align2::LEFT_CENTER,
                             format!("Uncommitted changes ({dirty})"),
                             FontId::proportional(13.0),
@@ -554,6 +900,9 @@ impl CommitGraphView {
                     let clip = painter.clip_rect();
 
                     let first = ((clip.top() - origin.y) / ROW_H).floor().max(0.0) as usize;
+                    if let Some(node) = nodes.get(first) {
+                        self.viewport_anchor = Some((node.oid.clone(), first, (clip.top() - origin.y - first as f32 * ROW_H).max(0.0)));
+                    }
                     let last =
                         (((clip.bottom() - origin.y) / ROW_H).ceil() as usize + 1).min(nodes.len());
                     if graph.has_more && !search_active && last.saturating_add(100) >= nodes.len() {
@@ -569,16 +918,9 @@ impl CommitGraphView {
                             Vec2::new(avail, ROW_H),
                         );
                         let row_resp =
-                            ui.interact(row_rect, egui::Id::new(("row_bg", i)), Sense::click());
-                        let is_sel = selected.as_deref() == Some(&node.oid);
-                        row_resp.widget_info(|| {
-                            egui::WidgetInfo::selected(
-                                egui::WidgetType::SelectableLabel,
-                                true,
-                                is_sel,
-                                format!("{} by {}, {}", node.summary, node.author, node.oid),
-                            )
-                        });
+                            ui.interact(row_rect, egui::Id::new(("row_bg", &node.oid)), Sense::hover());
+                        let is_sel = selected.as_deref() == Some(&node.oid) || multi.contains(&node.oid);
+
                         let row_bg = if is_sel {
                             theme::bg_selected()
                         } else if row_resp.hovered() {
@@ -590,10 +932,10 @@ impl CommitGraphView {
                             painter.rect_filled(row_rect, 0.0, row_bg);
                         }
 
-                        let is_match = q_lower.as_ref().map_or(true, |q| node_matches(node, q));
+                        let is_match = search_matches.as_ref().map_or(true, |matches| matches[i]);
                         let in_file_history =
                             file_history_oids.is_empty() || file_history_oids.contains(&node.oid);
-                        let dimmed = (q_lower.is_some() && !is_match)
+                        let dimmed = (search_matches.is_some() && !is_match)
                             || (!file_history_oids.is_empty() && !in_file_history);
                         if dimmed {
                             painter.rect_filled(row_rect, 0.0, Color32::from_black_alpha(80));
@@ -614,11 +956,11 @@ impl CommitGraphView {
                             self.colorblind,
                         );
                         let from_x =
-                            origin.x + refs_w + GRAPH_LEFT + edge.from_lane as f32 * LANE_W;
-                        let to_x = origin.x + refs_w + GRAPH_LEFT + edge.to_lane as f32 * LANE_W;
+                            origin.x + graph_offset + GRAPH_LEFT + edge.from_lane as f32 * LANE_W;
+                        let to_x = origin.x + graph_offset + GRAPH_LEFT + edge.to_lane as f32 * LANE_W;
 
                         if edge.from_lane == edge.to_lane {
-                            painter.line_segment(
+                            graph_painter.line_segment(
                                 [Pos2::new(from_x, from_y), Pos2::new(to_x, to_y)],
                                 Stroke::new(2.0, color),
                             );
@@ -637,12 +979,18 @@ impl CommitGraphView {
                                 Color32::TRANSPARENT,
                                 Stroke::new(2.0, color),
                             );
-                            painter.add(egui::Shape::CubicBezier(shape));
+                            graph_painter.add(egui::Shape::CubicBezier(shape));
                         }
                     }
 
                     // ── Draw rows ─────────────────────────────────────
-                    for i in first..last {
+                    let mut interactive_rows: Vec<_> = (first..last).collect();
+                    if let Some(row) = self.keyboard_row.as_ref()
+                        .filter(|oid| ui.memory(|memory| memory.has_focus(egui::Id::new(("commit_row", oid)))))
+                        .and_then(|oid| graph.oid_to_row.get(oid)).copied() {
+                        if !(first..last).contains(&row) { interactive_rows.push(row); }
+                    }
+                    for i in interactive_rows {
                         let node = &nodes[i];
                         let row_top = origin.y + i as f32 * ROW_H;
                         let row_rect = Rect::from_min_size(
@@ -651,19 +999,49 @@ impl CommitGraphView {
                         );
                         let cy = row_top + ROW_H / 2.0;
 
-                        let is_sel = selected.as_deref() == Some(&node.oid);
-                        let row_resp =
-                            ui.interact(row_rect, egui::Id::new(("row", i)), Sense::click());
-
-                        let is_match = q_lower.as_ref().map_or(true, |q| node_matches(node, q));
+                        let is_sel = selected.as_deref() == Some(&node.oid) || multi.contains(&node.oid);
+                        let row_resp = ui.interact(row_rect, egui::Id::new(("commit_row", &node.oid)), Sense::click_and_drag());
+                        row_resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, is_sel, format!("Commit {} by {}, {}. Drag onto HEAD to cherry-pick.", node.summary, node.author, node.oid)));
+                        ui.ctx().accesskit_node_builder(row_resp.id, |accessible| {
+                            accessible.set_role(egui::accesskit::Role::ListBoxOption);
+                            accessible.set_selected(is_sel);
+                            accessible.clear_toggled();
+                        });
+                        if row_resp.has_focus() {
+                            ui.memory_mut(|memory| memory.set_focus_lock_filter(row_resp.id, egui::EventFilter { vertical_arrows: true, ..Default::default() }));
+                            self.keyboard_row = Some(node.oid.clone()); painter.rect_stroke(row_rect.shrink(1.0), 0.0, Stroke::new(1.5, theme::accent_blue()), egui::StrokeKind::Middle); }
+                        if row_resp.drag_started() && self.pending_action.is_none() {
+                            let mut s = self.state.lock().unwrap();
+                            if matches!(s.modal, crate::state::ModalKind::None) {
+                                if let Some(path) = &s.repo_path {
+                                    match crate::git::graph_action::Drag::capture(path, s.repo_epoch, crate::git::graph_action::Endpoint { oid: node.oid.clone(), reference: None }) {
+                                        Ok(drag) => self.drag = Some(drag), Err(error) => s.error = Some(error),
+                                    }
+                                }
+                            }
+                        }
+                        let is_match = search_matches.as_ref().map_or(true, |matches| matches[i]);
                         let in_fh =
                             file_history_oids.is_empty() || file_history_oids.contains(&node.oid);
-                        let dim = (q_lower.is_some() && !is_match)
+                        let dim = (search_matches.is_some() && !is_match)
                             || (!file_history_oids.is_empty() && !in_fh);
 
                         if row_resp.clicked() {
                             self.state.lock().unwrap().focused_pane = 2;
-                            new_selection = Some(Some(node.oid.clone()));
+                            let modifiers = ui.input(|i| i.modifiers);
+                            let (selection, set) = click_selection(
+                                &graph,
+                                selected.as_deref(),
+                                &multi,
+                                self.selection_anchor.as_deref(),
+                                &node.oid,
+                                modifiers,
+                            );
+                            if !modifiers.shift {
+                                self.selection_anchor = Some(node.oid.clone());
+                            }
+                            new_selection = Some(selection);
+                            new_multi = Some(set);
                         }
 
                         let fade = if dim { 0.25 } else { 1.0 };
@@ -672,17 +1050,17 @@ impl CommitGraphView {
                             self.colorblind,
                         )
                         .gamma_multiply(fade);
-                        let dot_x = origin.x + refs_w + GRAPH_LEFT + node.lane as f32 * LANE_W;
+                        let dot_x = origin.x + graph_offset + GRAPH_LEFT + node.lane as f32 * LANE_W;
 
                         // Node circle
-                        painter.circle_filled(Pos2::new(dot_x, cy), DOT_R, lane_col);
-                        painter.circle_stroke(
+                        graph_painter.circle_filled(Pos2::new(dot_x, cy), DOT_R, lane_col);
+                        graph_painter.circle_stroke(
                             Pos2::new(dot_x, cy),
                             DOT_R,
                             Stroke::new(1.5, theme::bg_app()),
                         );
                         if is_sel {
-                            painter.circle_stroke(
+                            graph_painter.circle_stroke(
                                 Pos2::new(dot_x, cy),
                                 DOT_R_SEL,
                                 Stroke::new(2.0, theme::text_primary()),
@@ -690,16 +1068,16 @@ impl CommitGraphView {
                         }
 
                         // Right columns
-                        let msg_start = origin.x + refs_w + graph_w;
-                        let time_start = msg_start + commit_w;
-                        let hash_start = time_start + time_w;
+                        let msg_start = origin.x + commit_offset;
+                        let time_start = origin.x + time_offset;
+                        let hash_start = origin.x + hash_offset;
                         let hash_right = hash_start + hash_w - 8.0;
                         let time_right = time_start + time_w - 8.0;
 
                         let dim_col = |c: Color32| c.gamma_multiply(fade);
 
                         // Hash
-                        painter.text(
+                        painter.with_clip_rect(Rect::from_min_max(Pos2::new(hash_start, row_top), Pos2::new(hash_start + hash_w, row_top + ROW_H)).intersect(painter.clip_rect())).text(
                             Pos2::new(hash_right, cy),
                             egui::Align2::RIGHT_CENTER,
                             &node.oid[..7.min(node.oid.len())],
@@ -707,10 +1085,10 @@ impl CommitGraphView {
                             dim_col(theme::text_muted()),
                         );
                         // Time
-                        painter.text(
+                        painter.with_clip_rect(Rect::from_min_max(Pos2::new(time_start, row_top), Pos2::new(time_start + time_w, row_top + ROW_H)).intersect(painter.clip_rect())).text(
                             Pos2::new(time_right, cy),
                             egui::Align2::RIGHT_CENTER,
-                            &theme::relative_time(node.time),
+                            format_graph_date(node.time, self.preferences.date_format),
                             FontId::proportional(12.0),
                             dim_col(theme::text_muted()),
                         );
@@ -719,35 +1097,86 @@ impl CommitGraphView {
                                 Pos2::new(time_start, row_top),
                                 Pos2::new(time_start + time_w, row_top + ROW_H),
                             ),
-                            egui::Id::new(("time_cell", i)),
+                            egui::Id::new(("time_cell", &node.oid)),
                             Sense::hover(),
                         )
-                        .on_hover_text(theme::absolute_time(node.time));
+                        .on_hover_text(format!("{} UTC", format_graph_date(node.time, GraphDateFormat::DateTime)));
                         // Author indicator attached to the graph, icon-only.
-                        let author_x = (dot_x + 18.0).min(origin.x + refs_w + graph_w - 14.0);
+                        let author_x = (dot_x + 18.0).min(origin.x + graph_offset + graph_w - 14.0);
                         let author_pos = Pos2::new(author_x, cy);
-                        widgets::avatar(&painter, author_pos, 8.5, &node.author);
-                        ui.interact(
-                            Rect::from_center_size(author_pos, Vec2::splat(22.0)),
-                            egui::Id::new(("author_avatar", i)),
+                        widgets::avatar_for(&graph_painter, author_pos, 8.5, &node.author, &node.author_email);
+                        if graph_w > 0.0 { ui.interact(
+                            Rect::from_center_size(author_pos, Vec2::splat(22.0)).intersect(graph_painter.clip_rect()),
+                            egui::Id::new(("author_avatar", &node.oid)),
                             Sense::hover(),
                         )
-                        .on_hover_text(&node.author);
+                        .on_hover_text(&node.author); }
 
-                        draw_ref_column(
+                        let ref_rects = draw_ref_column(
                             &painter,
-                            origin.x,
+                            origin.x + refs_offset,
                             refs_w,
                             row_top,
                             cy,
                             node,
                             lane_col,
-                            &graph.tag_names,
+                            &graph,
                         );
+                        let mut drop_reference = None;
+                        for (reference, rect) in ref_rects {
+                            let is_branch = reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/");
+                            if is_branch && ui.input(|i| i.pointer.hover_pos().is_some_and(|p| rect.contains(p))) { drop_reference = Some(reference.clone()); }
+                            let response = ui.interact(rect, egui::Id::new(("graph_ref", &reference)), Sense::click_and_drag());
+                            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), format!("Reference {reference}. Click to select, double-click to check out a branch, right-click for actions.")));
+                            if response.has_focus() { painter.rect_stroke(rect.expand(2.0), 4.0, Stroke::new(1.5, theme::accent_blue()), egui::StrokeKind::Middle); }
+                            if is_branch && response.drag_started() && self.pending_action.is_none() {
+                                let mut s = self.state.lock().unwrap();
+                                if matches!(s.modal, crate::state::ModalKind::None) {
+                                    if let Some(path) = &s.repo_path { match crate::git::graph_action::Drag::capture(path, s.repo_epoch, crate::git::graph_action::Endpoint { oid: node.oid.clone(), reference: Some(reference.clone()) }) { Ok(drag) => self.drag = Some(drag), Err(error) => s.error = Some(error) } }
+                                }
+                            }
+                            if response.double_clicked() {
+                                use crate::ui::sidebar::SidebarAction;
+                                if let Some(name) = reference.strip_prefix("refs/heads/") {
+                                    if self.state.lock().unwrap().head_branch.as_deref() != Some(name) {
+                                        self.sidebar_action = Some(SidebarAction::CheckoutBranch(name.into()));
+                                    }
+                                } else if let Some(name) = reference.strip_prefix("refs/remotes/") {
+                                    self.sidebar_action = Some(SidebarAction::CheckoutRemoteBranch(name.into()));
+                                }
+                            } else if response.clicked() {
+                                new_selection = Some(Some(node.oid.clone()));
+                                new_multi = Some(Vec::new());
+                            }
+                            response.context_menu(|ui| {
+                                if let Some(action) = crate::ui::sidebar::graph_reference_menu(ui, &reference, &node.oid, &self.state) {
+                                    self.sidebar_action = Some(action);
+                                }
+                            });
+                            response.on_hover_text(format!("{reference}\nClick to select; double-click a branch to check out; right-click for actions; drag a branch for an operation preview"));
+                        }
+
+
+                        let hover_drop = self.drag.as_ref().is_some_and(|drag| drag.source.oid != node.oid)
+                            && ui.input(|input| input.pointer.hover_pos().is_some_and(|p| row_rect.contains(p)));
+                        if hover_drop {
+                            painter.rect_stroke(row_rect.shrink(1.0), 0.0, Stroke::new(2.0, theme::accent_teal()), egui::StrokeKind::Middle);
+                            if ui.input(|input| input.pointer.any_released()) {
+                                if let Some(drag) = self.drag.take() {
+                                    let head_ref = self.state.lock().unwrap().head_branch.as_ref().map(|name| format!("refs/heads/{name}"));
+                                    let reference = drop_reference.or_else(|| head_ref.filter(|name| graph.ref_targets.get(name) == Some(&node.oid)));
+                                    let destination = crate::git::graph_action::Endpoint { oid: node.oid.clone(), reference };
+                                    match drag.finish(destination) {
+                                        Ok(preview) => self.pending_action = Some(preview),
+                                        Err(error) => self.state.lock().unwrap().error = Some(error),
+                                    }
+                                }
+                            }
+                        }
 
                         // Commit summary
                         let summary_start = msg_start + 8.0;
-                        let summary_end = time_start - 8.0;
+                        let summary_end = msg_start + commit_w - 8.0;
                         if summary_end > summary_start + 20.0 {
                             let tc = if is_sel {
                                 theme::text_primary()
@@ -767,28 +1196,41 @@ impl CommitGraphView {
                                     tc,
                                 );
                         }
-                    }
-
-                    // Context menu
-                    resp.context_menu(|ui| {
-                        if let Some(ref oid) = selected {
+                        let in_multi = multi.len() > 1 && multi.contains(&node.oid);
+                        if row_resp.secondary_clicked() {
+                            if !in_multi {
+                                new_selection = Some(Some(node.oid.clone()));
+                                new_multi = Some(Vec::new());
+                            }
+                            row_resp.request_focus();
+                            self.keyboard_row = Some(node.oid.clone());
+                            self.state.lock().unwrap().focused_pane = 2;
+                        }
+                        row_resp.context_menu(|ui| {
+                            if in_multi {
+                                if multi_selection_actions(ui, &self.state) {
+                                    ui.close();
+                                }
+                                return;
+                            }
+                            let oid = &node.oid;
                             let short = &oid[..7.min(oid.len())];
                             if ui.button(format!("Copy SHA  {}", short)).clicked() {
-                                ui.output_mut(|o| o.copied_text = oid.clone());
-                                ui.close_menu();
+                                ui.ctx().copy_text(oid.clone());
+                                ui.close();
                             }
                             ui.separator();
                             if ui.button("Cherry-pick").clicked() {
-                                crate::git::branches::cherry_pick(oid, self.state.clone());
-                                ui.close_menu();
+                                self.preview_endpoint(crate::git::graph_action::Endpoint { oid: oid.clone(), reference: None }, crate::git::graph_action::Action::CherryPick);
+                                ui.close();
                             }
                             if ui.button("Revert Commit").clicked() {
-                                crate::git::branches::revert_commit(oid, self.state.clone());
-                                ui.close_menu();
+                                self.preview_endpoint(crate::git::graph_action::Endpoint { oid: oid.clone(), reference: None }, crate::git::graph_action::Action::Revert);
+                                ui.close();
                             }
                             if ui.button("Interactive Rebase from here…").clicked() {
                                 self.state.lock().unwrap().pending_open_rebase = Some(oid.clone());
-                                ui.close_menu();
+                                ui.close();
                             }
                             ui.separator();
                             if ui.button("Create Branch Here").clicked() {
@@ -796,14 +1238,14 @@ impl CommitGraphView {
                                     crate::state::ModalKind::CreateBranch {
                                         from_oid: Some(oid.clone()),
                                     };
-                                ui.close_menu();
+                                ui.close();
                             }
                             if ui.button("Create Tag Here").clicked() {
                                 self.state.lock().unwrap().modal =
                                     crate::state::ModalKind::CreateTag {
                                         from_oid: Some(oid.clone()),
                                     };
-                                ui.close_menu();
+                                ui.close();
                             }
                             ui.separator();
                             if ui.button("Checkout (detached HEAD)…").clicked() {
@@ -811,7 +1253,12 @@ impl CommitGraphView {
                                     crate::state::ModalKind::ConfirmDetachedCheckout {
                                         oid: oid.clone(),
                                     };
-                                ui.close_menu();
+                                ui.close();
+                            }
+                            if ui.button("Reset current branch to here…").clicked() {
+                                self.state.lock().unwrap().modal =
+                                    crate::state::ModalKind::ResetToCommit { oid: oid.clone() };
+                                ui.close();
                             }
                             ui.separator();
                             // ── Phase 7: compare & bisect ─────────────────────
@@ -826,39 +1273,57 @@ impl CommitGraphView {
                                                 base_oid: base.clone(),
                                                 compare_oid: oid.clone(),
                                             };
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                                 if ui.button("Clear Compare Base").clicked() {
                                     self.state.lock().unwrap().compare_base_oid = None;
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             } else {
                                 if ui.button("Set as Compare Base").clicked() {
                                     self.state.lock().unwrap().compare_base_oid = Some(oid.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                             ui.separator();
-                            if ui.button("Bisect…").clicked() {
+                            let bisecting = self.state.lock().unwrap().bisect_in_progress;
+                            if bisecting {
+                                for (label, step) in [
+                                    ("Bisect: Mark Good", crate::git::bisect::Step::Good),
+                                    ("Bisect: Mark Bad", crate::git::bisect::Step::Bad),
+                                ] {
+                                    if ui.button(label).clicked() {
+                                        crate::git::bisect::spawn_step(step, Some(oid.clone()), self.state.clone());
+                                        ui.close();
+                                    }
+                                }
+                            }
+                            if ui.button(if bisecting { "Bisect status…" } else { "Bisect…" }).clicked() {
                                 self.state.lock().unwrap().modal = crate::state::ModalKind::Bisect;
-                                ui.close_menu();
+                                ui.close();
                             }
                             ui.separator();
-                        }
                         if ui.button("Deselect").clicked() {
                             new_selection = Some(None);
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
+                    }
+
                 });
         });
+
+        if ui.input(|input| input.pointer.any_released() || input.key_pressed(Key::Escape)) {
+            self.drag = None;
+        }
 
         // Apply selection change
         if let Some(new_sel) = new_selection {
             let trigger = new_sel.clone();
             {
                 let mut s = self.state.lock().unwrap();
+                s.selected_commits = new_multi.unwrap_or_default();
                 s.selected_commit = new_sel.clone();
                 if new_sel.is_none() {
                     s.selected_commit_detail = None;
@@ -904,7 +1369,7 @@ impl CommitGraphView {
             }
             ui.add(egui::TextEdit::singleline(&mut self.ref_query).hint_text("Find branch or tag"));
             egui::ScrollArea::vertical()
-                .id_source("graph_ref_filters")
+                .id_salt("graph_ref_filters")
                 .max_height(200.0)
                 .show(ui, |ui| {
                     for name in graph
@@ -947,7 +1412,7 @@ impl CommitGraphView {
             {
                 filter.range = Some((self.range_start.trim().into(), self.range_end.trim().into()));
                 filter.solo_ref = None;
-                ui.close_menu();
+                ui.close();
             }
         });
         if filter != original {
@@ -959,24 +1424,126 @@ impl CommitGraphView {
         }
     }
 
-    fn fit_columns(&mut self, avail: f32) {
-        let min_total = REFS_W_MIN + GRAPH_W_MIN + COMMIT_W_MIN + TIME_W_MIN + HASH_W_MIN;
-        if avail <= min_total {
-            self.refs_w = REFS_W_MIN;
-            self.graph_w = GRAPH_W_MIN;
-            self.commit_w = COMMIT_W_MIN;
-            self.time_w = TIME_W_MIN;
-            self.hash_w = HASH_W_MIN;
-            return;
+    fn preferences_menu(&mut self, ui: &mut Ui) {
+        let before = self.preferences.clone();
+        ui.label("Visible columns (Commit is always shown)");
+        for column in GraphColumn::ALL {
+            let mut visible = self.preferences.columns.contains(&column);
+            if ui
+                .add_enabled(
+                    column != GraphColumn::Commit,
+                    egui::Checkbox::new(&mut visible, column.label()),
+                )
+                .changed()
+            {
+                if visible {
+                    self.preferences.columns.push(column);
+                } else {
+                    self.preferences.columns.retain(|item| *item != column);
+                }
+            }
         }
+        ui.separator();
+        ui.label("Column order");
+        let columns = self.preferences.columns.clone();
+        for (index, column) in columns.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(column.label());
+                if ui
+                    .add_enabled(index > 0, Button::new("Move left"))
+                    .clicked()
+                {
+                    self.preferences.columns.swap(index, index - 1);
+                }
+                if ui
+                    .add_enabled(index + 1 < columns.len(), Button::new("Move right"))
+                    .clicked()
+                {
+                    self.preferences.columns.swap(index, index + 1);
+                }
+            });
+        }
+        ui.separator();
+        ui.label("Date format");
+        ui.radio_value(
+            &mut self.preferences.date_format,
+            GraphDateFormat::Relative,
+            "Relative (2h ago)",
+        );
+        ui.radio_value(
+            &mut self.preferences.date_format,
+            GraphDateFormat::Date,
+            "Date (YYYY-MM-DD, UTC)",
+        );
+        ui.radio_value(
+            &mut self.preferences.date_format,
+            GraphDateFormat::DateTime,
+            "Date and time (UTC)",
+        );
+        ui.separator();
+        if ui.button("Reset columns and date format").clicked() {
+            self.preferences = GraphPreferences::default();
+            self.reset_column_widths();
+            self.cols_dirty = true;
+        }
+        if self.preferences != before {
+            self.preferences_dirty = true;
+        }
+    }
 
+    fn time_min_width(&self) -> f32 {
+        match self.preferences.date_format {
+            GraphDateFormat::Relative => TIME_W_DEF,
+            GraphDateFormat::Date => 94.0,
+            GraphDateFormat::DateTime => 140.0,
+        }
+    }
+
+    fn column_width(&self, column: GraphColumn) -> f32 {
+        match column {
+            GraphColumn::References => self.refs_w,
+            GraphColumn::Graph => self.graph_w,
+            GraphColumn::Commit => self.commit_w,
+            GraphColumn::Time => self.time_w.max(self.time_min_width()),
+            GraphColumn::Hash => self.hash_w,
+        }
+    }
+
+    fn column_layout(&self) -> ([f32; 5], [f32; 5]) {
+        let mut starts = [0.0; 5];
+        let mut widths = [0.0; 5];
+        let mut x = 0.0;
+        for column in &self.preferences.columns {
+            starts[column.index()] = x;
+            widths[column.index()] = self.column_width(*column);
+            x += widths[column.index()];
+        }
+        (starts, widths)
+    }
+
+    fn fit_columns(&mut self, avail: f32) {
         self.refs_w = self.refs_w.clamp(REFS_W_MIN, REFS_W_MAX);
         self.graph_w = self.graph_w.clamp(GRAPH_W_MIN, GRAPH_W_MAX);
-        self.time_w = self.time_w.max(TIME_W_MIN);
-        self.hash_w = self.hash_w.max(HASH_W_MIN);
-
-        let fixed = self.refs_w + self.graph_w + self.time_w + self.hash_w;
+        self.time_w = self.time_w.clamp(TIME_W_MIN, 240.0);
+        self.hash_w = self.hash_w.clamp(HASH_W_MIN, 120.0);
+        let fixed: f32 = self
+            .preferences
+            .columns
+            .iter()
+            .filter(|c| **c != GraphColumn::Commit)
+            .map(|column| self.column_width(*column))
+            .sum();
         self.commit_w = (avail - fixed).max(COMMIT_W_MIN);
+    }
+
+    fn set_width(&mut self, column: GraphColumn, width: f32) {
+        match column {
+            GraphColumn::References => self.refs_w = width.clamp(REFS_W_MIN, REFS_W_MAX),
+            GraphColumn::Graph => self.graph_w = width.clamp(GRAPH_W_MIN, GRAPH_W_MAX),
+            GraphColumn::Commit => self.commit_w = width.max(COMMIT_W_MIN),
+            GraphColumn::Time => self.time_w = width.clamp(self.time_min_width(), 240.0),
+            GraphColumn::Hash => self.hash_w = width.clamp(HASH_W_MIN, 120.0),
+        }
     }
 
     fn resize_handle(
@@ -984,7 +1551,8 @@ impl CommitGraphView {
         ui: &mut Ui,
         header_rect: Rect,
         x: f32,
-        divider: ColumnDivider,
+        column: GraphColumn,
+        next: GraphColumn,
         auto_w: f32,
     ) {
         let rect = Rect::from_min_size(
@@ -992,80 +1560,200 @@ impl CommitGraphView {
             Vec2::new(RESIZE_HIT_W, HEADER_H),
         );
         let resp = ui
-            .allocate_rect(rect, Sense::click_and_drag())
-            .on_hover_text("Drag to resize  •  Double-click to fit content");
-        if resp.hovered() || resp.dragged() {
+            .interact(
+                rect,
+                egui::Id::new(("graph_resize", column.index())),
+                Sense::click_and_drag(),
+            )
+            .on_hover_text("Drag to resize; double-click to fit content");
+        let active = resp.hovered() || resp.dragged();
+        if active {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-            ui.painter().rect_filled(
-                rect.shrink2(Vec2::new(3.0, 2.0)),
-                2.0,
-                theme::accent_teal().gamma_multiply(0.08),
-            );
-            ui.painter().line_segment(
-                [
-                    Pos2::new(x, header_rect.min.y + 4.0),
-                    Pos2::new(x, header_rect.max.y - 4.0),
-                ],
-                Stroke::new(2.0, theme::accent_teal()),
-            );
-        } else {
-            ui.painter().line_segment(
-                [
-                    Pos2::new(x, header_rect.min.y),
-                    Pos2::new(x, header_rect.max.y),
-                ],
-                Stroke::new(1.0, theme::border()),
-            );
         }
-
+        ui.painter().line_segment(
+            [
+                Pos2::new(x, header_rect.min.y + 4.0),
+                Pos2::new(x, header_rect.max.y - 4.0),
+            ],
+            Stroke::new(
+                if active { 2.0 } else { 1.0 },
+                if active {
+                    theme::accent_teal()
+                } else {
+                    theme::border()
+                },
+            ),
+        );
         if resp.double_clicked() {
-            match divider {
-                ColumnDivider::RefsGraph => {
-                    self.refs_w = auto_w.clamp(REFS_W_MIN, REFS_W_MAX);
-                }
-                ColumnDivider::GraphCommit => {
-                    self.graph_w = auto_w.clamp(GRAPH_W_MIN, GRAPH_W_MAX);
-                }
-                ColumnDivider::CommitTime => {
-                    self.time_w = TIME_W_DEF;
-                }
-                ColumnDivider::TimeHash => {
-                    self.time_w = TIME_W_DEF;
-                    self.hash_w = HASH_W_DEF;
-                }
+            if column == GraphColumn::Commit {
+                let default = match next {
+                    GraphColumn::References => REFS_W_DEF,
+                    GraphColumn::Graph => GRAPH_W_DEF,
+                    GraphColumn::Time => self.time_min_width(),
+                    GraphColumn::Hash => HASH_W_DEF,
+                    GraphColumn::Commit => COMMIT_W_DEF,
+                };
+                self.set_width(next, default);
+            } else {
+                self.set_width(column, auto_w);
             }
             self.cols_dirty = true;
         } else if resp.dragged() {
             let delta = resp.drag_delta().x;
-            match divider {
-                ColumnDivider::RefsGraph => {
-                    self.refs_w = (self.refs_w + delta).clamp(REFS_W_MIN, REFS_W_MAX);
-                    self.graph_w = (self.graph_w - delta).clamp(GRAPH_W_MIN, GRAPH_W_MAX);
-                }
-                ColumnDivider::GraphCommit => {
-                    self.graph_w = (self.graph_w + delta).clamp(GRAPH_W_MIN, GRAPH_W_MAX);
-                    self.commit_w = (self.commit_w - delta).max(COMMIT_W_MIN);
-                }
-                ColumnDivider::CommitTime => {
-                    self.commit_w = (self.commit_w + delta).max(COMMIT_W_MIN);
-                    self.time_w = (self.time_w - delta).max(TIME_W_MIN);
-                }
-                ColumnDivider::TimeHash => {
-                    self.time_w = (self.time_w + delta).max(TIME_W_MIN);
-                    self.hash_w = (self.hash_w - delta).max(HASH_W_MIN);
-                }
+            if column == GraphColumn::Commit {
+                self.set_width(next, self.column_width(next) - delta);
+            } else {
+                self.set_width(column, self.column_width(column) + delta);
             }
             self.cols_dirty = true;
         }
     }
 }
 
-#[derive(Clone, Copy)]
-enum ColumnDivider {
-    RefsGraph,
-    GraphCommit,
-    CommitTime,
-    TimeHash,
+/// UTC dates are explicit and deterministic, including timestamps before 1970.
+fn format_graph_date(timestamp: i64, format: GraphDateFormat) -> String {
+    if format == GraphDateFormat::Relative {
+        return theme::relative_time(timestamp);
+    }
+    let days = timestamp.div_euclid(86_400);
+    let seconds = timestamp.rem_euclid(86_400);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    let date = format!("{year:04}-{month:02}-{day:02}");
+    if format == GraphDateFormat::Date {
+        date
+    } else {
+        format!("{date} {:02}:{:02}", seconds / 3600, seconds % 3600 / 60)
+    }
+}
+
+/// Result of clicking a row: the focused commit and the multi-selection.
+/// Ctrl/Cmd-click toggles a commit; Shift-click selects the rows between the
+/// anchor and the clicked row; a plain click selects one commit.
+fn click_selection(
+    graph: &crate::git::graph::CommitGraph,
+    selected: Option<&str>,
+    multi: &std::collections::HashSet<String>,
+    anchor: Option<&str>,
+    clicked: &str,
+    modifiers: egui::Modifiers,
+) -> (Option<String>, Vec<String>) {
+    let row = |oid: &str| graph.oid_to_row.get(oid).copied();
+    let in_order = |set: &mut Vec<String>| set.sort_by_key(|oid| row(oid).unwrap_or(usize::MAX));
+    if modifiers.shift {
+        if let (Some(from), Some(to)) = (anchor.or(selected).and_then(row), row(clicked)) {
+            let (low, high) = (from.min(to), from.max(to));
+            let set: Vec<String> = graph.nodes[low..=high]
+                .iter()
+                .map(|n| n.oid.clone())
+                .collect();
+            let set = if set.len() > 1 { set } else { Vec::new() };
+            return (Some(clicked.to_string()), set);
+        }
+    } else if modifiers.command {
+        let mut set: Vec<String> = if multi.len() > 1 {
+            multi.iter().cloned().collect()
+        } else {
+            selected.map(str::to_owned).into_iter().collect()
+        };
+        if let Some(index) = set.iter().position(|oid| oid == clicked) {
+            set.remove(index);
+            in_order(&mut set);
+            return match set.len() {
+                0 => (None, Vec::new()),
+                1 => (set.pop(), Vec::new()),
+                _ => (set.first().cloned(), set),
+            };
+        }
+        set.push(clicked.to_string());
+        in_order(&mut set);
+        let set = if set.len() > 1 { set } else { Vec::new() };
+        return (Some(clicked.to_string()), set);
+    }
+    (Some(clicked.to_string()), Vec::new())
+}
+
+/// Actions for two or more selected commits, shared by the graph menu and
+/// the details panel. Returns true when an action was chosen.
+pub fn multi_selection_actions(ui: &mut Ui, state: &SharedState) -> bool {
+    let (oids, on_branch) = {
+        let s = state.lock().unwrap();
+        (s.selected_commits_oldest_first(), s.head_branch.is_some())
+    };
+    let count = oids.len();
+    if count < 2 {
+        return false;
+    }
+    let mut chosen = false;
+    ui.label(
+        egui::RichText::new(format!("{count} commits selected"))
+            .color(theme::text_muted())
+            .size(12.0),
+    );
+    if ui
+        .add_enabled(
+            on_branch,
+            Button::new(format!("Cherry-pick {count} commits")),
+        )
+        .on_hover_text("Apply these commits to the current branch, oldest first")
+        .clicked()
+    {
+        crate::git::branches::cherry_pick_many(oids.clone(), state.clone());
+        chosen = true;
+    }
+    if ui
+        .add_enabled(on_branch, Button::new(format!("Revert {count} commits")))
+        .on_hover_text("Create commits that undo these, newest first")
+        .clicked()
+    {
+        crate::git::branches::revert_many(oids.clone(), state.clone());
+        chosen = true;
+    }
+    if ui
+        .add_enabled(on_branch, Button::new(format!("Squash {count} commits…")))
+        .on_hover_text("Combine adjacent commits on the current branch with an interactive rebase")
+        .clicked()
+    {
+        state.lock().unwrap().pending_squash = Some(oids.clone());
+        chosen = true;
+    }
+    if ui
+        .add_enabled(
+            on_branch,
+            Button::new(format!("Drop {count} commits\u{2026}")),
+        )
+        .on_hover_text("Review a rebase that removes these commits from the current branch")
+        .clicked()
+    {
+        state.lock().unwrap().pending_drop = Some(oids.clone());
+        chosen = true;
+    }
+    if count == 2 && ui.button("Compare these 2 commits…").clicked() {
+        let mut s = state.lock().unwrap();
+        s.modal = crate::state::ModalKind::Compare {
+            base_oid: oids[0].clone(),
+            compare_oid: oids[1].clone(),
+        };
+        chosen = true;
+    }
+    ui.separator();
+    if ui.button(format!("Copy {count} SHAs")).clicked() {
+        ui.ctx().copy_text(oids.join("\n"));
+        chosen = true;
+    }
+    if ui.button("Clear selection").clicked() {
+        state.lock().unwrap().selected_commits.clear();
+        chosen = true;
+    }
+    chosen
 }
 
 fn node_matches(node: &crate::git::graph::CommitNode, q: &str) -> bool {
@@ -1097,12 +1785,28 @@ fn parse_date(s: &str) -> Option<i64> {
     if parts.len() != 3 {
         return None;
     }
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
     let y: i64 = parts[0].parse().ok()?;
     let m: i64 = parts[1].parse().ok()?;
     let d: i64 = parts[2].parse().ok()?;
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&m) {
+        return None;
+    }
     // Simplified days-since-epoch calculation (close enough for filtering)
     let leap = |yr: i64| yr % 4 == 0 && (yr % 100 != 0 || yr % 400 == 0);
     let days_in_month = [0i64, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month_days = days_in_month[m as usize];
+    if m == 2 && leap(y) {
+        month_days += 1;
+    }
+    if !(1..=month_days).contains(&d) {
+        return None;
+    }
     let mut days = (y - 1970) * 365 + (y - 1969) / 4 - (y - 1901) / 100 + (y - 1601) / 400;
     for mi in 1..m {
         days += days_in_month[mi as usize];
@@ -1122,35 +1826,777 @@ fn draw_ref_column(
     cy: f32,
     node: &crate::git::graph::CommitNode,
     branch_color: Color32,
-    tag_names: &std::collections::HashSet<String>,
-) {
+    graph: &crate::git::graph::CommitGraph,
+) -> Vec<(String, Rect)> {
+    let mut rectangles = Vec::new();
+    if refs_w < 24.0 {
+        return rectangles;
+    }
     let clip = Rect::from_min_max(
         Pos2::new(origin_x + 8.0, row_top),
         Pos2::new(origin_x + refs_w - 8.0, row_top + ROW_H),
-    );
+    )
+    .intersect(painter.clip_rect());
     let painter = painter.with_clip_rect(clip);
     let mut x = origin_x + 10.0;
-    for name in node.refs.iter().take(3) {
-        let is_tag = tag_names.contains(name.as_str());
+    let mut refs = Vec::new();
+    for name in &node.refs {
+        for prefix in ["refs/heads/", "refs/remotes/", "refs/tags/"] {
+            let reference = format!("{prefix}{name}");
+            if graph.ref_targets.get(&reference) == Some(&node.oid)
+                && !refs.iter().any(|(r, _, _)| r == &reference)
+            {
+                refs.push((reference, name, prefix == "refs/tags/"));
+            }
+        }
+    }
+    for (reference, name, is_tag) in refs.into_iter().take(3) {
+        let remaining = origin_x + refs_w - 10.0 - x;
+        if remaining < 28.0 {
+            break;
+        }
         let color = if is_tag {
             theme::accent_purple()
         } else {
             branch_color
         };
         let font = FontId::proportional(12.0);
-        let galley = painter.layout_no_wrap(name.to_string(), font, color);
-        let width = galley.size().x + 14.0;
-        if x + width > origin_x + refs_w - 10.0 {
-            break;
+        let mut label = if is_tag {
+            format!("tag: {name}")
+        } else {
+            name.to_string()
+        };
+        let mut galley = painter.layout_no_wrap(label.clone(), font.clone(), color);
+        if galley.size().x + 14.0 > remaining {
+            while label.chars().count() > 1 {
+                label.pop();
+                galley = painter.layout_no_wrap(format!("{label}\u{2026}"), font.clone(), color);
+                if galley.size().x + 14.0 <= remaining {
+                    break;
+                }
+            }
         }
+        let width = (galley.size().x + 14.0).min(remaining);
         let rect = Rect::from_min_size(Pos2::new(x, row_top + 8.0), Vec2::new(width, ROW_H - 16.0));
         painter.rect_filled(rect, 4.0, color.gamma_multiply(0.12));
-        painter.rect_stroke(rect, 4.0, Stroke::new(0.8, color.gamma_multiply(0.65)));
+        painter.rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(0.8, color.gamma_multiply(0.65)),
+            egui::StrokeKind::Middle,
+        );
         painter.galley(
             Pos2::new(rect.min.x + 7.0, cy - galley.size().y / 2.0),
             galley,
             color,
         );
+        rectangles.push((reference, rect));
         x = rect.max.x + 4.0;
+    }
+    rectangles
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+    use crate::git::test_support::TestRepo;
+
+    fn search_test_graph() -> std::sync::Arc<crate::git::graph::CommitGraph> {
+        let node = |oid: &str, summary: &str, author: &str, time, refs: Vec<String>| {
+            crate::git::graph::CommitNode {
+                oid: oid.into(),
+                summary: summary.into(),
+                body: None,
+                author: author.into(),
+                author_email: String::new(),
+                time,
+                parents: Vec::new(),
+                lane: 0,
+                refs,
+            }
+        };
+        let mut graph = crate::git::graph::CommitGraph::default();
+        graph.nodes = vec![
+            node(
+                "abc123",
+                "Fix search",
+                "Alice",
+                1_709_164_800,
+                vec!["Main".into()],
+            ),
+            node("def456", "Add feature", "Bob", 0, vec![]),
+        ];
+        std::sync::Arc::new(graph)
+    }
+
+    #[test]
+    fn search_cache_matches_node_matches() {
+        let graph = search_test_graph();
+        let mut cache = None;
+        for query in [
+            "SEARCH",
+            "author:alice",
+            "after:2024-01-01",
+            "before:2024-01-01",
+            "sha:def",
+            "main",
+            "missing",
+        ] {
+            let expected: Vec<bool> = graph
+                .nodes
+                .iter()
+                .map(|node| node_matches(node, &query.to_lowercase()))
+                .collect();
+            let result = cached_search(&mut cache, query, &graph);
+            assert_eq!(result.matches.as_ref(), &expected);
+            assert_eq!(
+                result.count,
+                expected.iter().filter(|matched| **matched).count()
+            );
+        }
+    }
+
+    #[test]
+    fn search_cache_invalidates_on_query_or_graph_change() {
+        let graph = search_test_graph();
+        let mut cache = None;
+        let first = cached_search(&mut cache, "alice", &graph).matches.clone();
+        let unchanged = cached_search(&mut cache, "alice", &graph).matches.clone();
+        assert!(std::sync::Arc::ptr_eq(&first, &unchanged));
+
+        let changed_query = cached_search(&mut cache, "bob", &graph).matches.clone();
+        assert!(!std::sync::Arc::ptr_eq(&first, &changed_query));
+        assert_eq!(changed_query.as_ref(), &vec![false, true]);
+
+        let refreshed = std::sync::Arc::new((*graph).clone());
+        let refreshed_matches = cached_search(&mut cache, "bob", &refreshed).matches.clone();
+        assert!(!std::sync::Arc::ptr_eq(&changed_query, &refreshed_matches));
+
+        let mut larger = (*graph).clone();
+        larger.nodes.push(larger.nodes[0].clone());
+        let larger = std::sync::Arc::new(larger);
+        let changed_graph = cached_search(&mut cache, "bob", &larger).matches.clone();
+        assert!(!std::sync::Arc::ptr_eq(&refreshed_matches, &changed_graph));
+        assert_eq!(changed_graph.len(), 3);
+
+        // Check the length component independently of the pointer component.
+        cache.as_mut().unwrap().nodes_len -= 1;
+        assert!(!cache.as_ref().unwrap().is_valid("bob", &larger));
+        let rebuilt = cached_search(&mut cache, "bob", &larger).matches.clone();
+        assert!(!std::sync::Arc::ptr_eq(&changed_graph, &rebuilt));
+    }
+
+    #[test]
+    fn parse_date_rejects_invalid_dates_and_overflowing_inputs() {
+        for date in [
+            "2024-31-12",
+            "2024-14-01",
+            "2024-00-10",
+            "2024-02-30",
+            "2023-02-29",
+            "2024-04-31",
+            "1969-12-31",
+            "10000-01-01",
+            "99999999999999999-01-01",
+            "2024-1",
+            "",
+            "2024--01",
+        ] {
+            assert_eq!(parse_date(date), None, "{date}");
+        }
+    }
+
+    #[test]
+    fn parse_date_returns_midnight_utc_timestamps() {
+        assert_eq!(parse_date("1970-01-01"), Some(0));
+        assert_eq!(parse_date("2024-02-29"), Some(1_709_164_800));
+        assert_eq!(parse_date("2000-03-01"), Some(951_868_800));
+        assert_eq!(parse_date("2023-12-31"), Some(1_703_980_800));
+    }
+
+    #[test]
+    fn node_matches_rejects_invalid_after_date() {
+        let node = crate::git::graph::CommitNode {
+            oid: String::new(),
+            summary: String::new(),
+            body: None,
+            author: String::new(),
+            author_email: String::new(),
+            time: 0,
+            parents: Vec::new(),
+            lane: 0,
+            refs: Vec::new(),
+        };
+        assert!(!node_matches(&node, "after:2024-31-12"));
+    }
+
+    #[test]
+    fn column_preferences_normalize_and_layout_hidden_reordered_columns() {
+        let mut view = CommitGraphView::new(crate::state::new_shared_state());
+        view.set_preferences(GraphPreferences {
+            columns: vec![GraphColumn::Hash, GraphColumn::Time, GraphColumn::Hash],
+            date_format: GraphDateFormat::DateTime,
+        });
+        assert_eq!(
+            view.preferences.columns,
+            [GraphColumn::Hash, GraphColumn::Time, GraphColumn::Commit]
+        );
+        view.fit_columns(1000.0);
+        let (starts, widths) = view.column_layout();
+        assert_eq!(starts[GraphColumn::Hash.index()], 0.0);
+        assert_eq!(starts[GraphColumn::Time.index()], HASH_W_DEF);
+        assert_eq!(widths[GraphColumn::References.index()], 0.0);
+        assert_eq!(widths[GraphColumn::Graph.index()], 0.0);
+        assert_eq!(widths.iter().sum::<f32>(), 1000.0);
+        assert!(widths[GraphColumn::Time.index()] >= 140.0);
+        assert!(
+            view.take_dirty_preferences().is_none(),
+            "restoration is not a user edit"
+        );
+        let encoded = serde_json::to_string(&view.preferences).unwrap();
+        assert_eq!(
+            serde_json::from_str::<GraphPreferences>(&encoded).unwrap(),
+            view.preferences
+        );
+        view.set_column_widths(Some(250.0), None, None, None);
+        view.reset_column_widths();
+        assert_eq!(
+            view.take_dirty_widths().unwrap().0,
+            REFS_W_DEF,
+            "reset widths must persist"
+        );
+    }
+
+    #[test]
+    fn graph_dates_are_utc_and_handle_leap_days_and_pre_epoch_times() {
+        assert_eq!(format_graph_date(0, GraphDateFormat::Date), "1970-01-01");
+        assert_eq!(
+            format_graph_date(-1, GraphDateFormat::DateTime),
+            "1969-12-31 23:59"
+        );
+        assert_eq!(
+            format_graph_date(951_782_400, GraphDateFormat::Date),
+            "2000-02-29"
+        );
+        assert_eq!(
+            format_graph_date(86_460, GraphDateFormat::DateTime),
+            "1970-01-02 00:01"
+        );
+    }
+
+    #[test]
+    fn reordered_graph_headers_and_ref_menus_keep_reference_identity() {
+        let repo = TestRepo::new();
+        let oid = repo.commit("base", b"base").to_string();
+        repo.git_ok(&["branch", "same"]);
+        repo.git_ok(&["tag", "same"]);
+        let (ctx, mut view) = setup(&repo);
+        view.set_column_widths(Some(320.0), None, None, None);
+        view.set_preferences(GraphPreferences {
+            columns: vec![
+                GraphColumn::Hash,
+                GraphColumn::References,
+                GraphColumn::Commit,
+            ],
+            date_format: GraphDateFormat::Date,
+        });
+        frame(&ctx, &mut view, vec![], true);
+        let header = |column: GraphColumn| {
+            ctx.read_response(egui::Id::new(("graph_header", column.index())))
+                .unwrap()
+                .rect
+        };
+        assert!(header(GraphColumn::Hash).left() < header(GraphColumn::References).left());
+        assert!(ctx
+            .read_response(egui::Id::new(("graph_header", GraphColumn::Graph.index())))
+            .is_none());
+        let tag = ctx
+            .read_response(egui::Id::new(("graph_ref", "refs/tags/same")))
+            .unwrap()
+            .rect
+            .center();
+        let output = click_with(
+            &ctx,
+            &mut view,
+            tag,
+            egui::Modifiers::NONE,
+            egui::PointerButton::Secondary,
+        );
+        let delete = text_position(&output, "Delete Tag…");
+        click_with(
+            &ctx,
+            &mut view,
+            delete,
+            egui::Modifiers::NONE,
+            egui::PointerButton::Primary,
+        );
+        assert!(
+            matches!(view.take_sidebar_action(), Some(crate::ui::sidebar::SidebarAction::DeleteTag(name)) if name == "same")
+        );
+        assert_eq!(
+            repo.head().to_string(),
+            oid,
+            "menus request guarded actions, without mutating directly"
+        );
+        assert!(repo.open().find_reference("refs/tags/same").is_ok());
+    }
+    fn frame(
+        ctx: &egui::Context,
+        view: &mut CommitGraphView,
+        events: Vec<egui::Event>,
+        enabled: bool,
+    ) -> egui::FullOutput {
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 400.0))),
+            events,
+            ..Default::default()
+        });
+        view.set_interactions_enabled(enabled && !view.has_pending_action());
+        egui::CentralPanel::default().show(
+            &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new("test_root"),
+                egui::UiBuilder::new().max_rect(ctx.content_rect()),
+            ),
+            |ui| view.show(ui),
+        );
+        view.show_action_confirmation(ctx, &[]);
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        output
+    }
+    fn key(key: Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+    fn pointer(pos: Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+    fn setup(repo: &TestRepo) -> (egui::Context, CommitGraphView) {
+        let state = crate::state::new_shared_state();
+        {
+            let mut s = state.lock().unwrap();
+            s.repo_path = Some(repo.path().canonicalize().unwrap());
+            s.head_branch = Some("main".into());
+            s.focused_pane = 2;
+            s.commit_graph = Some(std::sync::Arc::new(
+                crate::git::graph::CommitGraph::from_repo(&repo.open()).unwrap(),
+            ));
+        }
+        (egui::Context::default(), CommitGraphView::new(state))
+    }
+    fn text_position(output: &egui::FullOutput, label: &str) -> Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text: {label}"))
+    }
+
+    fn click_with(
+        ctx: &egui::Context,
+        view: &mut CommitGraphView,
+        pos: Pos2,
+        modifiers: egui::Modifiers,
+        button: egui::PointerButton,
+    ) -> egui::FullOutput {
+        let event = |pressed| egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers,
+        };
+        let mut last = None;
+        for events in [
+            vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::PointerMoved(pos),
+                event(true),
+            ],
+            vec![event(false)],
+            vec![],
+        ] {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 400.0))),
+                events,
+                ..Default::default()
+            });
+            view.set_interactions_enabled(true);
+            egui::CentralPanel::default().show(
+                &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("test_root"),
+                    egui::UiBuilder::new().max_rect(ctx.content_rect()),
+                ),
+                |ui| view.show(ui),
+            );
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            last = Some(output);
+        }
+        last.unwrap()
+    }
+
+    #[test]
+    fn ctrl_and_shift_clicks_build_a_multi_selection_with_actions() {
+        let repo = TestRepo::new();
+        let a = repo.commit("file", b"a").to_string();
+        let b = repo.commit("file", b"b").to_string();
+        let c = repo.commit("file", b"c").to_string();
+        let (ctx, mut view) = setup(&repo);
+        ctx.set_fonts(crate::icons::font_definitions());
+        frame(&ctx, &mut view, vec![], true);
+        let row = |oid: &str| {
+            ctx.read_response(egui::Id::new(("commit_row", oid.to_string())))
+                .unwrap()
+                .rect
+                .center()
+        };
+        let (pa, pc) = (row(&a), row(&c));
+        let primary = egui::PointerButton::Primary;
+        click_with(&ctx, &mut view, pc, egui::Modifiers::NONE, primary);
+        assert_eq!(
+            view.state.lock().unwrap().selected_commit.as_deref(),
+            Some(c.as_str())
+        );
+        assert!(view.state.lock().unwrap().selected_commits.is_empty());
+
+        click_with(&ctx, &mut view, pa, egui::Modifiers::COMMAND, primary);
+        assert_eq!(
+            view.state.lock().unwrap().selected_commits_oldest_first(),
+            [a.clone(), c.clone()]
+        );
+
+        // The Ctrl-clicked row becomes the anchor, so this selects A through C.
+        click_with(&ctx, &mut view, pc, egui::Modifiers::SHIFT, primary);
+        assert_eq!(
+            view.state.lock().unwrap().selected_commits_oldest_first(),
+            [a.clone(), b.clone(), c.clone()]
+        );
+
+        // Right-clicking a selected row offers actions for the whole selection.
+        let output = click_with(
+            &ctx,
+            &mut view,
+            row(&b),
+            egui::Modifiers::NONE,
+            egui::PointerButton::Secondary,
+        );
+        text_position(&output, "Cherry-pick 3 commits");
+        text_position(&output, "Squash 3 commits…");
+        assert_eq!(view.state.lock().unwrap().selected_commits.len(), 3);
+        frame(&ctx, &mut view, vec![key(Key::Escape)], true);
+        frame(&ctx, &mut view, vec![], true);
+
+        // Ctrl-click removes one; a plain click goes back to one commit.
+        // Click near the row's left edge, away from where the menu was.
+        let pb = Pos2::new(40.0, row(&b).y);
+        click_with(&ctx, &mut view, pb, egui::Modifiers::COMMAND, primary);
+        assert_eq!(
+            view.state.lock().unwrap().selected_commits_oldest_first(),
+            [a.clone(), c.clone()]
+        );
+        click_with(&ctx, &mut view, pb, egui::Modifiers::NONE, primary);
+        let s = view.state.lock().unwrap();
+        assert!(s.selected_commits.is_empty());
+        assert_eq!(s.selected_commit.as_deref(), Some(b.as_str()));
+    }
+
+    #[test]
+    fn context_menu_uses_clicked_oid_and_confirmation_keeps_it_after_selection_changes() {
+        use crate::git::graph_action::Action;
+        for (label, action) in [
+            ("Cherry-pick", Action::CherryPick),
+            ("Revert Commit", Action::Revert),
+        ] {
+            let repo = TestRepo::new();
+            let base = repo.commit("base", b"base");
+            repo.git_ok(&["checkout", "-b", "topic"]);
+            let topic = repo.commit("topic", b"topic");
+            repo.git_ok(&["checkout", "main"]);
+            let (ctx, mut view) = setup(&repo);
+            view.state.lock().unwrap().selected_commit = Some(base.to_string());
+            let index = std::fs::read(repo.path().join(".git/index")).unwrap();
+            frame(&ctx, &mut view, vec![], true);
+            let pos = ctx
+                .read_response(egui::Id::new(("commit_row", topic.to_string())))
+                .unwrap()
+                .rect
+                .center();
+            frame(
+                &ctx,
+                &mut view,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    pointer(pos, egui::PointerButton::Secondary, true),
+                ],
+                true,
+            );
+            frame(
+                &ctx,
+                &mut view,
+                vec![pointer(pos, egui::PointerButton::Secondary, false)],
+                true,
+            );
+            let output = frame(&ctx, &mut view, vec![], true);
+            let button = text_position(&output, label);
+            // Change selection even while the menu is open: its endpoint remains B.
+            view.state.lock().unwrap().selected_commit = Some(base.to_string());
+            frame(
+                &ctx,
+                &mut view,
+                vec![
+                    egui::Event::PointerMoved(button),
+                    pointer(button, egui::PointerButton::Primary, true),
+                ],
+                true,
+            );
+            frame(
+                &ctx,
+                &mut view,
+                vec![pointer(button, egui::PointerButton::Primary, false)],
+                true,
+            );
+            let preview = view
+                .pending_action
+                .as_ref()
+                .expect("menu action opens confirmation");
+            assert_eq!(preview.source.oid, topic.to_string());
+            assert_eq!(preview.action, action);
+            view.state.lock().unwrap().selected_commit = Some(base.to_string());
+            frame(&ctx, &mut view, vec![], true);
+            assert_eq!(
+                view.pending_action.as_ref().unwrap().source.oid,
+                topic.to_string()
+            );
+            assert_eq!(repo.head(), base);
+            assert!(!repo.path().join("topic").exists());
+            assert_eq!(
+                std::fs::read(repo.path().join(".git/index")).unwrap(),
+                index
+            );
+            assert!(view.state.lock().unwrap().local_jobs.is_empty());
+            frame(&ctx, &mut view, vec![key(Key::Escape)], true);
+            assert!(view.pending_action.is_none());
+            assert_eq!(repo.head(), base);
+        }
+    }
+
+    #[test]
+    fn search_focus_is_requested_once_and_escape_respects_confirmation() {
+        let repo = TestRepo::new();
+        repo.commit("base", b"base");
+        let head = repo.commit("change", b"change");
+        let (ctx, mut view) = setup(&repo);
+        view.state.lock().unwrap().search_active = true;
+        frame(&ctx, &mut view, vec![], true);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("graph_search"))
+        );
+        frame(&ctx, &mut view, vec![key(Key::Tab)], true);
+        frame(&ctx, &mut view, vec![], true);
+        assert_ne!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("graph_search"))
+        );
+        view.state.lock().unwrap().selected_commit = Some(head.to_string());
+        view.preview_selected(crate::git::graph_action::Action::Revert);
+        frame(&ctx, &mut view, vec![], true);
+        frame(&ctx, &mut view, vec![key(Key::Escape)], true);
+        assert!(view.pending_action.is_none());
+        assert!(
+            view.state.lock().unwrap().search_active,
+            "Escape cancels the topmost confirmation only"
+        );
+    }
+
+    #[test]
+    fn modal_blocks_graph_arrows_and_offscreen_keyboard_target_keeps_focus() {
+        let repo = TestRepo::new();
+        for i in 0..32 {
+            repo.commit(&format!("file-{i}"), b"data");
+        }
+        let (ctx, mut view) = setup(&repo);
+        frame(&ctx, &mut view, vec![], true);
+        frame(&ctx, &mut view, vec![key(Key::ArrowUp)], false);
+        assert!(view.state.lock().unwrap().selected_commit.is_none());
+        frame(&ctx, &mut view, vec![key(Key::ArrowUp)], true);
+        let oid = view.state.lock().unwrap().selected_commit.clone().unwrap();
+        let expected = view
+            .state
+            .lock()
+            .unwrap()
+            .commit_graph
+            .as_ref()
+            .unwrap()
+            .nodes
+            .last()
+            .unwrap()
+            .oid
+            .clone();
+        assert_eq!(oid, expected);
+        let id = egui::Id::new(("commit_row", &oid));
+        assert_eq!(ctx.memory(|m| m.focused()), Some(id));
+        frame(&ctx, &mut view, vec![], true);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(id),
+            "virtualization must retain a focused row during scrolling"
+        );
+    }
+
+    #[test]
+    fn drag_commit_previews_without_mutating_and_escape_cancels() {
+        let repo = TestRepo::new();
+        let base = repo.commit("base", b"base");
+        repo.git_ok(&["checkout", "-b", "topic"]);
+        let topic = repo.commit("topic", b"topic");
+        repo.git_ok(&["checkout", "main"]);
+        let state = crate::state::new_shared_state();
+        {
+            let mut s = state.lock().unwrap();
+            s.repo_path = Some(repo.path().canonicalize().unwrap());
+            s.head_branch = Some("main".into());
+            s.commit_graph = Some(std::sync::Arc::new(
+                crate::git::graph::CommitGraph::from_repo(&repo.open()).unwrap(),
+            ));
+        }
+        let ctx = egui::Context::default();
+        let mut view = CommitGraphView::new(state.clone());
+        let frame = |view: &mut CommitGraphView, events| {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 700.0))),
+                events,
+                ..Default::default()
+            });
+            view.set_interactions_enabled(!view.has_pending_action());
+            egui::CentralPanel::default().show(
+                &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("test_root"),
+                    egui::UiBuilder::new().max_rect(ctx.content_rect()),
+                ),
+                |ui| view.show(ui),
+            );
+            view.show_action_confirmation(&ctx, &[]);
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            output
+        };
+        let _ = frame(&mut view, vec![]);
+        let source = ctx
+            .read_response(egui::Id::new(("commit_row", &topic.to_string())))
+            .unwrap()
+            .rect
+            .center();
+        let target = ctx
+            .read_response(egui::Id::new(("commit_row", &base.to_string())))
+            .unwrap()
+            .rect
+            .center();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let _ = frame(
+            &mut view,
+            vec![egui::Event::PointerMoved(source), button(source, true)],
+        );
+        let _ = frame(
+            &mut view,
+            vec![egui::Event::PointerMoved(source + Vec2::new(10.0, 0.0))],
+        );
+        assert!(view.drag.is_some());
+        let _ = frame(&mut view, vec![egui::Event::PointerMoved(target)]);
+        let _ = frame(&mut view, vec![button(target, false)]);
+        assert!(
+            view.pending_action.is_some(),
+            "drop should open a preview: {:?}",
+            state.lock().unwrap().error
+        );
+        assert_eq!(repo.head(), base);
+        assert!(state.lock().unwrap().local_jobs.is_empty());
+        let _ = frame(
+            &mut view,
+            vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(view.pending_action.is_none());
+        assert_eq!(repo.head(), base);
+
+        // Keyboard invocation uses the same guarded preview and takes focus on
+        // Cancel, so Enter cannot activate whichever background widget had focus.
+        state.lock().unwrap().selected_commit = Some(topic.to_string());
+        view.preview_selected(crate::git::graph_action::Action::CherryPick);
+        let _ = frame(&mut view, vec![]);
+        let _ = frame(
+            &mut view,
+            vec![egui::Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(view.pending_action.is_none());
+        assert_eq!(repo.head(), base);
+
+        // Clicking the shield must not lift it above the window and prevent
+        // subsequent clicks on dialog buttons.
+        view.preview_selected(crate::git::graph_action::Action::CherryPick);
+        let _ = frame(&mut view, vec![]);
+        let outside = Pos2::new(5.0, 5.0);
+        let _ = frame(
+            &mut view,
+            vec![egui::Event::PointerMoved(outside), button(outside, true)],
+        );
+        let output = frame(&mut view, vec![button(outside, false)]);
+        assert!(view.pending_action.is_some());
+        let cancel = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Cancel" => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+            .expect("confirmation renders Cancel");
+        let _ = frame(
+            &mut view,
+            vec![egui::Event::PointerMoved(cancel), button(cancel, true)],
+        );
+        let _ = frame(&mut view, vec![button(cancel, false)]);
+        assert!(view.pending_action.is_none());
+        assert_eq!(repo.head(), base);
+
+        view.preview_selected(crate::git::graph_action::Action::CherryPick);
+        state.lock().unwrap().pending_discard = Some(crate::state::PendingDiscard::ResetHard);
+        let _ = frame(&mut view, vec![]);
+        assert!(view.pending_action.is_none());
     }
 }

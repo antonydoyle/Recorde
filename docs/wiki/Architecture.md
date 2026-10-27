@@ -12,7 +12,7 @@ Recorde is a native egui application with a small set of clear layers:
 - `git/` modules perform repository operations using `git2` and selected Git CLI
   commands where appropriate.
 - `ui/` modules render focused panels and return user actions to `RecordeApp`.
-- `providers/` modules translate GitHub/GitLab API responses into provider-neutral
+- `providers/` modules translate GitHub, GitLab, Bitbucket Cloud and Azure DevOps API responses into provider-neutral
   structs.
 - `auth/` and `config.rs` persist local settings and provider credentials.
 
@@ -93,7 +93,7 @@ repository state after terminal operations, and renders progress to the UI.
 | `git/graph.rs`, `git/history.rs`, `git/blame.rs`, `git/reflog.rs` | Review and history data. |
 | `git/capabilities.rs` | Repository state detection. |
 | `git/lifecycle.rs` | Clone, init, terminal, and file-manager helpers. |
-| `providers/github.rs`, `providers/gitlab.rs` | HTTP API calls for provider metadata. |
+| `providers/github.rs`, `providers/gitlab.rs`, `providers/bitbucket.rs`, `providers/azure.rs` | Provider API adapters with explicit action and scope limits. |
 
 ## Error Handling
 

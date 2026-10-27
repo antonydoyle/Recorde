@@ -54,7 +54,7 @@ pub fn show(
             1.0
         } * zoom;
         egui::ScrollArea::both()
-            .id_source("image_overlay")
+            .id_salt("image_overlay")
             .show(ui, |ui| {
                 let (rect, _) =
                     ui.allocate_exact_size(a.size_vec2() * factor, egui::Sense::hover());
@@ -103,7 +103,7 @@ pub fn show(
                             1.0
                         } * zoom;
                         egui::ScrollArea::both()
-                            .id_source(("image_zoom", index))
+                            .id_salt(("image_zoom", index))
                             .show(ui, |ui| {
                                 ui.add(
                                     egui::Image::new(texture)
@@ -116,7 +116,7 @@ pub fn show(
                         }
                         if !hex.is_empty() {
                             egui::ScrollArea::horizontal()
-                                .id_source(("binary_hex", index))
+                                .id_salt(("binary_hex", index))
                                 .show(ui, |ui| {
                                     ui.monospace(hex);
                                 });

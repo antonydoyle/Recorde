@@ -46,3 +46,32 @@ Use the native Windows smoke fixture for startup and the font coverage test for
 embedded glyph availability on Windows. Linux screenshots do not establish Windows
 DPI behaviour; include native DPI checks during manual testing. macOS validation
 remains parked.
+
+## GUI maintenance validation (v0.4 candidate)
+
+The eframe/egui 0.36.2 migration was checked on Linux with Rust 1.99. The native
+AccessKit feature is enabled; the development inspector remains optional and is
+absent from production builds. The old eframe vendor patch is replaced by making
+the native window visible in the app creation callback before its first swap.
+
+- All-target compilation and six process-supervision fixtures pass.
+- Eighteen focused UI/font/shortcut tests pass, including embedded glyph
+  coverage, monitor density changes, button states and graph drag cancellation.
+- Eight native X11 captures cover dark/light at 100%, 125%, 150% and 200% display
+  scale. Each checks reported pixel density, screenshot dimensions, commit and
+  branch labels, action names, six distinct Tab focuses, commit selection, and
+  arrow navigation that moves selection and accessible focus together.
+- A native WSLg Wayland run with `DISPLAY` removed renders its first frame and
+  passes the AccessKit/Tab checks. This checks the available compositor; it does
+  not establish behavior on every COSMIC compositor version.
+- `cargo audit --deny unsound` passes with no advisory or maintenance warnings;
+  the lock no longer contains `ab_glyph`, `ttf-parser`, `paste` or `sctk-adwaita`.
+
+Reproduce the matrix with `scripts/ui_review.py ... --dpi-matrix`, using the
+supervised fixture and inspector described in the Developer Guide. Captures are
+native framebuffer output; they are reviewed visually rather than compared to a
+fixed golden image. Repository-specific lane colors may differ by fixture path.
+`scripts/windows_smoke.ps1 -InspectAccessibility` additionally checks the real
+Windows UI Automation bridge and native focus on an interactive Windows test
+desktop. That hosted check and native Windows/macOS DPI acceptance are separate
+from the Linux evidence above.

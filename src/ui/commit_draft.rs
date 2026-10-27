@@ -111,6 +111,28 @@ impl Drafts {
         }
     }
 
+    pub fn flush_all(&mut self) -> Result<(), String> {
+        self.poll();
+        if !self.pending.is_empty() {
+            return Err("Finish pending commits before restarting Recorde.".into());
+        }
+        self.persist_current()?;
+        for (repo, draft) in &self.saved {
+            match write_draft(repo, draft) {
+                Ok(()) => {
+                    self.save_errors.remove(repo);
+                }
+                Err(error) => {
+                    self.save_errors.insert(repo.clone(), error);
+                }
+            }
+        }
+        if !self.save_errors.is_empty() {
+            return Err("Some commit drafts could not be saved. Resolve their save errors before restarting.".into());
+        }
+        Ok(())
+    }
+
     pub fn persist_current(&mut self) -> Result<(), String> {
         self.last_persist_attempt = Some(std::time::Instant::now());
         if let Some(repo) = &self.repo {
@@ -176,6 +198,32 @@ fn write_draft(repo: &std::path::Path, draft: &CommitDraft) -> Result<(), String
 mod tests {
     use super::*;
     use std::sync::mpsc;
+    #[test]
+    fn flush_all_blocks_inactive_pending_commits_and_retries_saved_drafts() {
+        let first = crate::git::test_support::TestRepo::new();
+        let second = crate::git::test_support::TestRepo::new();
+        let mut drafts = Drafts::default();
+        drafts.switch_to(Some(first.path().into()));
+        drafts.current.subject = "first draft".into();
+        let (tx, rx) = mpsc::channel();
+        drafts.submitted(rx);
+        drafts.switch_to(Some(second.path().into()));
+        drafts.current.subject = "second draft".into();
+        assert!(drafts.flush_all().unwrap_err().contains("pending"));
+        tx.send(false).unwrap();
+        drafts.flush_all().unwrap();
+        assert_eq!(read_draft(first.path()).unwrap().subject, "first draft");
+        assert_eq!(read_draft(second.path()).unwrap().subject, "second draft");
+        let missing = first.path().join("missing-repository");
+        drafts.saved.insert(missing.clone(), CommitDraft::default());
+        assert!(drafts
+            .flush_all()
+            .unwrap_err()
+            .contains("could not be saved"));
+        git2::Repository::init(&missing).unwrap();
+        drafts.flush_all().unwrap();
+        assert!(drafts.save_errors.is_empty());
+    }
 
     #[test]
     fn rejected_or_disconnected_commit_preserves_draft() {

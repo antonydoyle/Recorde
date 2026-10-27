@@ -53,7 +53,7 @@ impl RebaseModal {
 
         ui.add_space(8.0);
         if self.preserve_merges {
-            ui.label("Merge topology is preserved. Keep the original order; Pick and Reword are available.");
+            ui.label("Merge topology is preserved. Reorder and combine commits within each branch segment. Labels, branch points and merges are preserved.");
         }
 
         // Column headers
@@ -87,7 +87,7 @@ impl RebaseModal {
         // drag_from and drop_at are both set by the drop zone (payload = source index)
         let mut drag_from: Option<usize> = None;
         let mut drop_at: Option<usize> = None;
-        let is_dragging = !self.preserve_merges && egui::DragAndDrop::has_any_payload(ui.ctx());
+        let is_dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
 
         egui::ScrollArea::vertical()
             .max_height(380.0)
@@ -125,18 +125,11 @@ impl RebaseModal {
                                     for a in &[
                                         RebaseAction::Pick,
                                         RebaseAction::Reword,
+                                        RebaseAction::Edit,
                                         RebaseAction::Squash,
                                         RebaseAction::Fixup,
                                         RebaseAction::Drop,
                                     ] {
-                                        if self.preserve_merges
-                                            && !matches!(
-                                                a,
-                                                RebaseAction::Pick | RebaseAction::Reword
-                                            )
-                                        {
-                                            continue;
-                                        }
                                         ui.selectable_value(
                                             &mut selected_action,
                                             *a,
@@ -208,10 +201,6 @@ impl RebaseModal {
         }
 
         // Apply drag-and-drop reorder
-        if self.preserve_merges {
-            drag_from = None;
-            drop_at = None;
-        }
         if let (Some(from), Some(to)) = (drag_from, drop_at) {
             if to != from && to != from + 1 {
                 let entry = self.entries.remove(from);
@@ -228,6 +217,7 @@ impl RebaseModal {
         ui.horizontal_wrapped(|ui| {
             for (a, desc) in &[
                 (RebaseAction::Reword, "edit message  ?  "),
+                (RebaseAction::Edit, "pause to amend or split  /  "),
                 (RebaseAction::Pick, "use commit  ·  "),
                 (RebaseAction::Squash, "meld into prev, edit msg  ·  "),
                 (RebaseAction::Fixup, "meld into prev, discard msg  ·  "),
@@ -247,6 +237,15 @@ impl RebaseModal {
 
         // ── Buttons ───────────────────────────────────────────────────────────
         let validation = crate::git::rebase::validate_entries(&self.entries);
+        if !self.entries.is_empty()
+            && self
+                .entries
+                .iter()
+                .all(|entry| entry.action == RebaseAction::Drop)
+        {
+            ui.label(RichText::new("All listed commits will be removed. This branch will return to the upstream commit shown above; a recovery snapshot will be saved.").color(theme::accent_red()));
+            ui.add_space(8.0);
+        }
         if let Err(error) = &validation {
             ui.colored_label(theme::accent_red(), error);
         }
@@ -257,10 +256,10 @@ impl RebaseModal {
                     validation.is_ok(),
                     Button::new(
                         RichText::new("Start Rebase")
-                            .color(Color32::WHITE)
+                            .color(theme::on_primary())
                             .size(14.0),
                     )
-                    .fill(theme::accent_blue())
+                    .fill(theme::primary_fill())
                     .min_size(egui::Vec2::new(130.0, 28.0)),
                 )
                 .clicked()
@@ -290,9 +289,9 @@ impl RebaseModal {
 
 fn action_color(action: RebaseAction) -> Color32 {
     match action {
-        RebaseAction::Pick | RebaseAction::Reword => theme::accent_blue(),
+        RebaseAction::Pick | RebaseAction::Reword | RebaseAction::Edit => theme::accent_blue(),
         RebaseAction::Squash => theme::accent_yellow(),
-        RebaseAction::Fixup => Color32::from_rgb(0xE5, 0x97, 0x20),
+        RebaseAction::Fixup => theme::accent_orange(),
         RebaseAction::Drop => theme::accent_red(),
     }
 }
@@ -307,7 +306,7 @@ fn receive_drop(
     drop_at: &mut Option<usize>,
 ) {
     let (inner, payload) = ui.dnd_drop_zone::<usize, ()>(
-        egui::Frame::none().inner_margin(egui::Margin::symmetric(0.0, 2.0)),
+        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 2)),
         |ui| {
             if show_line {
                 let w = ui.available_width();

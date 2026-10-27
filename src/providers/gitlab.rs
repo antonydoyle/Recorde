@@ -20,7 +20,7 @@ pub fn list_mrs(
         host, encoded, gl_state
     );
 
-    let mrs = list(&url, "PRIVATE-TOKEN", token, None)?;
+    let mrs = list(&url, "Authorization", &format!("Bearer {token}"), None)?;
     Ok(mrs
         .into_iter()
         .filter_map(parse_mr)
@@ -37,7 +37,7 @@ pub fn details(
 ) -> Result<(PrItem, Vec<String>), String> {
     let encoded = component(&format!("{namespace}/{project}"));
     let url = format!("https://{host}/api/v4/projects/{encoded}/merge_requests/{number}");
-    let body = super::pagination::object(&url, "PRIVATE-TOKEN", token)?;
+    let body = super::pagination::object(&url, "Authorization", &format!("Bearer {token}"))?;
     let mut item = parse_mr(body.clone()).ok_or("Invalid merge request details.")?;
     item.check_state = body["head_pipeline"]["status"]
         .as_str()
@@ -129,7 +129,7 @@ pub fn list_issues(
         "https://{}/api/v4/projects/{}/issues?state={}&per_page=50&order_by=updated_at",
         host, encoded, gl_state
     );
-    let items = list(&url, "PRIVATE-TOKEN", token, None)?;
+    let items = list(&url, "Authorization", &format!("Bearer {token}"), None)?;
     Ok(items
         .into_iter()
         .filter_map(|v| {
@@ -185,7 +185,7 @@ pub fn list_pipelines(
         encoded,
         component(branch)
     );
-    let items = list(&url, "PRIVATE-TOKEN", token, None)?;
+    let items = list(&url, "Authorization", &format!("Bearer {token}"), None)?;
     Ok(items
         .into_iter()
         .filter_map(|p| {
@@ -218,7 +218,7 @@ pub fn list_releases(
         "https://{}/api/v4/projects/{}/releases?per_page=20",
         host, encoded
     );
-    let items = list(&url, "PRIVATE-TOKEN", token, None)?;
+    let items = list(&url, "Authorization", &format!("Bearer {token}"), None)?;
     Ok(items
         .into_iter()
         .filter_map(|r| {

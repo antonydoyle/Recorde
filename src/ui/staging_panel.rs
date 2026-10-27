@@ -1,6 +1,7 @@
 use crate::ui::button::Button;
 use egui::{Color32, RichText, Ui, Vec2};
 
+use crate::git::branches::ResetMode;
 use crate::git::{
     conflicts,
     operations::{load_blame, load_file_history, load_workdir_diff},
@@ -19,6 +20,33 @@ pub struct StagingPanel {
     unstaged_expanded: bool,
     untracked_expanded: bool,
     commit_options_open: bool,
+    amend_prefill: Option<AmendPrefill>,
+    /// Upstream already containing HEAD, checked when Amend is switched on.
+    amend_published: Option<String>,
+    /// "Undo last commit" waiting for confirmation, with the mode chosen.
+    pending_undo: Option<(
+        crate::git::branches::UndoCommitPreview,
+        crate::git::branches::ResetMode,
+    )>,
+}
+
+/// The HEAD message copied into an empty draft when Amend is switched on.
+#[derive(Debug)]
+struct AmendPrefill {
+    repo: Option<std::path::PathBuf>,
+    previous_body: String,
+    subject: String,
+    body: String,
+}
+
+impl AmendPrefill {
+    /// Switching Amend off restores the earlier draft if the copied message is unchanged.
+    fn restore(self, repo: &Option<std::path::PathBuf>, subject: &mut String, body: &mut String) {
+        if self.repo == *repo && *subject == self.subject && *body == self.body {
+            subject.clear();
+            *body = self.previous_body;
+        }
+    }
 }
 
 impl StagingPanel {
@@ -32,12 +60,24 @@ impl StagingPanel {
             unstaged_expanded: true,
             untracked_expanded: true,
             commit_options_open: false,
+            amend_prefill: None,
+            amend_published: None,
+            pending_undo: None,
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui) {
+    pub fn flush_drafts(&mut self) -> Result<(), String> {
+        self.drafts.flush_all()
+    }
+
+    /// `editor` and `protected_branches` come from App Settings.
+    pub fn show(&mut self, ui: &mut Ui, editor: &str, protected_branches: &[String]) {
         let repo = self.state.lock().unwrap().repo_path.clone();
         self.drafts.switch_to(repo);
+        if !self.drafts.current.is_amend {
+            self.amend_prefill = None;
+            self.amend_published = None;
+        }
         self.drafts.poll();
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, theme::bg_surface());
@@ -127,6 +167,16 @@ impl StagingPanel {
         let mut do_commit = false;
         let mut do_amend = false;
         let mut view_file: Option<(String, DiffContext)> = None;
+        let mut launch_error: Option<String> = None;
+        let mut request_undo: Option<ResetMode> = None;
+        let (mut confirm_undo, mut cancel_undo) = (false, false);
+        if self
+            .pending_undo
+            .as_ref()
+            .is_some_and(|(preview, _)| !same_repository(&preview.reset.path, &repo_path))
+        {
+            self.pending_undo = None;
+        }
         let mut do_discard_file: Option<String> = None;
         let mut do_ignore_file: Option<String> = None;
 
@@ -138,7 +188,7 @@ impl StagingPanel {
             })
         .max(120.0);
         egui::ScrollArea::vertical()
-            .id_source("changes_file_list")
+            .id_salt("changes_file_list")
             .max_height(list_height)
             .auto_shrink([false; 2])
             .show(ui, |ui| {
@@ -202,15 +252,15 @@ impl StagingPanel {
                                 if ui.button("Resolve in Recorde...").clicked() {
                                     self.state.lock().unwrap().pending_conflict_editor =
                                         Some(cf.path.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Open Merge Tool").clicked() {
                                     do_open_mergetool = Some(cf.path.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Reveal in Folder").clicked() {
-                                    reveal_in_folder(&cf.path, &repo_path);
-                                    ui.close_menu();
+                                    launch_error = reveal_in_folder(&cf.path, &repo_path).err();
+                                    ui.close();
                                 }
                             });
                             if resp.clicked() {
@@ -246,23 +296,23 @@ impl StagingPanel {
                                 selection,
                                 false,
                                 |ui| {
-                                    let btn = if is_sel {
-                                        small_btn_accent("Stage")
-                                    } else {
-                                        small_btn("Stage")
-                                    };
-                                    if ui.add(btn).clicked() {
+                                    if ui.button("Stage").clicked() {
                                         do_stage_file = Some(f.path.clone());
+                                        ui.close();
                                     }
-                                    if ui.add(small_btn_danger("Discard")).clicked() {
+                                    if ui
+                                        .button(RichText::new("Discard").color(theme::accent_red()))
+                                        .clicked()
+                                    {
                                         do_discard_file = Some(f.path.clone());
+                                        ui.close();
                                     }
                                 },
                             );
                             resp.context_menu(|ui| {
                                 if ui.button("Show File History").clicked() {
                                     load_file_history(&f.path, self.state.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Blame").clicked() {
                                     {
@@ -271,21 +321,31 @@ impl StagingPanel {
                                         s.show_blame = true;
                                     }
                                     load_blame(&f.path, self.state.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 if ui.button("Stash This File").clicked() {
                                     do_stash_file = Some(f.path.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
+                                if ui.button("Edit in Recorde").clicked() {
+                                    self.state.lock().unwrap().pending_file_edit =
+                                        Some(f.path.clone());
+                                    ui.close();
+                                }
                                 if ui.button("Open in Editor").clicked() {
-                                    open_file_in_editor(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    launch_error =
+                                        open_file_in_editor(&f.path, &repo_path, editor).err();
+                                    ui.close();
                                 }
                                 if ui.button("Reveal in Folder").clicked() {
-                                    reveal_in_folder(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    launch_error = reveal_in_folder(&f.path, &repo_path).err();
+                                    ui.close();
+                                }
+                                if ui.button("Open in External Diff Tool").clicked() {
+                                    launch_error = open_diff_tool(&f.path, &repo_path, false).err();
+                                    ui.close();
                                 }
                             });
                             if resp.clicked() {
@@ -322,24 +382,30 @@ impl StagingPanel {
                                 selection,
                                 true,
                                 |ui| {
-                                    let btn = if is_sel {
-                                        small_btn_accent("Unstage")
-                                    } else {
-                                        small_btn("Unstage")
-                                    };
-                                    if ui.add(btn).clicked() {
+                                    if ui.button("Unstage").clicked() {
                                         do_unstage_file = Some(f.path.clone());
+                                        ui.close();
                                     }
                                 },
                             );
                             resp.context_menu(|ui| {
+                                if ui.button("Edit in Recorde").clicked() {
+                                    self.state.lock().unwrap().pending_file_edit =
+                                        Some(f.path.clone());
+                                    ui.close();
+                                }
                                 if ui.button("Open in Editor").clicked() {
-                                    open_file_in_editor(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    launch_error =
+                                        open_file_in_editor(&f.path, &repo_path, editor).err();
+                                    ui.close();
                                 }
                                 if ui.button("Reveal in Folder").clicked() {
-                                    reveal_in_folder(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    launch_error = reveal_in_folder(&f.path, &repo_path).err();
+                                    ui.close();
+                                }
+                                if ui.button("Open in External Diff Tool").clicked() {
+                                    launch_error = open_diff_tool(&f.path, &repo_path, true).err();
+                                    ui.close();
                                 }
                             });
                             if resp.clicked() {
@@ -368,21 +434,28 @@ impl StagingPanel {
                         for f in &untracked {
                             let is_sel = selected_file.as_deref() == Some(f.path.as_str());
                             let resp = file_row(ui, &f.path, '?', is_sel, selection, false, |ui| {
-                                if ui.add(small_btn("Stage")).clicked() {
+                                if ui.button("Stage").clicked() {
                                     do_stage_file = Some(f.path.clone());
+                                    ui.close();
                                 }
-                                if ui.add(small_btn("Ignore")).clicked() {
+                                if ui.button("Ignore").clicked() {
                                     do_ignore_file = Some(f.path.clone());
+                                    ui.close();
                                 }
                             });
                             resp.context_menu(|ui| {
+                                if ui.button("Edit in Recorde").clicked() {
+                                    self.state.lock().unwrap().pending_file_edit =
+                                        Some(f.path.clone());
+                                    ui.close();
+                                }
                                 if ui.button("Reveal in Folder").clicked() {
-                                    reveal_in_folder(&f.path, &repo_path);
-                                    ui.close_menu();
+                                    launch_error = reveal_in_folder(&f.path, &repo_path).err();
+                                    ui.close();
                                 }
                                 if ui.button("Add to .gitignore").clicked() {
                                     do_ignore_file = Some(f.path.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                             if resp.clicked() {
@@ -396,14 +469,11 @@ impl StagingPanel {
                 ui.add(egui::Separator::default().spacing(0.0));
                 ui.add_space(8.0);
             });
-        egui::ScrollArea::vertical().id_source("commit_composer").auto_shrink([false; 2]).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("commit_composer").auto_shrink([false; 2]).show(ui, |ui| {
                 // Hint when a sequencing op is in progress but all conflicts resolved
                 if any_seq_in_progress && conflicted.is_empty() {
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0);
-                        ui.label(RichText::new("✓ All conflicts resolved — stage remaining changes, then click Continue in the banner above.")
-                            .color(theme::accent_green()).size(12.0));
-                    });
+                    commit_notice(ui, RichText::new("✓ All conflicts resolved — stage remaining changes, then click Continue in the banner above.")
+                        .color(theme::accent_green()).size(12.0));
                     ui.add_space(6.0);
                 }
 
@@ -430,7 +500,7 @@ impl StagingPanel {
                         if ui.add(small_btn("Copy")).on_hover_text("Copy assembled commit message").clicked() {
                             let msg = build_message(&self.drafts.current.subject, &self.drafts.current.body, &self.drafts.current.co_authors,
                                 self.drafts.current.signoff_enabled, &repo_path);
-                            ui.output_mut(|o| o.copied_text = msg);
+                            ui.ctx().copy_text(msg);
                         }
                         ui.add_space(4.0);
                         let amend_color = if self.drafts.current.is_amend { theme::accent_yellow() } else { theme::text_muted() };
@@ -440,12 +510,27 @@ impl StagingPanel {
                                 .stroke(egui::Stroke::new(1.0, if self.drafts.current.is_amend { theme::accent_yellow() } else { theme::border() })),
                         ).clicked() {
                             self.drafts.current.is_amend = !self.drafts.current.is_amend;
+                            if self.drafts.current.is_amend {
+                                self.amend_published = repo_path.as_deref().and_then(head_published);
+                            }
                             if self.drafts.current.is_amend && self.drafts.current.subject.is_empty() {
                                 if let Some(msg) = staging::load_head_message(self.state.clone()) {
                                     let mut lines = msg.lines();
-                                    self.drafts.current.subject = lines.next().unwrap_or("").to_string();
+                                    let draft = &mut self.drafts.current;
+                                    draft.subject = lines.next().unwrap_or("").to_string();
                                     let rest: String = lines.skip_while(|l| l.is_empty()).collect::<Vec<_>>().join("\n");
-                                    self.drafts.current.body = rest;
+                                    let previous_body = std::mem::replace(&mut draft.body, rest);
+                                    self.amend_prefill = Some(AmendPrefill {
+                                        repo: repo_path.clone(),
+                                        previous_body,
+                                        subject: draft.subject.clone(),
+                                        body: draft.body.clone(),
+                                    });
+                                }
+                            } else if !self.drafts.current.is_amend {
+                                if let Some(prefill) = self.amend_prefill.take() {
+                                    let draft = &mut self.drafts.current;
+                                    prefill.restore(&repo_path, &mut draft.subject, &mut draft.body);
                                 }
                             }
                         }
@@ -477,7 +562,7 @@ impl StagingPanel {
                     ui.add_space(12.0);
                 });
 
-                let options = egui::CollapsingHeader::new("Commit options").id_source("commit_options").show(ui, |ui| {
+                let options = egui::CollapsingHeader::new("Commit options").id_salt("commit_options").show(ui, |ui| {
                 // ── Co-author trailers ────────────────────────────────────
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -524,16 +609,18 @@ impl StagingPanel {
                 });
                 self.commit_options_open = options.body_returned.is_some();
                 // ── Branch protection warning ─────────────────────────────
-                let is_protected = ["main", "master", "production", "release"]
-                    .iter().any(|p| *p == head_branch.as_str());
+                if let (true, Some(upstream)) = (self.drafts.current.is_amend, &self.amend_published) {
+                    commit_notice(ui, RichText::new(format!(
+                        "⚠ This commit is already on {upstream}. After amending, pushing requires Force Push with Lease."
+                    )).color(theme::accent_yellow()).size(12.0));
+                    ui.add_space(4.0);
+                }
+                let is_protected = is_protected_branch(&head_branch, protected_branches);
                 if is_protected && !self.drafts.current.is_amend {
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0);
-                        ui.label(RichText::new(format!(
-                            "⚠ Committing directly to \"{}\" — make sure this is intentional.",
-                            head_branch
-                        )).color(theme::accent_yellow()).size(12.0));
-                    });
+                    commit_notice(ui, RichText::new(format!(
+                        "⚠ Committing directly to \"{}\" — make sure this is intentional.",
+                        head_branch
+                    )).color(theme::accent_yellow()).size(12.0));
                     ui.add_space(4.0);
                 }
 
@@ -564,23 +651,41 @@ impl StagingPanel {
                 });
 
                 ui.add_space(6.0);
-                egui::CollapsingHeader::new("Undo last commit").id_source("reset_last_commit").show(ui, |ui| {
+                egui::CollapsingHeader::new("Undo last commit").id_salt("reset_last_commit").show(ui, |ui| {
                 // ── Reset last commit ─────────────────────────────────────
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(12.0);
-                    ui.label(RichText::new("Reset last commit:").color(theme::text_muted()).size(12.0));
-                    ui.add_space(4.0);
-                    if ui.add(small_btn("Soft")).on_hover_text("Keep changes staged").clicked() {
-                        staging::reset_soft(self.state.clone());
-                    }
-                    if ui.add(small_btn("Mixed")).on_hover_text("Keep changes unstaged").clicked() {
-                        staging::reset_mixed(self.state.clone());
-                    }
-                    if ui.add(small_btn_danger("Hard")).on_hover_text("Reset HEAD and discard tracked working changes; confirmation required").clicked() {
-                        self.state.lock().unwrap().pending_discard = Some(PendingDiscard::ResetHard);
-                    }
-                });
+                if let Some((preview, mode)) = &self.pending_undo {
+                    let mode = *mode;
+                    commit_notice(ui, RichText::new(undo_confirmation_text(preview, mode))
+                        .color(if mode == ResetMode::Hard || preview.published_to.is_some() { theme::accent_yellow() } else { theme::text_secondary() })
+                        .size(12.0));
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        let label = format!("{} reset", mode.label());
+                        let confirm = if mode == ResetMode::Hard { small_btn_danger(&label) } else { small_btn(&label) };
+                        if ui.add(confirm).clicked() {
+                            confirm_undo = true;
+                        }
+                        if ui.add(small_btn("Cancel")).clicked() {
+                            cancel_undo = true;
+                        }
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.label(RichText::new("Reset last commit:").color(theme::text_muted()).size(12.0));
+                        ui.add_space(4.0);
+                        if ui.add(small_btn("Soft")).on_hover_text("Keep changes staged; asks for confirmation").clicked() {
+                            request_undo = Some(ResetMode::Soft);
+                        }
+                        if ui.add(small_btn("Mixed")).on_hover_text("Keep changes unstaged; asks for confirmation").clicked() {
+                            request_undo = Some(ResetMode::Mixed);
+                        }
+                        if ui.add(small_btn_danger("Hard")).on_hover_text("Reset HEAD and discard tracked working changes; asks for confirmation").clicked() {
+                            request_undo = Some(ResetMode::Hard);
+                        }
+                    });
+                }
                 });
                 ui.add_space(16.0);
             });
@@ -621,6 +726,25 @@ impl StagingPanel {
 
         if let Some(path) = do_discard_file {
             self.state.lock().unwrap().pending_discard = Some(PendingDiscard::File { path });
+        }
+
+        if let Some(error) = launch_error {
+            self.state.lock().unwrap().error = Some(error);
+        }
+        if let (Some(mode), Some(path)) = (request_undo, repo_path.as_deref()) {
+            let epoch = self.state.lock().unwrap().repo_epoch;
+            match crate::git::branches::UndoCommitPreview::capture(path, epoch) {
+                Ok(preview) => self.pending_undo = Some((preview, mode)),
+                Err(error) => self.state.lock().unwrap().error = Some(error),
+            }
+        }
+        if cancel_undo {
+            self.pending_undo = None;
+        }
+        if confirm_undo {
+            if let Some((preview, mode)) = self.pending_undo.take() {
+                preview.reset.submit(mode, self.state.clone());
+            }
         }
 
         if let Some(path) = do_ignore_file {
@@ -688,11 +812,7 @@ fn build_message(
         .collect();
     if signoff {
         // Read full name + email from git config for the sign-off line
-        let identity = repo_path
-            .as_ref()
-            .and_then(|p| git_identity_for_signoff(p))
-            .or_else(|| git_identity_for_signoff(std::path::Path::new(".")));
-        if let Some((name, email)) = identity {
+        if let Some((name, email)) = git_identity_for_signoff(repo_path) {
             trailers.push(format!("Signed-off-by: {} <{}>", name, email));
         }
     }
@@ -703,72 +823,124 @@ fn build_message(
     msg
 }
 
-fn git_identity_for_signoff(repo_path: &std::path::Path) -> Option<(String, String)> {
-    let config = git2::Repository::open(repo_path)
-        .ok()?
-        .config()
-        .ok()
+/// The repository's effective identity, else the global one; never the process directory's.
+fn git_identity_for_signoff(repo_path: &Option<std::path::PathBuf>) -> Option<(String, String)> {
+    let config = repo_path
+        .as_ref()
+        .and_then(|path| git2::Repository::open(path).ok())
+        .and_then(|repo| repo.config().ok())
         .or_else(|| git2::Config::open_default().ok())?;
     let name = config.get_string("user.name").ok()?;
     let email = config.get_string("user.email").ok()?;
     Some((name, email))
 }
 
+/// Read `commit.template` like Git: `~/` expands to the home directory and relative
+/// paths resolve from the worktree root. Oversized or non-UTF-8 templates are ignored.
 fn load_commit_template(repo_path: &std::path::Path) -> Option<String> {
-    let config = git2::Repository::open(repo_path).ok()?.config().ok()?;
-    let tmpl_path = config.get_string("commit.template").ok()?;
-    let path = if tmpl_path.starts_with('~') {
-        let home = std::env::var("HOME").ok()?;
-        std::path::PathBuf::from(tmpl_path.replacen('~', &home, 1))
+    use std::io::Read;
+    const LIMIT: u64 = 64 * 1024;
+    let repo = git2::Repository::open(repo_path).ok()?;
+    let configured = repo.config().ok()?.get_path("commit.template").ok()?;
+    let path = template_path(configured, repo.workdir().unwrap_or(repo_path));
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(LIMIT + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= LIMIT).then_some(text)
+}
+
+fn template_path(configured: std::path::PathBuf, workdir: &std::path::Path) -> std::path::PathBuf {
+    if configured.is_absolute() {
+        configured
     } else {
-        std::path::PathBuf::from(&tmpl_path)
-    };
-    std::fs::read_to_string(path).ok()
+        workdir.join(configured)
+    }
 }
 
 // ── Shell helpers ─────────────────────────────────────────────────────────────
 
-fn open_file_in_editor(file_path: &str, repo_path: &Option<std::path::PathBuf>) {
-    let Some(rp) = repo_path else { return };
-    let full = rp.join(file_path);
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| {
-            #[cfg(target_os = "windows")]
-            {
-                "notepad".into()
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                "xdg-open".into()
-            }
-        });
-    let mut parts = editor.split_whitespace();
-    let Some(prog) = parts.next() else { return };
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", prog])
-        .args(parts)
-        .arg(full)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    #[cfg(not(target_os = "windows"))]
-    let _ = std::process::Command::new(prog)
-        .args(parts)
-        .arg(full)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+/// Open a worktree file through the hardened launcher; never through a shell.
+fn open_file_in_editor(
+    file_path: &str,
+    repo_path: &Option<std::path::PathBuf>,
+    editor: &str,
+) -> Result<(), String> {
+    let repo = repo_path
+        .as_ref()
+        .ok_or("Open a repository before launching an editor.")?;
+    let file = crate::git::safe_path::relative(file_path)?;
+    crate::external::open_editor(&repo.join(file), &crate::external::editor_command(editor)?)
 }
 
-fn reveal_in_folder(file_path: &str, repo_path: &Option<std::path::PathBuf>) {
-    let Some(rp) = repo_path else { return };
-    let dir = rp.join(file_path);
-    let dir = dir.parent().unwrap_or(rp.as_path());
-    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+/// Compare the index with the worktree (unstaged) or HEAD with the index (staged).
+fn open_diff_tool(
+    file_path: &str,
+    repo_path: &Option<std::path::PathBuf>,
+    staged: bool,
+) -> Result<(), String> {
+    let repo = repo_path
+        .as_ref()
+        .ok_or("Open a repository before launching a diff tool.")?;
+    let request = if staged {
+        crate::external::DiffToolArgs::Staged { path: file_path }
+    } else {
+        crate::external::DiffToolArgs::Unstaged { path: file_path }
+    };
+    crate::external::open_diff_tool(repo, request)
+}
+
+fn reveal_in_folder(file_path: &str, repo_path: &Option<std::path::PathBuf>) -> Result<(), String> {
+    let repo = repo_path
+        .as_ref()
+        .ok_or("Open a repository before revealing a file.")?;
+    let file = crate::git::safe_path::relative(file_path)?;
+    crate::external::reveal_path(&repo.join(file))
+}
+
+/// The confirmation shown before "Undo last commit" resets to the captured parent.
+fn undo_confirmation_text(
+    preview: &crate::git::branches::UndoCommitPreview,
+    mode: ResetMode,
+) -> String {
+    let mut text = format!(
+        "{} reset: undo \"{}\" ({})? {}",
+        mode.label(),
+        preview.summary,
+        preview.short_oid,
+        mode.description()
+    );
+    if preview.merge {
+        text.push_str(" This is a merge commit; the branch returns to its first parent.");
+    }
+    if let Some(upstream) = &preview.published_to {
+        text.push_str(&format!(
+            " The commit is already on {upstream}; pushing afterwards requires Force Push with Lease."
+        ));
+    }
+    text.push_str(" A recovery snapshot is saved first.");
+    text
+}
+
+fn same_repository(captured: &std::path::Path, current: &Option<std::path::PathBuf>) -> bool {
+    current
+        .as_ref()
+        .and_then(|path| path.canonicalize().ok())
+        .is_some_and(|path| path == captured)
+}
+
+/// The upstream already containing HEAD, if any (amending it rewrites published history).
+fn head_published(repo_path: &std::path::Path) -> Option<String> {
+    let repo = git2::Repository::open(repo_path).ok()?;
+    let head = repo.head().ok()?.peel_to_commit().ok()?.id();
+    crate::git::branches::published_upstream(&repo, head)
+}
+
+/// Matches the graph-action rule: protected branches are exact local branch names.
+fn is_protected_branch(branch: &str, protected: &[String]) -> bool {
+    !branch.is_empty() && protected.iter().any(|name| name == branch)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -872,7 +1044,17 @@ fn file_row(
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), path)
             });
             ui.menu_button(crate::icons::rich(crate::icons::MORE_VERT, 18.0), |ui| {
+                ui.set_min_width(144.0);
                 add_btns(ui);
+            })
+            .response
+            .on_hover_text(format!("Actions for {path}"))
+            .widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    ui.is_enabled(),
+                    format!("Actions for {path}"),
+                )
             });
             label
         })
@@ -886,18 +1068,6 @@ fn small_btn(label: &str) -> Button<'_> {
         .fill(Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(1.0, theme::border()))
         .min_size(egui::Vec2::new(0.0, 22.0))
-}
-
-fn small_btn_accent(label: &str) -> Button<'_> {
-    Button::new(
-        RichText::new(label)
-            .color(theme::on_primary())
-            .size(12.0)
-            .strong(),
-    )
-    .fill(theme::primary_fill())
-    .stroke(egui::Stroke::new(1.0, theme::accent_teal()))
-    .min_size(egui::Vec2::new(0.0, 22.0))
 }
 
 fn small_btn_danger(label: &str) -> Button<'_> {
@@ -984,4 +1154,182 @@ fn available_width_after(ui: &Ui, reserved: f32) -> f32 {
 
 fn form_width(ui: &Ui, reserved: f32, max_width: f32) -> f32 {
     available_width_after(ui, reserved).min(max_width)
+}
+
+fn commit_notice(ui: &mut Ui, text: RichText) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        // Horizontal layouts otherwise lay out labels on one line, expanding the
+        // composer and pushing the commit button beyond the Changes panel.
+        let width = (ui.available_width() - 12.0).max(1.0);
+        ui.add_sized([width, 0.0], egui::Label::new(text).wrap())
+    })
+    .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_notices_wrap_without_expanding_narrow_composer() {
+        for message in [
+            "⚠ Committing directly to \"production\" — make sure this is intentional.",
+            "✓ All conflicts resolved — stage remaining changes, then click Continue in the banner above.",
+        ] {
+            let mut heights = Vec::new();
+            for width in [240.0, 344.0, 600.0] {
+                let ctx = egui::Context::default();
+                ctx.begin_pass(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(width, 400.0),
+                    )),
+                    ..Default::default()
+                });
+                let mut ui = Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("responsive_commit_composer"),
+                    egui::UiBuilder::new().max_rect(ctx.content_rect()),
+                );
+                let notice = commit_notice(&mut ui, RichText::new(message).size(12.0));
+                assert!(notice.rect.right() <= width - 11.0);
+                assert!(ui.min_rect().right() <= width);
+                // Later controls must still receive the original panel width.
+                assert!(ui.available_width() <= width);
+                heights.push(notice.rect.height());
+                ctx.end_pass().textures_delta.clear();
+            }
+            assert!(heights[0] > heights[2], "Narrow notices must wrap onto additional lines");
+        }
+    }
+
+    #[test]
+    fn switching_amend_off_restores_an_unchanged_draft() {
+        let repo = Some(std::path::PathBuf::from("repo"));
+        let prefill = || AmendPrefill {
+            repo: repo.clone(),
+            previous_body: "my notes".into(),
+            subject: "HEAD subject".into(),
+            body: "HEAD body".into(),
+        };
+        let (mut subject, mut body) = ("HEAD subject".to_string(), "HEAD body".to_string());
+        prefill().restore(&repo, &mut subject, &mut body);
+        assert_eq!((subject.as_str(), body.as_str()), ("", "my notes"));
+
+        let (mut subject, mut body) = ("Edited subject".to_string(), "HEAD body".to_string());
+        prefill().restore(&repo, &mut subject, &mut body);
+        assert_eq!(
+            (subject.as_str(), body.as_str()),
+            ("Edited subject", "HEAD body")
+        );
+
+        let (mut subject, mut body) = ("HEAD subject".to_string(), "HEAD body".to_string());
+        prefill().restore(&Some("other".into()), &mut subject, &mut body);
+        assert_eq!(subject, "HEAD subject");
+    }
+
+    #[test]
+    fn commit_template_resolves_relative_paths_from_the_worktree() {
+        let repo = crate::git::test_support::TestRepo::new();
+        repo.write(".gitmessage", b"Subject\n\n# hint\nBody\n");
+        repo.git_ok(&["config", "commit.template", ".gitmessage"]);
+        assert_eq!(
+            load_commit_template(repo.path()).as_deref(),
+            Some("Subject\n\n# hint\nBody\n")
+        );
+        repo.write(".gitmessage", &vec![b'x'; 64 * 1024 + 1]);
+        assert_eq!(load_commit_template(repo.path()), None);
+        let absolute = repo.path().join("abs");
+        assert_eq!(template_path(absolute.clone(), repo.path()), absolute);
+        assert_eq!(
+            template_path("rel".into(), repo.path()),
+            repo.path().join("rel")
+        );
+    }
+
+    #[test]
+    fn undo_last_commit_captures_parent_and_reports_publication() {
+        let remote = tempfile::tempdir().unwrap();
+        git2::Repository::init_bare(remote.path()).unwrap();
+        let repo = crate::git::test_support::TestRepo::new();
+        let parent = repo.commit("file", b"one\n").to_string();
+        repo.commit("file", b"two\n");
+        let remote_path = remote.path().to_string_lossy().to_string();
+        repo.git_ok(&["remote", "add", "origin", &remote_path]);
+        repo.git_ok(&["push", "-u", "origin", "main"]);
+
+        let preview = crate::git::branches::UndoCommitPreview::capture(repo.path(), 0).unwrap();
+        assert_eq!(preview.reset.oid, parent);
+        assert_eq!(preview.published_to.as_deref(), Some("origin/main"));
+        assert!(!preview.merge);
+        let text = undo_confirmation_text(&preview, ResetMode::Soft);
+        assert!(text.contains("Force Push with Lease"), "{text}");
+        assert_eq!(head_published(repo.path()).as_deref(), Some("origin/main"));
+
+        repo.commit("file", b"three\n");
+        let local = crate::git::branches::UndoCommitPreview::capture(repo.path(), 0).unwrap();
+        assert_eq!(local.published_to, None);
+        assert!(!undo_confirmation_text(&local, ResetMode::Mixed).contains("Force Push"));
+        assert_eq!(head_published(repo.path()), None);
+
+        // A commit made after confirmation makes the captured undo stale.
+        repo.commit("file", b"four\n");
+        assert!(local.reset.validate(repo.path()).is_err());
+    }
+
+    #[test]
+    fn undo_last_commit_refuses_the_root_commit() {
+        let repo = crate::git::test_support::TestRepo::new();
+        repo.commit("file", b"one\n");
+        assert!(crate::git::branches::UndoCommitPreview::capture(repo.path(), 0).is_err());
+    }
+
+    #[test]
+    fn protected_branch_warning_uses_configured_names() {
+        let protected = vec!["develop".to_string(), "release/1.0".to_string()];
+        assert!(is_protected_branch("develop", &protected));
+        assert!(is_protected_branch("release/1.0", &protected));
+        assert!(!is_protected_branch("main", &protected));
+        assert!(!is_protected_branch("develop-old", &protected));
+        assert!(!is_protected_branch("", &[String::new()]));
+    }
+
+    #[test]
+    fn file_launchers_reject_paths_outside_the_worktree() {
+        let repo = Some(std::path::PathBuf::from("repo"));
+        for file in ["../outside", ".git/config", "", "/etc/passwd"] {
+            assert!(
+                open_file_in_editor(file, &repo, "editor").is_err(),
+                "{file}"
+            );
+            assert!(reveal_in_folder(file, &repo).is_err(), "{file}");
+        }
+        assert!(open_file_in_editor("file", &None, "editor").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_in_editor_passes_metacharacter_file_names_as_one_argument() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("editor.sh");
+        let output = root.path().join("received");
+        std::fs::write(&script, "printf '%s' \"$2\" > \"$1\"\n").unwrap();
+        let name = "x&calc %PATH% ^ $(touch marker).txt";
+        open_file_in_editor(
+            name,
+            &Some(root.path().to_path_buf()),
+            &format!("/bin/sh \"{}\" \"{}\"", script.display(), output.display()),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !output.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            root.path().join(name).to_string_lossy()
+        );
+        assert!(!root.path().join("marker").exists());
+    }
 }

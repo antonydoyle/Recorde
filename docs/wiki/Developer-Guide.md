@@ -85,9 +85,21 @@ metadata and paging across the 4,096-ID response boundary. Settings mode capture
 the repository menu, top of Settings and scrolled signing controls for visual
 inspection; it does not modify signing configuration.
 
+## Shared Help documentation
+
+The offline Help browser embeds the user-facing pages in `docs/wiki` at compile
+time. Edit these Markdown sources to update both the repository wiki and the
+app. Register a new in-app topic in `PAGES` in `src/ui/help.rs`. The
+`ui::help::tests::embedded_pages_have_unique_names_and_resolvable_wiki_links`
+source check verifies unique topic IDs and local wiki link targets; the remaining
+`ui::help::tests` cover search, navigation, rendering and readable topic/article
+geometry. Run these tests through the platform's supervised validation wrapper
+described above. Native inspector `--review` additionally opens Help pages and
+captures them for visual inspection.
+
 ## Prerequisites
 
-- Rust toolchain with Cargo.
+- Rust 1.95 or newer with Cargo.
 - Native dependencies required by egui/eframe and the selected platform backend.
 - Git.
 
@@ -151,7 +163,7 @@ on Linux, Windows and macOS. Release publication depends on that workflow.
 The executable imports the library; it no longer declares a second copy of the
 application modules or duplicates their tests. Windows also checks the executable
 test harness subsystem. CI enforces `cargo fmt --all --check`. Clippy warnings
-are reported rather than denied; existing style and vendored warnings remain.
+are reported rather than denied; remaining style warnings are reported.
 
 ## Dependency Notes
 
@@ -167,7 +179,23 @@ The project uses:
   `url` for credential destination parsing. Linux D-Bus is vendored at build time;
   a desktop Secret Service is still required at runtime.
 
-`Cargo.toml` patches `eframe` to a vendored copy in `vendor/eframe`.
+The UI uses upstream `eframe`/`egui` 0.36.2 with the native AccessKit bridge
+explicitly enabled. Font rendering uses `skrifa` and `vello_cpu`; the bundled
+Inter, Noto Symbols and Material Icons assets and logical sizes remain the same.
+The old vendored eframe patch has been removed. The native app creator makes the
+window visible before rendering begins, preserving the early visibility needed
+by compositors that wait for a mapped surface during the first EGL buffer swap.
+
+The optional `ui-inspection` feature is a development tool. Build the app and
+`inspect_ui` example with that feature, then run `gui_smoke.py` through the task
+supervisor with `RECORDE_UI_INSPECTOR` set to the example binary. The inspector
+asserts meaningful AccessKit labels, selected commit state, Tab focus changes and
+arrow navigation, and writes the tree and native framebuffer to the external
+artifact directory. `--dpi=1`, `1.25`, `1.5` and `2` vary the X11 native monitor
+scale; `--light` chooses the other theme. The fixture checks reported density and
+screenshot dimensions. `wayland_smoke.py` uses an existing compositor with X11
+fallback disabled to check that a first frame is rendered. Production builds do
+not enable the inspector feature or its listener.
 
 ## Development Workflow
 
@@ -274,6 +302,14 @@ This creates a disposable repo, isolates Git and application configuration, star
 the app hidden, checks a native window exists, retains logs, and stops only its
 own process. CI runs this, LFS and the isolated Windows vault round trip. This
 verifies startup, not rendered pixels or interaction.
+
+On Windows, absolute `APPDATA` overrides relocate config, account metadata and
+crash reports. Native credential-vault, repository and updater coordination paths
+remain shared between profiles, so changing the override cannot bypass their
+cross-process locks. The startup smoke uses empty private profile storage, refuses
+enabled automatic update checks or pending update recovery, and does not exercise
+real provider accounts. It still opens native coordination locks; a separate OS
+user or disposable runner is required for complete isolation.
 
 History benchmarks accept `RECORDE_PERF_COMMITS=1000000` and report cold page,
 next-page, edge-query and graph UI+tessellation timings. Full native app/GPU
