@@ -20,6 +20,9 @@ pub struct Checkpoint {
     pub after_state: Option<TrackedState>,
     #[serde(default)]
     pub before_state: Option<TrackedState>,
+    /// Index-only steps never capture or restore working files.
+    #[serde(default)]
+    pub index_only: bool,
     #[serde(default)]
     pub pinned: bool,
     /// The checkpoint this one undid or redid; absent for ordinary operations.
@@ -100,6 +103,7 @@ fn sequence_witness(repo: &git2::Repository) -> Result<Option<SequenceWitness>, 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TrackedState {
     index: String,
+    // Empty only for index-only checkpoints; an empty string cannot name a tree.
     worktree: String,
     #[serde(default)]
     sparse: Option<SparseState>,
@@ -221,31 +225,33 @@ fn tracked_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, S
     }
 }
 
-// A separate index lets native Git apply attributes, modes and symlink rules
-// without changing the user's index or HEAD. Ignored files are never added.
-fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, String> {
-    let sparse = sparse_state(repo)?;
-    let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let index_path = temporary.path().join("index");
-    let run = |args: &[&str]| -> Result<String, String> {
-        let mut command = super::process::command(path);
-        command
-            .env("GIT_INDEX_FILE", &index_path)
-            .arg("--no-replace-objects")
-            .args(args);
-        let output = super::process::run(
-            &mut command,
-            &AtomicBool::new(false),
-            std::time::Duration::from_secs(600),
-        )
-        .map_err(|e| e.user_message())?;
-        if !output.status.success() {
-            return Err(crate::auth::redact::text(&String::from_utf8_lossy(
-                &output.stderr,
-            )));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    };
+fn run_index_git(path: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
+    let mut command = super::process::command(path);
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    command.arg("--no-replace-objects").args(args);
+    let output = super::process::run(
+        &mut command,
+        &AtomicBool::new(false),
+        std::time::Duration::from_secs(600),
+    )
+    .map_err(|e| e.user_message())?;
+    if !output.status.success() {
+        return Err(crate::auth::redact::text(&String::from_utf8_lossy(
+            &output.stderr,
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Write the physical index tree, optionally preparing a copy for a full snapshot.
+fn write_index_tree(
+    path: &Path,
+    repo: &git2::Repository,
+    sparse: Option<&SparseState>,
+    index_copy: Option<&Path>,
+) -> Result<String, String> {
     // Git primes an index's cached trees with the IDs it read. While
     // replacement refs are active those are the replaced objects' IDs, not
     // the entries' contents, and write-tree trusts them until a refresh
@@ -254,10 +260,13 @@ fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, 
     let replaced =
         sparse.is_none() && super::replacement::refs(repo).is_ok_and(|refs| !refs.is_empty());
     let index = if replaced {
+        let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let temporary_index = temporary.path().join("index");
+        let index_path = index_copy.unwrap_or(&temporary_index);
         // Listings can exceed the diagnostic output limit; stream via a file.
         let listing = git_listing(path, &["ls-files", "--stage", "-z"])?;
         let mut command = super::process::command(path);
-        command.env("GIT_INDEX_FILE", &index_path).args([
+        command.env("GIT_INDEX_FILE", index_path).args([
             "--no-replace-objects",
             "update-index",
             "-z",
@@ -275,20 +284,47 @@ fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, 
                 &output.stderr,
             )));
         }
-        run(&["write-tree"])?
+        run_index_git(path, Some(index_path), &["write-tree"])?
     } else {
-        let output = super::process::git(path, &["write-tree"], &AtomicBool::new(false))
-            .map_err(|e| e.user_message())?;
-        let index = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let index = run_index_git(path, None, &["write-tree"])?;
         git2::Oid::from_str(&index).map_err(|e| e.to_string())?;
-        if repo.path().join("index").exists() {
-            std::fs::copy(repo.path().join("index"), &index_path).map_err(|e| e.to_string())?;
-        } else {
-            run(&["read-tree", &index])?;
+        if let Some(index_path) = index_copy {
+            if repo.path().join("index").exists() {
+                std::fs::copy(repo.path().join("index"), index_path).map_err(|e| e.to_string())?;
+            } else {
+                run_index_git(path, Some(index_path), &["read-tree", &index])?;
+            }
         }
         index
     };
     git2::Oid::from_str(&index).map_err(|e| e.to_string())?;
+    Ok(index)
+}
+
+fn checkpoint_state(
+    path: &Path,
+    repo: &git2::Repository,
+    index_only: bool,
+) -> Result<TrackedState, String> {
+    if !index_only {
+        return complete_state(path, repo);
+    }
+    let sparse = sparse_state(repo)?;
+    Ok(TrackedState {
+        index: write_index_tree(path, repo, sparse.as_ref(), None)?,
+        worktree: String::new(),
+        sparse,
+    })
+}
+
+// A separate index lets native Git apply attributes, modes and symlink rules
+// without changing the user's index or HEAD. Ignored files are never added.
+fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, String> {
+    let sparse = sparse_state(repo)?;
+    let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let index_path = temporary.path().join("index");
+    let index = write_index_tree(path, repo, sparse.as_ref(), Some(&index_path))?;
+    let run = |args: &[&str]| run_index_git(path, Some(&index_path), args);
     run(&["add", "--all", "--sparse", "--", "."])?;
     // Explicit pathspecs include materialized files outside the sparse cone on
     // Git versions where a directory pathspec still applies sparse filtering.
@@ -362,25 +398,23 @@ fn save(repo: &git2::Repository, checkpoint: &Checkpoint) -> Result<(), String> 
 }
 
 pub fn capture(path: &Path, label: &str) -> Result<Option<Checkpoint>, String> {
-    capture_reversing(path, label, None)
+    capture_reversing(path, label, false, None)
 }
 
 fn capture_reversing(
     path: &Path,
     label: &str,
+    index_only: bool,
     reverses: Option<&str>,
 ) -> Result<Option<Checkpoint>, String> {
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
     let (before, branch) = head_state(&repo)?;
     let before = before.unwrap_or_default();
-    let before_state = complete_state(path, &repo)?;
+    let before_state = checkpoint_state(path, &repo, index_only)?;
     let signature = git2::Signature::now("Recorde recovery", "recovery@recorde.local")
         .map_err(|e| e.to_string())?;
     let index_tree = repo
         .find_tree(git2::Oid::from_str(&before_state.index).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let worktree = repo
-        .find_tree(git2::Oid::from_str(&before_state.worktree).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     let parent = if before.is_empty() {
         None
@@ -401,19 +435,27 @@ fn capture_reversing(
             &parents,
         )
         .map_err(|e| e.to_string())?;
-    let index_commit = repo.find_commit(index_commit).map_err(|e| e.to_string())?;
-    let snapshot = Some(
-        repo.commit(
-            None,
-            &signature,
-            &signature,
-            "Recorde saved worktree",
-            &worktree,
-            &[&index_commit],
+    let snapshot = if index_only {
+        // The protected ref keeps the saved index tree alive without a worktree commit.
+        Some(index_commit.to_string())
+    } else {
+        let index_commit = repo.find_commit(index_commit).map_err(|e| e.to_string())?;
+        let worktree = repo
+            .find_tree(git2::Oid::from_str(&before_state.worktree).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        Some(
+            repo.commit(
+                None,
+                &signature,
+                &signature,
+                "Recorde saved worktree",
+                &worktree,
+                &[&index_commit],
+            )
+            .map_err(|e| e.to_string())?
+            .to_string(),
         )
-        .map_err(|e| e.to_string())?
-        .to_string(),
-    );
+    };
     let id = format!(
         "{}-{}",
         std::time::SystemTime::now()
@@ -439,6 +481,7 @@ fn capture_reversing(
         snapshot,
         after_state: None,
         before_state: Some(before_state),
+        index_only,
         pinned: false,
         reverses: reverses.map(str::to_owned),
     };
@@ -455,7 +498,20 @@ pub fn protect<T>(
     if super::merge::squash_in_progress(&repo) {
         return Err("Finish or abort the squash merge before starting another operation.".into());
     }
-    protect_inner(path, label, false, None, operation)
+    protect_inner(path, label, false, false, None, operation)
+}
+
+/// Protect an operation that changes only the index, without hashing working files.
+pub fn protect_index_only<T>(
+    path: &Path,
+    label: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+    if repo.state() != git2::RepositoryState::Clean || super::merge::squash_in_progress(&repo) {
+        return Err("Finish the current operation first.".into());
+    }
+    protect_inner(path, label, false, true, None, operation)
 }
 
 pub fn protect_sequence<T>(
@@ -467,17 +523,18 @@ pub fn protect_sequence<T>(
     if repo.state() != git2::RepositoryState::Clean || super::merge::squash_in_progress(&repo) {
         return Err("Finish the current operation first.".into());
     }
-    protect_inner(path, label, true, None, operation)
+    protect_inner(path, label, true, false, None, operation)
 }
 
 fn protect_inner<T>(
     path: &Path,
     label: &str,
     sequence: bool,
+    index_only: bool,
     reverses: Option<&str>,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    let checkpoint = capture_reversing(path, label, reverses)?;
+    let checkpoint = capture_reversing(path, label, index_only, reverses)?;
     let result = operation();
     if let Some(mut checkpoint) = checkpoint {
         let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
@@ -486,7 +543,7 @@ fn protect_inner<T>(
             .ok()
             .and_then(|head| head.target())
             .map(|oid| oid.to_string());
-        checkpoint.after_state = complete_state(path, &repo).ok();
+        checkpoint.after_state = checkpoint_state(path, &repo, index_only).ok();
         checkpoint.after_branch = head_state(&repo)?.1;
         checkpoint.head_target_changed = checkpoint.after_branch != checkpoint.branch;
         if sequence {
@@ -607,7 +664,24 @@ pub fn set_pinned(path: &Path, id: &str, pinned: bool) -> Result<(), String> {
     save(&repo, &checkpoint)
 }
 
+fn validate_index_checkpoint(checkpoint: &Checkpoint) -> Result<(), String> {
+    if checkpoint.index_only {
+        let valid = checkpoint.before_state.as_ref().is_some_and(|state| {
+            state.worktree.is_empty() && git2::Oid::from_str(&state.index).is_ok()
+        }) && checkpoint.after_state.as_ref().is_some_and(|state| {
+            state.worktree.is_empty() && git2::Oid::from_str(&state.index).is_ok()
+        }) && checkpoint.before == checkpoint.after.as_deref().unwrap_or_default()
+            && checkpoint.branch == checkpoint.after_branch
+            && !checkpoint.head_target_changed;
+        if !valid {
+            return Err("Invalid or incomplete index-only recovery checkpoint.".into());
+        }
+    }
+    Ok(())
+}
+
 pub fn restore(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
+    validate_index_checkpoint(checkpoint)?;
     if !checkpoint.before.is_empty() {
         git2::Oid::from_str(&checkpoint.before).map_err(|_| "Invalid recovery commit.")?;
     } else if checkpoint.before_state.is_none() {
@@ -670,7 +744,7 @@ pub fn restore(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
     }
     if let Some(expected) = &checkpoint.after_state {
         let actual = if checkpoint.before_state.is_some() {
-            complete_state(path, &repo)?
+            checkpoint_state(path, &repo, checkpoint.index_only)?
         } else {
             tracked_state(path, &repo)?
         };
@@ -689,6 +763,7 @@ pub fn restore(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
         path,
         &restore_label(checkpoint),
         false,
+        checkpoint.index_only,
         Some(&checkpoint.id),
         || restore_contents(path, checkpoint),
     )
@@ -805,6 +880,7 @@ pub fn restore_step(path: &Path, id: &str, redo: bool) -> Result<(), String> {
 }
 
 fn verify_restore_state(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
+    validate_index_checkpoint(checkpoint)?;
     // Taking the inverse checkpoint can run filters and take time. Recheck
     // user edits and ignored collisions after that capture, before writing.
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
@@ -826,7 +902,7 @@ fn verify_restore_state(path: &Path, checkpoint: &Checkpoint) -> Result<(), Stri
     }
     if let Some(expected) = &checkpoint.after_state {
         let actual = if checkpoint.before_state.is_some() {
-            complete_state(path, &repo)?
+            checkpoint_state(path, &repo, checkpoint.index_only)?
         } else {
             tracked_state(path, &repo)?
         };
@@ -841,6 +917,10 @@ fn ensure_no_untracked_collisions(
     repo: &git2::Repository,
     checkpoint: &Checkpoint,
 ) -> Result<(), String> {
+    // Index-only recovery never writes a working path, so collisions cannot occur.
+    if checkpoint.index_only {
+        return Ok(());
+    }
     let root = repo.workdir().ok_or("Recovery requires a worktree.")?;
     let mut index = if checkpoint.before_state.is_some() {
         git2::Index::new()
@@ -910,6 +990,9 @@ fn ensure_no_untracked_collisions(
 }
 
 fn restore_contents(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
+    if checkpoint.index_only {
+        return restore_index_contents(path, checkpoint);
+    }
     if let Some(saved) = &checkpoint.before_state {
         let current = checkpoint
             .after_state
@@ -1016,6 +1099,30 @@ fn restore_contents(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> 
             &AtomicBool::new(false),
         )
         .map_err(|e| e.user_message())?;
+    }
+    Ok(())
+}
+
+fn restore_index_contents(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
+    validate_index_checkpoint(checkpoint)?;
+    let saved = checkpoint
+        .before_state
+        .as_ref()
+        .ok_or("Missing saved index.")?;
+    // Prepare sparse flags before writing, just as for full recovery. Neither
+    // read-tree without -u nor restoring these flags writes working files.
+    let flag_files = if saved.sparse.is_some() {
+        Some(git_listing(
+            path,
+            &["ls-tree", "-r", "--name-only", "-z", &saved.index],
+        )?)
+    } else {
+        None
+    };
+    verify_restore_state(path, checkpoint)?;
+    run_index_git(path, None, &["read-tree", "--reset", &saved.index])?;
+    if let Some(sparse) = &saved.sparse {
+        restore_sparse_flags(path, sparse, flag_files.as_ref().unwrap())?;
     }
     Ok(())
 }
@@ -1227,6 +1334,358 @@ pub fn remove(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stage_index_file(repo: &TestRepo, file: &str) {
+        protect_index_only(repo.path(), "Stage file", || {
+            repo.git_ok(&["add", "--", file]);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn index_only_undo_redo_preserves_working_files_and_exact_staged_content() {
+        let repo = TestRepo::new();
+        let head = repo.commit("file", b"committed\n");
+        repo.write("file", b"previous staged content\n");
+        repo.git_ok(&["add", "file"]);
+        let before_index = repo.index_bytes("file");
+        repo.write("file", b"new staged content\n");
+        repo.write("untracked", b"scratch\n");
+        stage_index_file(&repo, "file");
+        let after_index = repo.index_bytes("file");
+        let saved = list(repo.path()).remove(0);
+        assert!(saved.index_only);
+        assert!(saved.before_state.as_ref().unwrap().worktree.is_empty());
+        assert!(saved.after_state.as_ref().unwrap().worktree.is_empty());
+
+        // Subsequent working edits are independent of an index-only undo.
+        repo.write("file", b"later working edit\n");
+        repo.write("untracked", b"later scratch\n");
+        assert_eq!(step(&repo, false), "Undo Stage file");
+        assert_eq!(repo.index_bytes("file"), before_index);
+        assert_eq!(
+            std::fs::read(repo.path().join("file")).unwrap(),
+            b"later working edit\n"
+        );
+        assert_eq!(
+            std::fs::read(repo.path().join("untracked")).unwrap(),
+            b"later scratch\n"
+        );
+        let inverse = list(repo.path()).remove(0);
+        assert!(inverse.index_only);
+        assert_eq!(inverse.reverses.as_deref(), Some(saved.id.as_str()));
+        assert_eq!(step(&repo, true), "Redo Stage file");
+        assert_eq!(repo.index_bytes("file"), after_index);
+        assert_eq!(repo.head(), head);
+        assert_eq!(
+            std::fs::read(repo.path().join("file")).unwrap(),
+            b"later working edit\n"
+        );
+        assert_eq!(
+            std::fs::read(repo.path().join("untracked")).unwrap(),
+            b"later scratch\n"
+        );
+    }
+
+    #[test]
+    fn index_only_undo_redo_works_before_the_first_commit() {
+        let repo = TestRepo::new();
+        repo.write("first", b"first staged content\n");
+        repo.write("untracked", b"keep these bytes\n");
+        stage_index_file(&repo, "first");
+        assert!(repo.open().head().is_err());
+        step(&repo, false);
+        assert!(repo.open().index().unwrap().is_empty());
+        assert!(repo.open().head().is_err());
+        assert_eq!(
+            std::fs::read(repo.path().join("first")).unwrap(),
+            b"first staged content\n"
+        );
+        step(&repo, true);
+        assert_eq!(repo.index_bytes("first"), b"first staged content\n");
+        assert!(repo.open().head().is_err());
+        assert_eq!(
+            std::fs::read(repo.path().join("untracked")).unwrap(),
+            b"keep these bytes\n"
+        );
+    }
+
+    #[test]
+    fn index_only_undo_refuses_a_later_index_change() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"base\n");
+        repo.write("file", b"staged\n");
+        stage_index_file(&repo, "file");
+        let saved = list(repo.path()).remove(0);
+        verify_restore_state(repo.path(), &saved).unwrap();
+        repo.write("file", b"later staged\n");
+        repo.git_ok(&["add", "file"]);
+        assert!(verify_restore_state(repo.path(), &saved)
+            .unwrap_err()
+            .contains("changed"));
+        assert!(restore_step(repo.path(), &saved.id, false)
+            .unwrap_err()
+            .contains("changed"));
+        assert_eq!(repo.index_bytes("file"), b"later staged\n");
+        assert_eq!(list(repo.path()).len(), 1);
+    }
+
+    #[test]
+    fn index_only_undo_refuses_a_moved_head_or_branch() {
+        for move_branch in [false, true] {
+            let repo = TestRepo::new();
+            repo.commit("file", b"base\n");
+            repo.write("file", b"staged\n");
+            stage_index_file(&repo, "file");
+            let saved = list(repo.path()).remove(0);
+            if move_branch {
+                repo.git_ok(&["checkout", "-b", "other"]);
+            } else {
+                repo.git_ok(&["commit", "-m", "later commit"]);
+            }
+            let head = head_state(&repo.open()).unwrap();
+            assert!(verify_restore_state(repo.path(), &saved)
+                .unwrap_err()
+                .contains("HEAD"));
+            assert!(restore_step(repo.path(), &saved.id, false)
+                .unwrap_err()
+                .contains("HEAD"));
+            assert_eq!(head_state(&repo.open()).unwrap(), head);
+            assert_eq!(repo.index_bytes("file"), b"staged\n");
+            assert_eq!(list(repo.path()).len(), 1);
+        }
+    }
+
+    #[test]
+    fn index_only_capture_saves_one_index_ref_without_hashing_working_files() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"base\n");
+        let working = b"unique unstaged bytes that must not be stored\n";
+        let untracked = b"unique untracked bytes that must not be stored\n";
+        repo.write("file", working);
+        repo.write("untracked", untracked);
+        let raw = repo.open();
+        let odb = raw.odb().unwrap();
+        let working_oid = git2::Oid::hash_object(git2::ObjectType::Blob, working).unwrap();
+        let untracked_oid = git2::Oid::hash_object(git2::ObjectType::Blob, untracked).unwrap();
+        assert!(!odb.exists(working_oid));
+        assert!(!odb.exists(untracked_oid));
+        assert_eq!(
+            raw.references_glob("refs/recorde/recovery/*")
+                .unwrap()
+                .count(),
+            0
+        );
+        protect_index_only(repo.path(), "Stage file", || Ok(())).unwrap();
+        let saved = list(repo.path()).remove(0);
+        assert_eq!(
+            raw.references_glob("refs/recorde/recovery/*")
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(list(repo.path()).len(), 1);
+        assert!(!odb.exists(working_oid));
+        assert!(!odb.exists(untracked_oid));
+        let state = saved.before_state.as_ref().unwrap();
+        assert!(state.worktree.is_empty());
+        assert!(saved.after_state.as_ref().unwrap().worktree.is_empty());
+        let snapshot = raw
+            .find_commit(git2::Oid::from_str(saved.snapshot.as_deref().unwrap()).unwrap())
+            .unwrap();
+        assert_eq!(snapshot.tree_id().to_string(), state.index);
+        assert_eq!(snapshot.message().ok(), Some("Recorde saved index"));
+        assert_eq!(snapshot.parent_count(), 1);
+        assert_eq!(snapshot.parent_id(0).unwrap(), repo.head());
+        let reference = raw
+            .find_reference(&format!("refs/recorde/recovery/{}", saved.id))
+            .unwrap();
+        assert_eq!(reference.target(), Some(snapshot.id()));
+        assert_eq!(std::fs::read(repo.path().join("file")).unwrap(), working);
+        assert_eq!(
+            std::fs::read(repo.path().join("untracked")).unwrap(),
+            untracked
+        );
+    }
+
+    #[test]
+    fn index_only_recovery_uses_physical_trees_with_replacement_refs() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"original\n");
+        let raw = repo.open();
+        let original = raw.head().unwrap().peel_to_tree().unwrap().id();
+        let blob = raw.blob(b"replacement\n").unwrap();
+        let mut builder = raw.treebuilder(None).unwrap();
+        builder.insert("file", blob, 0o100644).unwrap();
+        let replacement = builder.write().unwrap();
+        repo.git_ok(&["replace", &original.to_string(), &replacement.to_string()]);
+        // Prime Git's cached tree with the ID whose contents are replaced.
+        repo.git_ok(&["reset", "--hard", "HEAD"]);
+        repo.write("file", b"staged edit\n");
+        stage_index_file(&repo, "file");
+        let saved = list(repo.path()).remove(0);
+        assert_eq!(
+            saved.before_state.as_ref().unwrap().index,
+            replacement.to_string()
+        );
+        repo.write("file", b"later working bytes\n");
+        step(&repo, false);
+        assert_eq!(
+            repo.git(&["--no-replace-objects", "show", ":file"]).stdout,
+            b"replacement\n"
+        );
+        step(&repo, true);
+        assert_eq!(
+            repo.git(&["--no-replace-objects", "show", ":file"]).stdout,
+            b"staged edit\n"
+        );
+        assert_eq!(
+            std::fs::read(repo.path().join("file")).unwrap(),
+            b"later working bytes\n"
+        );
+        assert_eq!(
+            raw.find_reference(&format!("refs/replace/{original}"))
+                .unwrap()
+                .target(),
+            Some(replacement)
+        );
+    }
+
+    #[test]
+    fn index_only_sparse_undo_redo_keeps_flags_and_refuses_selection_changes() {
+        for cone in [false, true] {
+            let repo = TestRepo::new();
+            std::fs::create_dir(repo.path().join("included")).unwrap();
+            std::fs::create_dir(repo.path().join("excluded")).unwrap();
+            repo.commit("included/file", b"base\n");
+            repo.commit("excluded/file", b"hidden\n");
+            if cone {
+                repo.git_ok(&[
+                    "sparse-checkout",
+                    "set",
+                    "--cone",
+                    "--sparse-index",
+                    "included",
+                ]);
+            } else {
+                repo.git_ok(&["sparse-checkout", "set", "--no-cone", "/included/"]);
+            }
+            let raw = repo.open();
+            let patterns = std::fs::read(raw.path().join("info/sparse-checkout")).unwrap();
+            let before = sparse_state(&raw).unwrap();
+            repo.write("included/file", b"staged\n");
+            stage_index_file(&repo, "included/file");
+            repo.write("included/file", b"working\n");
+            for redo in [false, true] {
+                step(&repo, redo);
+                let expected: &[u8] = if redo { b"staged\n" } else { b"base\n" };
+                assert_eq!(repo.git(&["show", ":included/file"]).stdout, expected);
+                assert_eq!(repo.git(&["show", ":excluded/file"]).stdout, b"hidden\n");
+                assert!(sparse_state(&raw).unwrap() == before);
+                assert!(!repo.path().join("excluded/file").exists());
+                assert_eq!(
+                    std::fs::read(repo.path().join("included/file")).unwrap(),
+                    b"working\n"
+                );
+                assert_eq!(
+                    std::fs::read(raw.path().join("info/sparse-checkout")).unwrap(),
+                    patterns
+                );
+            }
+            let saved = undo_history(repo.path()).undo.pop().unwrap();
+            repo.git_ok(&[
+                "sparse-checkout",
+                "set",
+                "--no-cone",
+                "/included/",
+                "/excluded/",
+            ]);
+            assert!(restore(repo.path(), &saved).unwrap_err().contains("Sparse"));
+            assert!(verify_restore_state(repo.path(), &saved).is_err());
+        }
+    }
+
+    #[test]
+    fn index_only_restore_rejects_missing_states_and_nonempty_worktree_markers() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"base\n");
+        repo.write("file", b"staged\n");
+        stage_index_file(&repo, "file");
+        let saved = list(repo.path()).remove(0);
+        let mut missing = saved.clone();
+        missing.after_state = None;
+        assert!(restore(repo.path(), &missing).is_err());
+        assert!(restore_contents(repo.path(), &missing).is_err());
+        let mut mixed = saved;
+        let state = mixed.before_state.as_mut().unwrap();
+        state.worktree = state.index.clone();
+        assert!(restore(repo.path(), &mixed).is_err());
+        assert!(verify_restore_state(repo.path(), &mixed).is_err());
+        assert_eq!(repo.index_bytes("file"), b"staged\n");
+        assert_eq!(list(repo.path()).len(), 1);
+    }
+
+    #[test]
+    fn unchanged_index_only_steps_are_skipped_and_new_steps_clear_redo() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"base\n");
+        stage_index_file(&repo, "file");
+        assert!(unchanged(&list(repo.path())[0]));
+        assert!(undo_history(repo.path()).next(false).is_none());
+        repo.write("file", b"first staged\n");
+        stage_index_file(&repo, "file");
+        repo.write("file", b"second staged\n");
+        stage_index_file(&repo, "file");
+        assert_eq!(undo_history(repo.path()).undo.len(), 2);
+        step(&repo, false);
+        assert_eq!(repo.index_bytes("file"), b"first staged\n");
+        let (redo_id, _) = undo_history(repo.path()).next(true).unwrap();
+        // A no-op does not interrupt the redo path.
+        protect_index_only(repo.path(), "No change", || Ok(())).unwrap();
+        assert_eq!(undo_history(repo.path()).next(true).unwrap().0, redo_id);
+        stage_index_file(&repo, "file");
+        assert!(undo_history(repo.path()).next(true).is_none());
+        assert!(restore_step(repo.path(), &redo_id, true).is_err());
+        step(&repo, false);
+        step(&repo, false);
+        assert_eq!(repo.index_bytes("file"), b"base\n");
+    }
+
+    #[test]
+    fn legacy_json_without_index_only_restores_a_full_checkpoint() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"base\n");
+        repo.write("file", b"before working\n");
+        protect(repo.path(), "Edit", || {
+            repo.write("file", b"after working\n");
+            Ok(())
+        })
+        .unwrap();
+        let saved = list(repo.path()).remove(0);
+        let mut legacy = serde_json::to_value(&saved).unwrap();
+        legacy.as_object_mut().unwrap().remove("index_only");
+        assert!(legacy["before_state"]["worktree"].is_string());
+        let json = serde_json::to_string(&legacy).unwrap();
+        let parsed: Checkpoint = serde_json::from_str(&json).unwrap();
+        assert!(!parsed.index_only);
+        assert!(!parsed.before_state.as_ref().unwrap().worktree.is_empty());
+        // Exercise the same JSON file format and loader used for existing journals.
+        std::fs::write(
+            directory(&repo.open()).join(format!("{}.json", saved.id)),
+            json,
+        )
+        .unwrap();
+        let loaded = list(repo.path()).remove(0);
+        assert!(!loaded.index_only);
+        restore_step(repo.path(), &loaded.id, false).unwrap();
+        assert_eq!(repo.index_bytes("file"), b"base\n");
+        assert_eq!(
+            std::fs::read(repo.path().join("file")).unwrap(),
+            b"before working\n"
+        );
+    }
+
     #[test]
     fn incomplete_checkpoint_blocks_older_undo_and_redo_without_disappearing() {
         let fixture = TestRepo::new();

@@ -52,7 +52,7 @@ Command tabs pass the credential-helper configuration to the commands and script
 
 ## Editors and external tools
 
-Use the external terminal action for interactive shells, editors, credential prompts and tools that need a real terminal. Settings stores configured terminal, editor, diff and merge tool commands. They must be installed and available on PATH or addressed by an absolute path.
+Use the external terminal action for interactive shells, editors, credential prompts and tools that need a real terminal. The terminal and editor settings accept an executable and literal arguments; install the executable on PATH or use an absolute path. The diff and merge settings accept Git tool names, such as `meld`. When left empty, Recorde uses Git's `diff.tool` or `diff.guitool` and `merge.tool` or `merge.guitool` settings. Configure the corresponding Git tool before using it. Merge tools that require a terminal, such as `vimdiff`, are unavailable from the merge action; use a graphical tool or Resolve in Recorde.
 
 The built-in file editor supports reviewing and saving text changes. Unsaved buffers must be saved or discarded before closing the application or restarting for an update, including buffers from previously opened repositories. External edits are checked before saving so newer disk contents are not silently overwritten.
 

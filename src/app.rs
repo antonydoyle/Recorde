@@ -59,6 +59,120 @@ enum AccountChange {
     Removed(StoredAccount),
 }
 
+#[derive(Clone)]
+struct RepoSettingsSnapshot {
+    retention_days: i64,
+    remotes: Vec<(String, String)>,
+    provider_remote: String,
+    push_default: String,
+    branch: Option<String>,
+    branch_push_remote: String,
+    recovery: Vec<crate::git::recovery::Checkpoint>,
+}
+
+impl RepoSettingsSnapshot {
+    fn load(path: &std::path::Path) -> Result<Self, String> {
+        let repo = git2::Repository::open(path).map_err(|error| error.to_string())?;
+        Self::from_repo(&repo)
+    }
+
+    fn from_repo(repo: &git2::Repository) -> Result<Self, String> {
+        let config = repo.config().map_err(|error| error.to_string())?;
+        let names = repo.remotes().map_err(|error| error.to_string())?;
+        let mut remotes = Vec::new();
+        for name in names.iter().flatten().flatten() {
+            let url = repo
+                .find_remote(name)
+                .ok()
+                .and_then(|remote| remote.url().ok().map(str::to_owned))
+                .unwrap_or_default();
+            remotes.push((name.to_owned(), url));
+        }
+        let branch = repo
+            .head()
+            .ok()
+            .filter(|head| head.is_branch())
+            .and_then(|head| head.shorthand().ok().map(str::to_owned));
+        let branch_push_remote = branch
+            .as_ref()
+            .and_then(|branch| {
+                config
+                    .get_string(&format!("branch.{branch}.pushRemote"))
+                    .ok()
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            retention_days: config.get_i64("recorde.recoveryRetentionDays").unwrap_or(0),
+            remotes,
+            provider_remote: remote::provider_remote(repo).unwrap_or_default(),
+            push_default: config.get_string("remote.pushDefault").unwrap_or_default(),
+            branch,
+            branch_push_remote,
+            recovery: crate::git::recovery::list(repo.workdir().unwrap_or(repo.path())),
+        })
+    }
+}
+
+type RepoSettingsResult = Result<RepoSettingsSnapshot, String>;
+
+#[derive(Default)]
+struct RepoSettingsCache {
+    scope: Option<(std::path::PathBuf, u64, String)>,
+    visible: bool,
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    loaded_generation: u64,
+    request_id: u64,
+    pending: Option<(u64, std::sync::mpsc::Receiver<RepoSettingsResult>)>,
+    snapshot: Option<RepoSettingsResult>,
+}
+
+impl RepoSettingsCache {
+    fn poll(&mut self, path: &std::path::Path, epoch: u64, branch: &str, ctx: &Context) {
+        use std::sync::atomic::Ordering;
+        let scope = (path.to_path_buf(), epoch, branch.to_owned());
+        let generation = self.generation.load(Ordering::Acquire);
+        if !self.visible
+            || self.scope.as_ref() != Some(&scope)
+            || self.loaded_generation != generation
+        {
+            self.visible = true;
+            self.scope = Some(scope);
+            self.loaded_generation = generation;
+            self.request_id += 1;
+            self.snapshot = None;
+        }
+        if let Some((id, rx)) = &self.pending {
+            let result = match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Could not load repository settings.".into()))
+                }
+            };
+            if let Some(result) = result {
+                if *id == self.request_id {
+                    self.snapshot = Some(result);
+                }
+                self.pending = None;
+            }
+        }
+        // Keep at most one reader running, even when tabs or repositories change quickly.
+        if self.pending.is_none() && self.snapshot.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.pending = Some((self.request_id, rx));
+            let path = path.to_path_buf();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(RepoSettingsSnapshot::load(&path));
+                ctx.request_repaint();
+            });
+        }
+        if self.pending.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
 fn account_task(
     work: impl FnOnce() -> Result<AccountChange, String> + Send + 'static,
 ) -> std::sync::mpsc::Receiver<Result<AccountChange, String>> {
@@ -217,6 +331,7 @@ pub struct RecordeApp {
     was_focused: bool,
     last_auto_fetch: std::time::Instant,
     auto_fetch_repo: Option<std::path::PathBuf>,
+    auto_fetch_failures: u32,
     observed_repo: Option<std::path::PathBuf>,
     observed_provider: Option<(String, String)>,
     dark_theme: bool,
@@ -233,6 +348,7 @@ pub struct RecordeApp {
     branch_switcher_query: String,
     settings_open: bool,
     settings_tab: SettingsTab,
+    repo_settings: RepoSettingsCache,
     updater: crate::update::Controller,
     instance_guard: Option<crate::update::InstanceGuard>,
     git_name_input: String,
@@ -367,6 +483,7 @@ impl RecordeApp {
             was_focused: true,
             last_auto_fetch: std::time::Instant::now(),
             auto_fetch_repo: None,
+            auto_fetch_failures: 0,
             observed_repo: None,
             observed_provider: None,
             config,
@@ -385,6 +502,7 @@ impl RecordeApp {
             branch_switcher_query: String::new(),
             settings_open: false,
             settings_tab: SettingsTab::App,
+            repo_settings: RepoSettingsCache::default(),
             updater: Default::default(),
             instance_guard: None,
             git_name_input: String::new(),
@@ -447,8 +565,12 @@ impl RecordeApp {
                 self.config.remove_recent(&path);
             }
             ToolbarAction::OpenTerminal => {
-                if let Some(ref rp) = self.state.lock().unwrap().repo_path.clone() {
-                    lifecycle::open_terminal(rp);
+                // Release the state lock before reporting a launch error.
+                let repo_path = self.state.lock().unwrap().repo_path.clone();
+                if let Some(rp) = repo_path {
+                    if let Err(error) = lifecycle::try_open_terminal(&rp) {
+                        self.state.lock().unwrap().error = Some(error);
+                    }
                 }
             }
             ToolbarAction::RevealInFolder => {
@@ -639,6 +761,7 @@ impl RecordeApp {
     fn open_settings(&mut self, tab: SettingsTab) {
         self.settings_tab = tab;
         self.settings_open = true;
+        self.repo_settings.visible = false;
         self.load_git_identity_inputs();
         self.load_app_settings_inputs();
         if self.diagnostics_pending.is_none() {
@@ -1718,6 +1841,16 @@ impl RecordeApp {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui
+                .radio_value(
+                    &mut self.config.pull_strategy,
+                    PullStrategy::GitConfig,
+                    "Use Git configuration (recommended)",
+                )
+                .changed()
+            {
+                self.save_config();
+            }
+            if ui
                 .radio_value(&mut self.config.pull_strategy, PullStrategy::Merge, "Merge")
                 .changed()
             {
@@ -1744,7 +1877,10 @@ impl RecordeApp {
                 self.save_config();
             }
         });
-        ui.label(styled_muted("Used when pulling without an explicit flag."));
+        ui.label(styled_muted(
+            "Use Git configuration lets branch.<name>.rebase, pull.rebase and pull.ff decide. \
+             An explicit strategy overrides Git's pull settings.",
+        ));
 
         // ── Fetch options ────────────────────────────────────────────────────
         ui.add_space(12.0);
@@ -2186,9 +2322,24 @@ impl RecordeApp {
         ));
     }
 
+    fn spawn_repo_settings_operation(
+        &self,
+        path: std::path::PathBuf,
+        work: impl FnOnce(&std::path::Path) -> Result<(), String> + Send + 'static,
+    ) {
+        let generation = self.repo_settings.generation.clone();
+        crate::git::mutation::spawn_operation(path, self.state.clone(), move |repo| {
+            let result = work(repo);
+            // Reload on failure too: a multi-step save may have partially succeeded.
+            generation.fetch_add(1, std::sync::atomic::Ordering::Release);
+            result
+        });
+    }
+
     fn render_repo_settings(&mut self, ui: &mut egui::Ui) {
         let (
             repo_path,
+            repo_epoch,
             head_branch,
             ahead_behind,
             dirty_count,
@@ -2200,6 +2351,7 @@ impl RecordeApp {
             let s = self.state.lock().unwrap();
             (
                 s.repo_path.clone(),
+                s.repo_epoch,
                 s.head_branch.clone().unwrap_or_else(|| "—".into()),
                 s.ahead_behind,
                 s.dirty_count,
@@ -2210,6 +2362,7 @@ impl RecordeApp {
             )
         };
         let Some(path) = repo_path else {
+            self.repo_settings.visible = false;
             ui.label(styled_muted(
                 "Open a repository to edit repository settings.",
             ));
@@ -2224,9 +2377,25 @@ impl RecordeApp {
         );
         ui.label(styled_muted(&path.display().to_string()));
         ui.add_space(10.0);
+        self.repo_settings
+            .poll(&path, repo_epoch, &head_branch, ui.ctx());
+        let snapshot = match self.repo_settings.snapshot.clone() {
+            Some(Ok(snapshot)) => snapshot,
+            Some(Err(error)) => {
+                ui.label(styled_muted(&error));
+                if ui.button("Reload repository settings").clicked() {
+                    self.repo_settings.visible = false;
+                }
+                return;
+            }
+            None => {
+                ui.label(styled_muted("Loading…"));
+                return;
+            }
+        };
         egui::CollapsingHeader::new("Recovery snapshots").show(ui, |ui| {
             ui.label("Snapshots preserve the index and non-ignored files before commit, reset and discard, including before the first commit. Undo checks for later edits and saves a snapshot for redo. Ignored files are excluded.");
-            let mut retention = git2::Repository::open(&path).ok().and_then(|r| r.config().ok()).and_then(|c| c.get_i64("recorde.recoveryRetentionDays").ok()).unwrap_or(0);
+            let mut retention = snapshot.retention_days;
             let old_retention = retention;
             egui::ComboBox::from_label("Automatic cleanup").selected_text(if retention <= 0 { "Keep all snapshots".into() } else { format!("After {retention} days") }).show_ui(ui, |ui| {
                 for (days, label) in [(0, "Keep all snapshots"), (30, "After 30 days"), (90, "After 90 days")] {
@@ -2235,12 +2404,17 @@ impl RecordeApp {
             });
             ui.label(styled_muted("Cleanup always keeps the latest 20 snapshots, pinned snapshots and incomplete operations."));
             if retention != old_retention {
-                crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |repo| {
-                    git2::Repository::open(repo).and_then(|r| r.config()).and_then(|mut c| c.set_i64("recorde.recoveryRetentionDays", retention)).map_err(|e| e.to_string())?;
+                self.spawn_repo_settings_operation(path.clone(), move |repo| {
+                    git2::Repository::open(repo)
+                        .and_then(|repo| repo.config())
+                        .and_then(|mut config| {
+                            config.set_i64("recorde.recoveryRetentionDays", retention)
+                        })
+                        .map_err(|error| error.to_string())?;
                     crate::git::recovery::prune(repo)
                 });
             }
-            let saved = crate::git::recovery::list(&path);
+            let saved = &snapshot.recovery;
             if saved.is_empty() { ui.label(styled_muted("No recovery snapshots yet.")); }
             egui::ScrollArea::vertical().id_salt("recovery_snapshots").max_height(260.0).show(ui, |ui| {
             for checkpoint in saved {
@@ -2249,7 +2423,9 @@ impl RecordeApp {
                     let mut pinned = checkpoint.pinned;
                     if ui.checkbox(&mut pinned, "Keep").changed() {
                         let id = checkpoint.id.clone();
-                        crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |repo| crate::git::recovery::set_pinned(repo, &id, pinned));
+                        self.spawn_repo_settings_operation(path.clone(), move |repo| {
+                            crate::git::recovery::set_pinned(repo, &id, pinned)
+                        });
                     }
                     if ui.button("Restore...").clicked() { self.repo_ui.pending_recovery_id = Some(checkpoint.id.clone()); }
                     if ui.button("Delete...").clicked() { self.repo_ui.pending_recovery_id = Some(format!("delete:{}", checkpoint.id)); }
@@ -2260,7 +2436,7 @@ impl RecordeApp {
                         if ui.button("Restore snapshot").clicked() {
                             let checkpoint = checkpoint.clone();
                             self.repo_ui.pending_recovery_id = None;
-                            crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |repo| {
+                            self.spawn_repo_settings_operation(path.clone(), move |repo| {
                                 crate::git::recovery::restore(repo, &checkpoint)
                             });
                         }
@@ -2273,7 +2449,7 @@ impl RecordeApp {
                         if ui.button("Delete snapshot").clicked() {
                             let checkpoint = checkpoint.clone();
                             self.repo_ui.pending_recovery_id = None;
-                            crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |repo| {
+                            self.spawn_repo_settings_operation(path.clone(), move |repo| {
                                 crate::git::recovery::remove(repo, &checkpoint)
                             });
                         }
@@ -2288,11 +2464,16 @@ impl RecordeApp {
             ui.label(if caps.is_shallow { "Shallow history" } else { "Full history" });
             if ui.add_enabled(!caps.is_shallow, Button::new("Optimize history loading")).clicked() {
                 self.state.lock().unwrap().remote_op = Some("Optimize history loading".into());
-                crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), crate::git::lifecycle::optimize_history);
+                self.spawn_repo_settings_operation(
+                    path.clone(),
+                    crate::git::lifecycle::optimize_history,
+                );
             }
             ui.label(styled_muted("Build Git's history index for faster graph loading. Large repositories may take a few minutes."));
             if caps.is_shallow && ui.button("Fetch full history").clicked() {
-                crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), |repo| crate::git::lifecycle::fetch_full_history(repo));
+                self.spawn_repo_settings_operation(path.clone(), |repo| {
+                    crate::git::lifecycle::fetch_full_history(repo)
+                });
             }
             ui.label(if caps.is_sparse { "Sparse checkout is enabled" } else { "All directories are checked out" });
             ui.label("Directories to include, one per line (cone mode)");
@@ -2301,10 +2482,14 @@ impl RecordeApp {
             ui.horizontal(|ui| {
                 if ui.add_enabled(!self.repo_ui.sparse_paths.trim().is_empty(), Button::new("Apply sparse checkout")).clicked() {
                     let directories = self.repo_ui.sparse_paths.lines().map(str::to_string).collect();
-                    crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |repo| crate::git::lifecycle::set_sparse(repo, Some(directories)));
+                    self.spawn_repo_settings_operation(path.clone(), move |repo| {
+                        crate::git::lifecycle::set_sparse(repo, Some(directories))
+                    });
                 }
                 if caps.is_sparse && ui.button("Disable sparse checkout").clicked() {
-                    crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), |repo| crate::git::lifecycle::set_sparse(repo, None));
+                    self.spawn_repo_settings_operation(path.clone(), |repo| {
+                        crate::git::lifecycle::set_sparse(repo, None)
+                    });
                 }
             });
         });
@@ -2313,7 +2498,7 @@ impl RecordeApp {
             if ui.add_enabled(!self.repo_ui.worktree_branch_input.trim().is_empty(), secondary_btn("Create worktree...")).clicked() {
                 if let Some(destination) = rfd::FileDialog::new().set_title("Choose the new worktree directory").save_file() {
                     let branch = self.repo_ui.worktree_branch_input.trim().to_string();
-                    crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |repo| {
+                    self.spawn_repo_settings_operation(path.clone(), move |repo| {
                         crate::git::worktrees::add(repo, &destination, &branch)
                     });
                 }
@@ -2329,7 +2514,7 @@ impl RecordeApp {
                         for (label, locked) in [(if worktree.locked { "Unlock" } else { "Lock" }, !worktree.locked)] {
                             if ui.small_button(label).clicked() {
                                 let destination = std::path::PathBuf::from(&worktree.path);
-                                crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |repo| {
+                                self.spawn_repo_settings_operation(path.clone(), move |repo| {
                                     crate::git::worktrees::set_locked(repo, &destination, locked)
                                 });
                             }
@@ -2343,7 +2528,7 @@ impl RecordeApp {
                         if ui.button("Remove worktree").clicked() {
                             let destination = std::path::PathBuf::from(&worktree.path);
                             self.repo_ui.remove_worktree_pending = None;
-                            crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |repo| {
+                            self.spawn_repo_settings_operation(path.clone(), move |repo| {
                                 crate::git::worktrees::remove(repo, &destination)
                             });
                         }
@@ -2368,19 +2553,15 @@ impl RecordeApp {
                         .clicked()
                     {
                         let module = module.path.clone();
-                        crate::git::mutation::spawn_operation(
-                            path.clone(),
-                            self.state.clone(),
-                            move |repo| crate::git::submodules::update(repo, &module),
-                        );
+                        self.spawn_repo_settings_operation(path.clone(), move |repo| {
+                            crate::git::submodules::update(repo, &module)
+                        });
                     }
                     if ui.small_button("Sync URL").clicked() {
                         let module = module.path.clone();
-                        crate::git::mutation::spawn_operation(
-                            path.clone(),
-                            self.state.clone(),
-                            move |repo| crate::git::submodules::sync(repo, &module),
-                        );
+                        self.spawn_repo_settings_operation(path.clone(), move |repo| {
+                            crate::git::submodules::sync(repo, &module)
+                        });
                     }
                     if module.initialized && ui.small_button("Open").clicked() {
                         load_repo(path.join(&module.path), self.state.clone());
@@ -2562,18 +2743,14 @@ impl RecordeApp {
                 let url = self.repo_ui.origin_url_input.trim().to_string();
                 let old = self.repo_ui.remote_rename_from.take();
                 let state = self.state.clone();
-                crate::git::mutation::spawn_operation(
-                    path.clone(),
-                    self.state.clone(),
-                    move |path| {
-                        crate::git::remote::save_remote(path, &name, &url, old.as_deref())?;
-                        let mut s = state.lock().unwrap();
-                        if s.repo_path.as_deref() == Some(path) {
-                            s.invalidate_provider_data();
-                        }
-                        Ok(())
-                    },
-                );
+                self.spawn_repo_settings_operation(path.clone(), move |path| {
+                    crate::git::remote::save_remote(path, &name, &url, old.as_deref())?;
+                    let mut s = state.lock().unwrap();
+                    if s.repo_path.as_deref() == Some(path) {
+                        s.invalidate_provider_data();
+                    }
+                    Ok(())
+                });
             }
             if ui.small_button("Clear").clicked() {
                 self.repo_ui.remote_name_input.clear();
@@ -2581,26 +2758,18 @@ impl RecordeApp {
                 self.repo_ui.remote_rename_from = None;
             }
         });
-        if let Ok(repo) = git2::Repository::open(&path) {
-            if let Ok(remotes) = repo.remotes() {
-                for name in remotes.iter().flatten().flatten() {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(name);
-                        if ui.small_button("Edit / rename").clicked() {
-                            self.repo_ui.remote_name_input = name.into();
-                            self.repo_ui.remote_rename_from = Some(name.into());
-                            self.repo_ui.origin_url_input = repo
-                                .find_remote(name)
-                                .ok()
-                                .and_then(|r| r.url().ok().map(str::to_string))
-                                .unwrap_or_default();
-                        }
-                        if ui.small_button("Remove...").clicked() {
-                            self.repo_ui.remote_delete_pending = Some(name.into());
-                        }
-                    });
+        for (name, url) in &snapshot.remotes {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(name);
+                if ui.small_button("Edit / rename").clicked() {
+                    self.repo_ui.remote_name_input = name.clone();
+                    self.repo_ui.remote_rename_from = Some(name.clone());
+                    self.repo_ui.origin_url_input = url.clone();
                 }
-            }
+                if ui.small_button("Remove...").clicked() {
+                    self.repo_ui.remote_delete_pending = Some(name.clone());
+                }
+            });
         }
         if let Some(name) = self.repo_ui.remote_delete_pending.clone() {
             ui.label(format!("Remove remote {name} and its local tracking refs?"));
@@ -2608,18 +2777,14 @@ impl RecordeApp {
                 if ui.button("Remove remote").clicked() {
                     self.repo_ui.remote_delete_pending = None;
                     let state = self.state.clone();
-                    crate::git::mutation::spawn_operation(
-                        path.clone(),
-                        self.state.clone(),
-                        move |path| {
-                            crate::git::remote::remove_remote(path, &name)?;
-                            let mut s = state.lock().unwrap();
-                            if s.repo_path.as_deref() == Some(path) {
-                                s.invalidate_provider_data();
-                            }
-                            Ok(())
-                        },
-                    );
+                    self.spawn_repo_settings_operation(path.clone(), move |path| {
+                        crate::git::remote::remove_remote(path, &name)?;
+                        let mut s = state.lock().unwrap();
+                        if s.repo_path.as_deref() == Some(path) {
+                            s.invalidate_provider_data();
+                        }
+                        Ok(())
+                    });
                 }
                 if ui.button("Cancel").clicked() {
                     self.repo_ui.remote_delete_pending = None;
@@ -2642,7 +2807,7 @@ impl RecordeApp {
         if ui.add(primary_btn("Save Repository Identity")).clicked() {
             let name = self.repo_ui.repo_git_name_input.clone();
             let email = self.repo_ui.repo_git_email_input.clone();
-            crate::git::mutation::spawn_operation(path.clone(), self.state.clone(), move |path| {
+            self.spawn_repo_settings_operation(path.clone(), move |path| {
                 save_git_identity(Some(path), &name, &email)
             });
         }
@@ -2657,8 +2822,8 @@ impl RecordeApp {
                 .size(13.0)
                 .strong(),
         );
-        if let Ok(repo) = git2::Repository::open(&path) {
-            let provider_remote = crate::git::remote::provider_remote(&repo).unwrap_or_default();
+        {
+            let provider_remote = snapshot.provider_remote.clone();
             let mut chosen = provider_remote.clone();
             egui::ComboBox::from_label("Provider remote")
                 .selected_text(if chosen.is_empty() {
@@ -2667,15 +2832,13 @@ impl RecordeApp {
                     &chosen
                 })
                 .show_ui(ui, |ui| {
-                    if let Ok(remotes) = repo.remotes() {
-                        for remote in remotes.iter().flatten().flatten() {
-                            ui.selectable_value(&mut chosen, remote.to_string(), remote);
-                        }
+                    for (remote, _) in &snapshot.remotes {
+                        ui.selectable_value(&mut chosen, remote.clone(), remote);
                     }
                 });
             if chosen != provider_remote {
                 let state = self.state.clone();
-                crate::git::mutation::spawn_operation(path.clone(), state.clone(), move |path| {
+                self.spawn_repo_settings_operation(path.clone(), move |path| {
                     crate::git::merge::run_git_seq(
                         path,
                         &["config", "--local", "recorde.providerRemote", &chosen],
@@ -2688,11 +2851,7 @@ impl RecordeApp {
                     Ok(())
                 });
             }
-            let current = repo
-                .config()
-                .ok()
-                .and_then(|c| c.get_string("remote.pushDefault").ok())
-                .unwrap_or_default();
+            let current = snapshot.push_default.clone();
             let mut selected = current.clone();
             egui::ComboBox::from_label("Default push remote")
                 .selected_text(if current.is_empty() {
@@ -2701,80 +2860,58 @@ impl RecordeApp {
                     &current
                 })
                 .show_ui(ui, |ui| {
-                    if let Ok(remotes) = repo.remotes() {
-                        for remote in remotes.iter().flatten().flatten() {
-                            ui.selectable_value(&mut selected, remote.to_string(), remote);
-                        }
+                    for (remote, _) in &snapshot.remotes {
+                        ui.selectable_value(&mut selected, remote.clone(), remote);
                     }
                 });
             if selected != current {
-                crate::git::mutation::spawn_operation(
-                    path.clone(),
-                    self.state.clone(),
-                    move |path| {
-                        crate::git::process::git(
-                            path,
-                            &["config", "--local", "remote.pushDefault", &selected],
-                            &std::sync::atomic::AtomicBool::new(false),
-                        )
-                        .map(|_| ())
-                        .map_err(|e| e.user_message())
-                    },
-                );
+                self.spawn_repo_settings_operation(path.clone(), move |path| {
+                    crate::git::process::git(
+                        path,
+                        &["config", "--local", "remote.pushDefault", &selected],
+                        &std::sync::atomic::AtomicBool::new(false),
+                    )
+                    .map(|_| ())
+                    .map_err(|e| e.user_message())
+                });
             }
-            if let Ok(head) = repo.head() {
-                if head.is_branch() {
-                    if let Some(branch) = head.shorthand().ok() {
-                        let key = format!("branch.{branch}.pushRemote");
-                        let current = repo
-                            .config()
-                            .ok()
-                            .and_then(|c| c.get_string(&key).ok())
-                            .unwrap_or_default();
-                        let mut selected = current.clone();
-                        egui::ComboBox::from_label(format!("Push remote for {branch}"))
-                            .selected_text(if current.is_empty() {
-                                "Use repository default / upstream"
-                            } else {
-                                &current
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut selected,
-                                    String::new(),
-                                    "Use repository default / upstream",
-                                );
-                                if let Ok(remotes) = repo.remotes() {
-                                    for remote in remotes.iter().flatten().flatten() {
-                                        ui.selectable_value(
-                                            &mut selected,
-                                            remote.to_string(),
-                                            remote,
-                                        );
-                                    }
-                                }
-                            });
-                        if selected != current {
-                            crate::git::mutation::spawn_operation(
-                                path.clone(),
-                                self.state.clone(),
-                                move |path| {
-                                    let args = if selected.is_empty() {
-                                        vec!["config", "--local", "--unset", &key]
-                                    } else {
-                                        vec!["config", "--local", &key, &selected]
-                                    };
-                                    crate::git::merge::run_git_seq(path, &args)
-                                        .map_err(|e| e.user_message())
-                                },
-                            );
+            if let Some(branch) = &snapshot.branch {
+                let key = format!("branch.{branch}.pushRemote");
+                let current = snapshot.branch_push_remote.clone();
+                let mut selected = current.clone();
+                egui::ComboBox::from_label(format!("Push remote for {branch}"))
+                    .selected_text(if current.is_empty() {
+                        "Use repository default / upstream"
+                    } else {
+                        &current
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut selected,
+                            String::new(),
+                            "Use repository default / upstream",
+                        );
+                        for (remote, _) in &snapshot.remotes {
+                            ui.selectable_value(&mut selected, remote.clone(), remote);
                         }
-                    }
+                    });
+                if selected != current {
+                    self.spawn_repo_settings_operation(path.clone(), move |path| {
+                        let args = if selected.is_empty() {
+                            vec!["config", "--local", "--unset", &key]
+                        } else {
+                            vec!["config", "--local", &key, &selected]
+                        };
+                        crate::git::merge::run_git_seq(path, &args).map_err(|e| e.user_message())
+                    });
                 }
             }
         }
-        for remote in repo_remotes(&path) {
-            ui.label(styled_muted(&remote));
+        if snapshot.remotes.is_empty() {
+            ui.label(styled_muted("No remotes configured."));
+        }
+        for (name, url) in &snapshot.remotes {
+            ui.label(styled_muted(&format!("{name}: {url}")));
         }
     }
 
@@ -3159,6 +3296,9 @@ impl eframe::App for RecordeApp {
         self.frame_metrics
             .observe(ctx, _frame.info().cpu_usage, ready);
         self.sync_repo_session();
+        if !self.settings_open || self.settings_tab != SettingsTab::Repository {
+            self.repo_settings.visible = false;
+        }
         self.poll_history_plan(ctx);
         self.show_lifecycle_guards(ctx);
         if self.last_navigation_save.elapsed() >= std::time::Duration::from_secs(2) {
@@ -3474,9 +3614,19 @@ impl eframe::App for RecordeApp {
         }
 
         // Toolbar
-        let (search_active, show_all_branches) = {
+        let (search_active, show_all_branches, pull_strategy) = {
             let s = self.state.lock().unwrap();
-            (s.search_active, s.show_all_branches)
+            let pull_strategy = match self.config.pull_strategy {
+                PullStrategy::GitConfig => s
+                    .capabilities
+                    .as_ref()
+                    .map(|caps| caps.pull_strategy)
+                    .unwrap_or_default(),
+                PullStrategy::Merge => remote::EffectivePull::Merge,
+                PullStrategy::Rebase => remote::EffectivePull::Rebase,
+                PullStrategy::FfOnly => remote::EffectivePull::FastForwardOnly,
+            };
+            (s.search_active, s.show_all_branches, pull_strategy)
         };
         let toolbar_action = self.toolbar.show(
             root_ui,
@@ -3485,6 +3635,7 @@ impl eframe::App for RecordeApp {
             search_active,
             show_all_branches,
             !self.commit_graph_view.has_pending_action(),
+            pull_strategy,
         );
         if let Some(a) = toolbar_action {
             self.handle_toolbar(ctx, a);
@@ -3621,7 +3772,11 @@ impl eframe::App for RecordeApp {
                         );
                         content.set_clip_rect(content_rect);
                         match self.repo_ui.right_tab {
-                            RightTab::Changes => self.staging_panel.show(&mut content),
+                            RightTab::Changes => self.staging_panel.show(
+                                &mut content,
+                                &self.config.default_editor,
+                                &self.config.protected_branches,
+                            ),
                             RightTab::Details => self.detail_panel.show(&mut content),
                         }
                         ui.set_min_size(ui.available_size());
@@ -4917,12 +5072,31 @@ impl RecordeApp {
             }
         }
         let changed = self.auto_fetch_repo.as_ref() != Some(&path);
-        let due = changed
-            || self.last_auto_fetch.elapsed().as_secs()
-                >= self.config.auto_fetch_interval_secs.max(30) as u64;
+        {
+            let s = self.state.lock().unwrap();
+            self.auto_fetch_failures = s
+                .background_fetch
+                .as_ref()
+                .filter(|status| status.repo_path == path)
+                .map_or(0, |status| status.consecutive_failures);
+        }
+        let interval = (self.config.auto_fetch_interval_secs.max(30) as u64)
+            .saturating_mul(1_u64 << self.auto_fetch_failures.min(7))
+            .min(3600);
+        let failed_at = {
+            let s = self.state.lock().unwrap();
+            s.background_fetch
+                .as_ref()
+                .filter(|status| status.repo_path == path)
+                .map(|status| status.failed_at)
+        };
+        let since = failed_at.map_or(self.last_auto_fetch, |failed| {
+            failed.max(self.last_auto_fetch)
+        });
+        let due = changed || since.elapsed().as_secs() >= interval;
         if self.config.auto_fetch && due && !busy && !sequence && !self.runner.has_jobs(&path) {
             self.runner
-                .submit(crate::git::job::JobKind::FetchAll, path.clone());
+                .submit(crate::git::job::JobKind::BackgroundFetch, path.clone());
             self.last_auto_fetch = std::time::Instant::now();
             self.auto_fetch_repo = Some(path.clone());
         }
@@ -5180,12 +5354,13 @@ impl RecordeApp {
     }
 
     fn show_operation_overlays(&mut self, ctx: &Context) {
-        let (legacy_op, active_ops, error) = {
+        let (legacy_op, active_ops) = {
             let s = self.state.lock().unwrap();
             (
                 s.remote_op.clone(),
                 s.active_ops
                     .iter()
+                    .filter(|op| !op.background)
                     .map(|o| {
                         let pct = o.progress_pct;
                         let msg = if o.progress_msg.is_empty() {
@@ -5197,19 +5372,24 @@ impl RecordeApp {
                     })
                     .chain(s.local_jobs.iter().map(|job| {
                         let status = if job.running { "" } else { "Queued: " };
+                        let progress = s.local_job_progress.get(&job.id);
                         (
                             format!("local_{}", job.id),
-                            format!(
-                                "{status}{} ({})",
-                                job.label,
-                                job.path.file_name().unwrap_or_default().to_string_lossy()
+                            progress.map_or_else(
+                                || {
+                                    format!(
+                                        "{status}{} ({})",
+                                        job.label,
+                                        job.path.file_name().unwrap_or_default().to_string_lossy()
+                                    )
+                                },
+                                |(message, _)| message.clone(),
                             ),
-                            None,
+                            progress.and_then(|(_, pct)| *pct),
                             job.cancel.clone(),
                         )
                     }))
                     .collect::<Vec<_>>(),
-                s.error.as_deref().map(crate::auth::redact::text),
             )
         };
 
@@ -5328,36 +5508,23 @@ impl RecordeApp {
             }
         }
 
-        if let Some(error) = error {
-            egui::Area::new(egui::Id::new("error_overlay"))
-                .anchor(egui::Align2::CENTER_TOP, [0.0, 146.0])
-                .order(egui::Order::Foreground)
-                .show(ctx, |ui| {
-                    egui::Frame::NONE
-                        .fill(theme::bg_diff_del())
-                        .stroke(Stroke::new(1.5, theme::accent_red()))
-                        .corner_radius(8.0)
-                        .inner_margin(egui::Margin::symmetric(16, 12))
-                        .show(ui, |ui| {
-                            ui.set_max_width(720.0);
-                            ui.horizontal_centered(|ui| {
-                                ui.label(
-                                    RichText::new("Operation blocked")
-                                        .color(theme::text_primary())
-                                        .size(13.5)
-                                        .strong(),
-                                );
-                                ui.add_space(10.0);
-                                ui.label(
-                                    RichText::new(error).color(theme::text_primary()).size(13.0),
-                                );
-                                ui.add_space(10.0);
-                                if ui.add(secondary_btn("Dismiss")).clicked() {
-                                    self.state.lock().unwrap().error = None;
-                                }
-                            });
-                        });
-                });
+        let queued_errors = {
+            let mut state = self.state.lock().unwrap();
+            state.take_pending_error();
+            state.errors.clone()
+        };
+        let mut errors = queued_errors.clone();
+        crate::ui::error_notice::show(ctx, &mut errors);
+        let dismissed = queued_errors.len() - errors.len();
+        if dismissed > 0 {
+            let mut state = self.state.lock().unwrap();
+            // Only dismiss the displayed prefix; newly arriving failures remain pending.
+            for error in queued_errors.iter().take(dismissed) {
+                if state.errors.front() != Some(error) {
+                    break;
+                }
+                state.errors.pop_front();
+            }
         }
     }
 
@@ -5651,8 +5818,11 @@ impl RecordeApp {
                     .add_enabled(has_repo, Button::new("Open External Terminal"))
                     .clicked()
                 {
-                    if let Some(rp) = self.state.lock().unwrap().repo_path.clone() {
-                        lifecycle::open_terminal(&rp);
+                    let repo_path = self.state.lock().unwrap().repo_path.clone();
+                    if let Some(rp) = repo_path {
+                        if let Err(error) = lifecycle::try_open_terminal(&rp) {
+                            self.state.lock().unwrap().error = Some(error);
+                        }
                     }
                     ui.close();
                 }
@@ -6654,45 +6824,69 @@ fn git_config_value(repo_path: Option<&std::path::Path>, key: &str) -> Option<St
     }
 }
 
-fn repo_remotes(path: &std::path::Path) -> Vec<String> {
-    let Ok(repo) = git2::Repository::open(path) else {
-        return vec!["Could not open repository.".into()];
-    };
-    let Ok(names) = repo.remotes() else {
-        return vec!["No remotes configured.".into()];
-    };
-    let mut remotes = Vec::new();
-    for name in names.iter().flatten().flatten() {
-        let url = repo
-            .find_remote(name)
-            .ok()
-            .and_then(|r| r.url().ok().map(str::to_owned))
-            .unwrap_or_default();
-        remotes.push(format!("{name}: {url}"));
-    }
-    if remotes.is_empty() {
-        remotes.push("No remotes configured.".into());
-    }
-    remotes
-}
-
 fn open_repo_in_editor(
     repo_path: Option<std::path::PathBuf>,
     configured_editor: &str,
 ) -> Result<(), String> {
     let path =
         repo_path.ok_or_else(|| "Open a repository before launching an editor.".to_string())?;
-    let editor = if !configured_editor.trim().is_empty() {
-        configured_editor.trim().to_string()
-    } else {
-        std::env::var("VISUAL")
-            .or_else(|_| std::env::var("EDITOR"))
-            .map_err(|_| "Set a default editor in App Settings first.".to_string())?
-    };
-
+    let editor = crate::external::editor_command(configured_editor)?;
     crate::external::open_editor(&path, &editor)
 }
 
 fn open_url(url: &str) -> Result<(), String> {
     crate::external::open_url(url)
+}
+
+#[cfg(test)]
+mod repo_settings_tests {
+    use super::*;
+    use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn snapshot_builder_reads_remotes_and_repository_settings() {
+        let fixture = TestRepo::new();
+        fixture.commit("base.txt", b"base\n");
+        let repo = fixture.open();
+        repo.remote("origin", "https://example.com/upstream.git")
+            .unwrap();
+        repo.remote("fork", "https://example.com/fork.git").unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("remote.pushDefault", "fork").unwrap();
+        config.set_str("recorde.providerRemote", "origin").unwrap();
+        config.set_str("branch.main.pushRemote", "origin").unwrap();
+        config.set_i64("recorde.recoveryRetentionDays", 90).unwrap();
+
+        let snapshot = RepoSettingsSnapshot::from_repo(&repo).unwrap();
+        assert_eq!(snapshot.retention_days, 90);
+        assert_eq!(snapshot.provider_remote, "origin");
+        assert_eq!(snapshot.push_default, "fork");
+        assert_eq!(snapshot.branch.as_deref(), Some("main"));
+        assert_eq!(snapshot.branch_push_remote, "origin");
+        assert_eq!(snapshot.remotes.len(), 2);
+        assert!(snapshot
+            .remotes
+            .contains(&("origin".into(), "https://example.com/upstream.git".into(),)));
+        assert!(snapshot
+            .remotes
+            .contains(&("fork".into(), "https://example.com/fork.git".into())));
+        assert!(snapshot.recovery.is_empty());
+    }
+
+    #[test]
+    fn snapshot_builder_handles_unborn_and_detached_head() {
+        let fixture = TestRepo::new();
+        let repo = fixture.open();
+        let snapshot = RepoSettingsSnapshot::from_repo(&repo).unwrap();
+        assert!(snapshot.branch.is_none());
+        assert!(snapshot.branch_push_remote.is_empty());
+        assert!(snapshot.remotes.is_empty());
+        assert_eq!(snapshot.retention_days, 0);
+        let head = fixture.commit("base.txt", b"base\n");
+        repo.set_head_detached(head).unwrap();
+        assert!(RepoSettingsSnapshot::from_repo(&repo)
+            .unwrap()
+            .branch
+            .is_none());
+    }
 }

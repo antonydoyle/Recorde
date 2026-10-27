@@ -98,6 +98,7 @@ impl Toolbar {
         search_active: bool,
         show_all_branches: bool,
         enabled: bool,
+        pull_strategy: crate::git::remote::EffectivePull,
     ) -> Option<ToolbarAction> {
         let mut action: Option<ToolbarAction> = None;
 
@@ -244,13 +245,16 @@ impl Toolbar {
                                     "Pull",
                                     has_repo && !busy,
                                 )
-                                .on_hover_text("Fetch + fast-forward  (Ctrl+Shift+P)");
+                                .on_hover_text(format!(
+                                    "{}  (Ctrl+Shift+P)",
+                                    pull_strategy.label()
+                                ));
                                 if pull_btn.clicked() {
                                     action = Some(ToolbarAction::Pull);
                                 }
                                 pull_btn.context_menu(|ui| {
                                     ui.set_min_width(190.0);
-                                    if ui.button("Pull (fast-forward)").clicked() {
+                                    if ui.button(pull_strategy.label()).clicked() {
                                         action = Some(ToolbarAction::Pull);
                                         ui.close();
                                     }
@@ -258,7 +262,7 @@ impl Toolbar {
                                         action = Some(ToolbarAction::PullWithRebase);
                                         ui.close();
                                     }
-                                    if ui.button("Pull (ff-only)").clicked() {
+                                    if ui.button("Pull (fast-forward only)").clicked() {
                                         action = Some(ToolbarAction::PullFfOnly);
                                         ui.close();
                                     }

@@ -4,6 +4,7 @@ pub mod commit_signing;
 pub mod conflict_editor;
 pub mod detail_panel;
 pub mod diff_view;
+pub mod error_notice;
 pub mod provider_editor;
 pub mod rebase_modal;
 pub mod repository_browser;

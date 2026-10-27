@@ -13,7 +13,7 @@ fn protect_index<T>(
     if repo.state() == git2::RepositoryState::Clean
         && !repo.index().map_err(|e| e.to_string())?.has_conflicts()
     {
-        super::recovery::protect(path, label, work)
+        super::recovery::protect_index_only(path, label, work)
     } else {
         work()
     }
@@ -593,10 +593,10 @@ pub(super) fn git_commit(
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
 
-    let out = super::process::run(
+    let out = super::process::run_with_deadline(
         &mut cmd,
         &std::sync::atomic::AtomicBool::new(false),
-        std::time::Duration::from_secs(600),
+        super::process::Deadline::None,
     )
     .map_err(|e| e.user_message())?;
     let combined = format!(

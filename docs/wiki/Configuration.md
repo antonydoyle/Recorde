@@ -53,12 +53,16 @@ The `Config` model contains:
 - `dark_theme`: enabled by default.
 - `high_contrast`: high contrast UI mode.
 - `default_editor`: external editor command.
-- `terminal`: external terminal command.
-- `diff_tool`: external diff tool command.
-- `merge_tool`: external merge tool command.
+- `terminal`: external terminal executable and optional literal arguments.
+- `diff_tool`: Git diff tool name; falls back to Git's `diff.tool` or `diff.guitool`.
+- `merge_tool`: Git merge tool name; falls back to Git's `merge.tool` or `merge.guitool`.
 - `signoff_default`: default commit sign-off behavior.
 - `protected_branches`: defaults to `main` and `master`.
-- `pull_strategy`: `Merge`, `Rebase`, or `FfOnly`.
+- `pull_strategy`: `GitConfig` (default), `Merge`, `Rebase`, or `FfOnly`. Existing saved choices
+  are preserved. "Use Git configuration (recommended)" honours `branch.<name>.rebase` before
+  `pull.rebase`, then `pull.ff` when rebase is disabled. `pull.ff=only` refuses divergence;
+  `pull.ff=false` creates a merge commit even when a fast-forward is possible. Explicit app
+  strategies override these Git pull settings.
 - `fetch_prune`: fetch pruning preference.
 - `auto_fetch` and `auto_fetch_interval_secs`.
 - `font_scale`.

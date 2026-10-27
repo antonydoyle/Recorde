@@ -68,7 +68,11 @@ For a GitHub OAuth application:
 
 GitLab requires a registered public application and a server that supports its
 device authorization endpoints. Recorde requests `api`, `read_user` and
-`write_repository`; GitHub requests `repo`, `read:user` and `offline_access`.
+`write_repository`; GitHub requests `repo`, `read:user`, `workflow` and
+`offline_access`. GitHub refuses HTTPS pushes that change `.github/workflows`
+files without `workflow`; accounts signed in before this scope was added must
+sign in again. Classic personal access tokens need `repo` and `workflow` for the
+same pushes; fine-grained tokens need Contents and Workflows write permission.
 Self-hosted services use their own application registration and exact host/port.
 Bitbucket and Azure currently use token accounts rather than browser sign-in.
 

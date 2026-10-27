@@ -2,6 +2,8 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Default)]
 pub struct RepoCapabilities {
+    /// Git's choice for the current branch; the UI applies explicit app overrides.
+    pub pull_strategy: super::remote::EffectivePull,
     pub provider_target: Option<(String, String)>,
     pub is_bare: bool,
     pub is_detached_head: bool,
@@ -82,6 +84,10 @@ pub fn detect(repo_path: &Path) -> RepoCapabilities {
     let provider = detect_provider(&repo);
 
     RepoCapabilities {
+        pull_strategy: super::remote::configured_pull(
+            &repo,
+            &crate::config::PullStrategy::GitConfig,
+        ),
         provider_target: super::remote::provider_remote(&repo).ok().and_then(|name| {
             let url = repo.find_remote(&name).ok()?.url().ok()?.to_string();
             Some((name, url))

@@ -125,10 +125,9 @@ fn device_interval_is_never_clamped_down_and_slow_down_respects_provider_interva
     assert_eq!(result.identity, "42");
     assert!(result.refresh_token.is_some());
     let calls = http.calls.borrow();
-    assert!(calls[0]
-        .1
-        .iter()
-        .any(|(key, value)| key == "scope" && value.contains("offline_access")));
+    assert!(calls[0].1.iter().any(|(key, value)| key == "scope"
+        && value.split(' ').any(|scope| scope == "offline_access")
+        && value.split(' ').any(|scope| scope == "workflow")));
     assert_eq!(calls.last().unwrap().2.as_deref(), Some("test-new-access"));
     assert!(
         calls

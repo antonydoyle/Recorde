@@ -98,6 +98,57 @@ impl GraphPreferences {
     }
 }
 
+struct SearchCache {
+    query: String,
+    graph: std::sync::Weak<crate::git::graph::CommitGraph>,
+    nodes_len: usize,
+    matches: std::sync::Arc<Vec<bool>>,
+    count: usize,
+}
+
+impl SearchCache {
+    fn is_valid(
+        &self,
+        query: &str,
+        graph: &std::sync::Arc<crate::git::graph::CommitGraph>,
+    ) -> bool {
+        self.query == query
+            && self.graph.as_ptr() == std::sync::Arc::as_ptr(graph)
+            && self.nodes_len == graph.nodes.len()
+    }
+
+    fn build(query: &str, graph: &std::sync::Arc<crate::git::graph::CommitGraph>) -> Self {
+        let q = query.to_lowercase();
+        let matches: Vec<bool> = graph
+            .nodes
+            .iter()
+            .map(|node| node_matches(node, &q))
+            .collect();
+        let count = matches.iter().filter(|matched| **matched).count();
+        Self {
+            query: query.to_owned(),
+            graph: std::sync::Arc::downgrade(graph),
+            nodes_len: graph.nodes.len(),
+            matches: std::sync::Arc::new(matches),
+            count,
+        }
+    }
+}
+
+fn cached_search<'a>(
+    cache: &'a mut Option<SearchCache>,
+    query: &str,
+    graph: &std::sync::Arc<crate::git::graph::CommitGraph>,
+) -> &'a SearchCache {
+    if !cache
+        .as_ref()
+        .is_some_and(|cache| cache.is_valid(query, graph))
+    {
+        *cache = Some(SearchCache::build(query, graph));
+    }
+    cache.as_ref().unwrap()
+}
+
 pub struct CommitGraphView {
     state: SharedState,
     last_selected: Option<String>,
@@ -125,6 +176,7 @@ pub struct CommitGraphView {
     confirmation_focus: bool,
     keyboard_row: Option<String>,
     search_was_active: bool,
+    search_cache: Option<SearchCache>,
     /// Where a Shift-click range starts.
     selection_anchor: Option<String>,
     preferences: GraphPreferences,
@@ -161,6 +213,7 @@ impl CommitGraphView {
             confirmation_focus: true,
             keyboard_row: None,
             search_was_active: false,
+            search_cache: None,
             selection_anchor: None,
             preferences: GraphPreferences::default(),
             preferences_dirty: false,
@@ -488,8 +541,7 @@ impl CommitGraphView {
                     );
                     if search_just_opened && self.interactions_enabled { r.request_focus(); }
                     if !new_query.is_empty() {
-                        let q = new_query.to_lowercase();
-                        let n = graph.nodes.iter().filter(|n| node_matches(n, &q)).count();
+                        let n = cached_search(&mut self.search_cache, &new_query, &graph).count;
                         ui.add_space(8.0);
                         ui.label(egui::RichText::new(format!("{} match{}", n, if n==1{""} else {"es"})).color(theme::text_muted()).size(12.0));
                     }
@@ -673,8 +725,12 @@ impl CommitGraphView {
         let wip_h = if show_wip { ROW_H } else { 0.0 };
         let total_h = nodes.len() as f32 * ROW_H + wip_h;
 
-        let q_lower = if search_active && !search_query.is_empty() {
-            Some(search_query.to_lowercase())
+        let search_matches = if search_active && !new_query.is_empty() {
+            Some(
+                cached_search(&mut self.search_cache, &new_query, &graph)
+                    .matches
+                    .clone(),
+            )
         } else {
             None
         };
@@ -876,10 +932,10 @@ impl CommitGraphView {
                             painter.rect_filled(row_rect, 0.0, row_bg);
                         }
 
-                        let is_match = q_lower.as_ref().map_or(true, |q| node_matches(node, q));
+                        let is_match = search_matches.as_ref().map_or(true, |matches| matches[i]);
                         let in_file_history =
                             file_history_oids.is_empty() || file_history_oids.contains(&node.oid);
-                        let dimmed = (q_lower.is_some() && !is_match)
+                        let dimmed = (search_matches.is_some() && !is_match)
                             || (!file_history_oids.is_empty() && !in_file_history);
                         if dimmed {
                             painter.rect_filled(row_rect, 0.0, Color32::from_black_alpha(80));
@@ -964,10 +1020,10 @@ impl CommitGraphView {
                                 }
                             }
                         }
-                        let is_match = q_lower.as_ref().map_or(true, |q| node_matches(node, q));
+                        let is_match = search_matches.as_ref().map_or(true, |matches| matches[i]);
                         let in_fh =
                             file_history_oids.is_empty() || file_history_oids.contains(&node.oid);
-                        let dim = (q_lower.is_some() && !is_match)
+                        let dim = (search_matches.is_some() && !is_match)
                             || (!file_history_oids.is_empty() && !in_fh);
 
                         if row_resp.clicked() {
@@ -1729,12 +1785,28 @@ fn parse_date(s: &str) -> Option<i64> {
     if parts.len() != 3 {
         return None;
     }
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
     let y: i64 = parts[0].parse().ok()?;
     let m: i64 = parts[1].parse().ok()?;
     let d: i64 = parts[2].parse().ok()?;
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&m) {
+        return None;
+    }
     // Simplified days-since-epoch calculation (close enough for filtering)
     let leap = |yr: i64| yr % 4 == 0 && (yr % 100 != 0 || yr % 400 == 0);
     let days_in_month = [0i64, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month_days = days_in_month[m as usize];
+    if m == 2 && leap(y) {
+        month_days += 1;
+    }
+    if !(1..=month_days).contains(&d) {
+        return None;
+    }
     let mut days = (y - 1970) * 365 + (y - 1969) / 4 - (y - 1901) / 100 + (y - 1601) / 400;
     for mi in 1..m {
         days += days_in_month[mi as usize];
@@ -1828,6 +1900,135 @@ fn draw_ref_column(
 mod interaction_tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    fn search_test_graph() -> std::sync::Arc<crate::git::graph::CommitGraph> {
+        let node = |oid: &str, summary: &str, author: &str, time, refs: Vec<String>| {
+            crate::git::graph::CommitNode {
+                oid: oid.into(),
+                summary: summary.into(),
+                body: None,
+                author: author.into(),
+                author_email: String::new(),
+                time,
+                parents: Vec::new(),
+                lane: 0,
+                refs,
+            }
+        };
+        let mut graph = crate::git::graph::CommitGraph::default();
+        graph.nodes = vec![
+            node(
+                "abc123",
+                "Fix search",
+                "Alice",
+                1_709_164_800,
+                vec!["Main".into()],
+            ),
+            node("def456", "Add feature", "Bob", 0, vec![]),
+        ];
+        std::sync::Arc::new(graph)
+    }
+
+    #[test]
+    fn search_cache_matches_node_matches() {
+        let graph = search_test_graph();
+        let mut cache = None;
+        for query in [
+            "SEARCH",
+            "author:alice",
+            "after:2024-01-01",
+            "before:2024-01-01",
+            "sha:def",
+            "main",
+            "missing",
+        ] {
+            let expected: Vec<bool> = graph
+                .nodes
+                .iter()
+                .map(|node| node_matches(node, &query.to_lowercase()))
+                .collect();
+            let result = cached_search(&mut cache, query, &graph);
+            assert_eq!(result.matches.as_ref(), &expected);
+            assert_eq!(
+                result.count,
+                expected.iter().filter(|matched| **matched).count()
+            );
+        }
+    }
+
+    #[test]
+    fn search_cache_invalidates_on_query_or_graph_change() {
+        let graph = search_test_graph();
+        let mut cache = None;
+        let first = cached_search(&mut cache, "alice", &graph).matches.clone();
+        let unchanged = cached_search(&mut cache, "alice", &graph).matches.clone();
+        assert!(std::sync::Arc::ptr_eq(&first, &unchanged));
+
+        let changed_query = cached_search(&mut cache, "bob", &graph).matches.clone();
+        assert!(!std::sync::Arc::ptr_eq(&first, &changed_query));
+        assert_eq!(changed_query.as_ref(), &vec![false, true]);
+
+        let refreshed = std::sync::Arc::new((*graph).clone());
+        let refreshed_matches = cached_search(&mut cache, "bob", &refreshed).matches.clone();
+        assert!(!std::sync::Arc::ptr_eq(&changed_query, &refreshed_matches));
+
+        let mut larger = (*graph).clone();
+        larger.nodes.push(larger.nodes[0].clone());
+        let larger = std::sync::Arc::new(larger);
+        let changed_graph = cached_search(&mut cache, "bob", &larger).matches.clone();
+        assert!(!std::sync::Arc::ptr_eq(&refreshed_matches, &changed_graph));
+        assert_eq!(changed_graph.len(), 3);
+
+        // Check the length component independently of the pointer component.
+        cache.as_mut().unwrap().nodes_len -= 1;
+        assert!(!cache.as_ref().unwrap().is_valid("bob", &larger));
+        let rebuilt = cached_search(&mut cache, "bob", &larger).matches.clone();
+        assert!(!std::sync::Arc::ptr_eq(&changed_graph, &rebuilt));
+    }
+
+    #[test]
+    fn parse_date_rejects_invalid_dates_and_overflowing_inputs() {
+        for date in [
+            "2024-31-12",
+            "2024-14-01",
+            "2024-00-10",
+            "2024-02-30",
+            "2023-02-29",
+            "2024-04-31",
+            "1969-12-31",
+            "10000-01-01",
+            "99999999999999999-01-01",
+            "2024-1",
+            "",
+            "2024--01",
+        ] {
+            assert_eq!(parse_date(date), None, "{date}");
+        }
+    }
+
+    #[test]
+    fn parse_date_returns_midnight_utc_timestamps() {
+        assert_eq!(parse_date("1970-01-01"), Some(0));
+        assert_eq!(parse_date("2024-02-29"), Some(1_709_164_800));
+        assert_eq!(parse_date("2000-03-01"), Some(951_868_800));
+        assert_eq!(parse_date("2023-12-31"), Some(1_703_980_800));
+    }
+
+    #[test]
+    fn node_matches_rejects_invalid_after_date() {
+        let node = crate::git::graph::CommitNode {
+            oid: String::new(),
+            summary: String::new(),
+            body: None,
+            author: String::new(),
+            author_email: String::new(),
+            time: 0,
+            parents: Vec::new(),
+            lane: 0,
+            refs: Vec::new(),
+        };
+        assert!(!node_matches(&node, "after:2024-31-12"));
+    }
 
     #[test]
     fn column_preferences_normalize_and_layout_hidden_reordered_columns() {

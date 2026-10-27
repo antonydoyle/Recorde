@@ -87,7 +87,8 @@ impl Client {
                         format!("{root}/api/v3/user")
                     },
                     verification: format!("{root}/login/device"),
-                    scope: "repo read:user offline_access",
+                    // `workflow` lets HTTPS pushes change .github/workflows files.
+                    scope: "repo read:user workflow offline_access",
                 })
             }
             ProviderKind::GitLabCom | ProviderKind::GitLabSelf => {

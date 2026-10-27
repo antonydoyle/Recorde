@@ -172,22 +172,55 @@ pub fn load(path: &Path, file: &str) -> Result<Snapshot, String> {
     })
 }
 
+fn has_conflict_markers(text: &str, size: usize) -> bool {
+    if !(1..=64).contains(&size) {
+        return false;
+    }
+    let is_marker = |line: &str, marker: u8| {
+        let bytes = line.as_bytes();
+        bytes.len() >= size
+            && bytes[..size].iter().all(|byte| *byte == marker)
+            && (bytes.len() == size || bytes[size] == b' ')
+    };
+    let mut has_boundary = false;
+    for line in text.lines() {
+        let start = is_marker(line, b'<');
+        let base = is_marker(line, b'|');
+        let end = is_marker(line, b'>');
+        if start || base || end {
+            has_boundary = true;
+        }
+    }
+    // A separator only counts with a start, base, or end marker, all of which
+    // are rejected on their own here.
+    has_boundary
+}
+
 pub fn save(snapshot: &Snapshot, result: &str) -> Result<(), String> {
     if result.len() > 8 * 1024 * 1024 || result.contains('\0') {
         return Err(
             "Text conflict result must be UTF-8 text up to 8 MiB without NUL bytes.".into(),
         );
     }
-    if result.lines().any(|line| {
-        line.starts_with("<<<<<<< ") || line.starts_with(">>>>>>> ") || line == "======="
-    }) {
+    let repo = git2::Repository::open(&snapshot.repo).map_err(|e| e.to_string())?;
+    let marker_size = repo
+        .get_attr(
+            Path::new(&snapshot.file),
+            "conflict-marker-size",
+            git2::AttrCheckFlags::FILE_THEN_INDEX,
+        )
+        .ok()
+        .flatten()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|size| (1..=64).contains(size))
+        .unwrap_or(7);
+    if has_conflict_markers(result, marker_size) {
         return Err("Resolve every conflict marker before saving.".into());
     }
     let current = load(&snapshot.repo, &snapshot.file)?;
     if current.stages != snapshot.stages || current.original != snapshot.original {
         return Err("The file or index changed while the editor was open. Reopen it to load the latest versions.".into());
     }
-    let repo = git2::Repository::open(&snapshot.repo).map_err(|e| e.to_string())?;
     let target =
         super::safe_path::ScopedFile::new(repo.workdir().ok_or("No worktree.")?, &snapshot.file)?;
     let original = target.read(8 * 1024 * 1024)?;
@@ -214,6 +247,45 @@ pub fn save(snapshot: &Snapshot, result: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn conflict_marker_detection_handles_labels_bare_markers_and_diff3_bases() {
+        assert!(has_conflict_markers(
+            "<<<<<<< ours\n=======\n>>>>>>> theirs",
+            7
+        ));
+        assert!(has_conflict_markers("<<<<<<<\n=======\n>>>>>>>", 7));
+        assert!(has_conflict_markers("||||||| base\n", 7));
+    }
+
+    #[test]
+    fn conflict_marker_detection_handles_crlf_and_lone_separators() {
+        assert!(has_conflict_markers(
+            "<<<<<<< ours\r\n=======\r\n>>>>>>> theirs\r\n",
+            7
+        ));
+        assert!(!has_conflict_markers("Title\n=======\nclean text\n", 7));
+        assert!(has_conflict_markers("=======\n>>>>>>> theirs\n", 7));
+    }
+
+    #[test]
+    fn conflict_marker_detection_uses_exact_configured_size() {
+        let marker = "<<<<<<<<<< ours\n==========\n>>>>>>>>>> theirs\n";
+        assert!(has_conflict_markers(marker, 10));
+        assert!(!has_conflict_markers(marker, 7));
+        assert!(!has_conflict_markers("<<<<<<<<\n", 7));
+    }
+
+    #[test]
+    fn save_honors_conflict_marker_size_attribute() {
+        let repo = conflicted();
+        repo.write(".gitattributes", b"file.txt conflict-marker-size=10\n");
+        let snapshot = load(repo.path(), "file.txt").unwrap();
+        assert_eq!(
+            save(&snapshot, "<<<<<<<<<< ours\n").unwrap_err(),
+            "Resolve every conflict marker before saving."
+        );
+    }
 
     #[cfg(unix)]
     #[test]

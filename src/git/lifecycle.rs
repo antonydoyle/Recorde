@@ -39,8 +39,14 @@ pub fn fetch_full_history(path: &Path) -> Result<(), String> {
         return Ok(());
     }
     let remote = super::remote::provider_remote(&repo)?;
-    super::merge::run_git_seq(path, &["fetch", "--unshallow", "--", &remote])
-        .map_err(|e| e.user_message())
+    super::process::git_network(
+        path,
+        &["fetch", "--unshallow", "--", &remote],
+        &std::sync::atomic::AtomicBool::new(false),
+        &mut |_, _| {},
+    )
+    .map(|_| ())
+    .map_err(|e| e.user_message())
 }
 
 pub fn set_sparse(path: &Path, directories: Option<Vec<String>>) -> Result<(), String> {
@@ -93,11 +99,15 @@ pub fn clone_repo(url: &str, dest: PathBuf, depth: u32, state: SharedState) {
         (s.repo_load_id, s.repo_epoch)
     };
     let work_dest = dest.clone();
-    crate::git::mutation::spawn_job(
+    crate::git::mutation::spawn_job_with_progress(
         dest.clone(),
         "Clone repository",
         state,
-        move || do_clone_depth(&url, &work_dest, depth),
+        move |progress| {
+            do_clone_depth_progress(&url, &work_dest, depth, &mut |message, pct| {
+                progress.update(message, pct);
+            })
+        },
         move |result, state| {
             let current = {
                 let s = state.lock().unwrap();
@@ -135,7 +145,17 @@ fn do_clone(url: &str, dest: &Path) -> Result<(), String> {
     do_clone_depth(url, dest, 0)
 }
 
+#[cfg(test)]
 fn do_clone_depth(url: &str, dest: &Path, depth: u32) -> Result<(), String> {
+    do_clone_depth_progress(url, dest, depth, &mut |_, _| {})
+}
+
+fn do_clone_depth_progress(
+    url: &str,
+    dest: &Path,
+    depth: u32,
+    on_progress: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<(), String> {
     let destination = if dest.is_absolute() {
         dest.to_path_buf()
     } else {
@@ -143,26 +163,67 @@ fn do_clone_depth(url: &str, dest: &Path, depth: u32) -> Result<(), String> {
             .map_err(|e| e.to_string())?
             .join(dest)
     };
-    let parent = destination.parent().ok_or("Invalid clone destination.")?;
-    let mut command = super::process::command(parent);
+    // Not canonicalized: on Windows that yields a `\\?\` path Git cannot clone into.
+    let parent = destination
+        .parent()
+        .ok_or("Invalid clone destination.")?
+        .to_path_buf();
+    destination
+        .file_name()
+        .ok_or("Invalid clone destination.")?;
+    let mut command = super::process::command(&parent);
     command.env_remove("RECORDE_CREDENTIAL_REPO");
-    command.arg("clone");
+    command.args(["clone", "--progress"]);
     if depth > 0 {
         command.arg(format!("--depth={depth}"));
     }
     command.args(["--", url]).arg(&destination);
-    let output = super::process::run(
+    // Claim a new directory atomically; never clean up a destination owned by someone else.
+    let created = match std::fs::symlink_metadata(&destination) {
+        Ok(_) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&destination).map_err(|e| e.to_string())?;
+            true
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let result = super::process::run_network(
         &mut command,
         &std::sync::atomic::AtomicBool::new(false),
-        std::time::Duration::from_secs(600),
+        on_progress,
     )
-    .map_err(|e| e.user_message())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(crate::auth::redact::text(
-            String::from_utf8_lossy(&output.stderr).trim(),
-        ))
+    .map_err(|e| e.user_message())
+    .and_then(|output| {
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(crate::auth::redact::text(
+                String::from_utf8_lossy(&output.stderr).trim(),
+            ))
+        }
+    });
+    if created && result.is_err() {
+        cleanup_clone_destination(&destination).map_err(|error| {
+            crate::auth::redact::text(&format!(
+                "{}\nCould not remove the incomplete clone: {error}",
+                result.as_ref().unwrap_err()
+            ))
+        })?;
+    }
+    result
+}
+
+/// remove_dir_all does not traverse directory symlinks; also reject a replaced root.
+fn cleanup_clone_destination(destination: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            std::fs::remove_dir_all(destination)
+        }
+        Ok(_) => Err(std::io::Error::other(
+            "Clone destination was replaced; left in place.",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -281,40 +342,12 @@ fn commit_starter_files(path: &Path, written: &[&str]) -> Result<(), String> {
 
 /// Open a terminal emulator in `repo_path`.
 pub fn open_terminal(repo_path: &Path) {
-    #[cfg(target_os = "linux")]
-    {
-        for term in &[
-            "xdg-terminal-exec",
-            "xterm",
-            "konsole",
-            "gnome-terminal",
-            "xfce4-terminal",
-            "alacritty",
-            "kitty",
-        ] {
-            if std::process::Command::new(term)
-                .current_dir(repo_path)
-                .spawn()
-                .is_ok()
-            {
-                return;
-            }
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open")
-            .args(["-a", "Terminal"])
-            .arg(repo_path)
-            .spawn();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "cmd"])
-            .current_dir(repo_path)
-            .spawn();
-    }
+    let _ = try_open_terminal(repo_path);
+}
+
+/// Open a terminal and report launch failures to the caller.
+pub fn try_open_terminal(repo_path: &Path) -> Result<(), String> {
+    crate::external::open_terminal(repo_path, &crate::config::Config::load().terminal)
 }
 
 // ── File manager ──────────────────────────────────────────────────────────────
@@ -342,6 +375,59 @@ pub fn reveal_in_file_manager(repo_path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_clone_removes_only_a_new_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("missing-source");
+        let new_destination = root.path().join("new-clone");
+        assert!(do_clone(missing.to_str().unwrap(), &new_destination).is_err());
+        assert!(!new_destination.exists());
+
+        let existing_destination = root.path().join("existing-clone");
+        std::fs::create_dir(&existing_destination).unwrap();
+        assert!(do_clone(missing.to_str().unwrap(), &existing_destination).is_err());
+        assert!(existing_destination.is_dir());
+        assert_eq!(std::fs::read_dir(existing_destination).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cancelled_clone_removes_only_a_new_destination() {
+        let root = tempfile::tempdir().unwrap();
+        for existed in [false, true] {
+            let destination = root.path().join(if existed { "existing" } else { "new" });
+            if existed {
+                std::fs::create_dir(&destination).unwrap();
+            }
+            let result = super::super::process::with_cancellation(
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                || do_clone("unused-source", &destination),
+            );
+            assert!(result.unwrap_err().contains("cancelled"));
+            assert_eq!(destination.is_dir(), existed);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clone_cleanup_never_follows_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("keep");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("file"), b"keep").unwrap();
+        let destination = root.path().join("clone");
+        symlink(&target, &destination).unwrap();
+        assert!(cleanup_clone_destination(&destination).is_err());
+        assert_eq!(std::fs::read(target.join("file")).unwrap(), b"keep");
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        symlink(&target, destination.join("link")).unwrap();
+        cleanup_clone_destination(&destination).unwrap();
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read(target.join("file")).unwrap(), b"keep");
+    }
+
     #[test]
     fn shallow_clone_can_fetch_full_history() {
         let source = crate::git::test_support::TestRepo::new();

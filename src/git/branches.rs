@@ -554,6 +554,64 @@ impl ResetPreview {
     }
 }
 
+/// Undoing the newest commit, captured when the user asks. The parent and HEAD
+/// are fixed then, so a queued pull or commit cannot change what is removed.
+#[derive(Clone, Debug)]
+pub struct UndoCommitPreview {
+    pub reset: ResetPreview,
+    pub summary: String,
+    pub short_oid: String,
+    /// The upstream (e.g. `origin/main`) that already contains the commit.
+    pub published_to: Option<String>,
+    /// Merge commits keep their first parent.
+    pub merge: bool,
+}
+
+impl UndoCommitPreview {
+    pub fn capture(path: &Path, epoch: u64) -> Result<Self, String> {
+        let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+        let commit = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .map_err(|_| "There is no commit to undo.".to_string())?;
+        let parent = commit.parent_id(0).map_err(|_| {
+            "The first commit has no parent to return to. Amend it instead.".to_string()
+        })?;
+        let oid = commit.id().to_string();
+        Ok(Self {
+            reset: ResetPreview::capture(path, epoch, &parent.to_string())?,
+            summary: commit
+                .summary()
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+                .to_string(),
+            short_oid: oid[..7].to_string(),
+            published_to: published_upstream(&repo, commit.id()),
+            merge: commit.parent_count() > 1,
+        })
+    }
+}
+
+/// The current branch's upstream when it already contains `oid`; rewriting
+/// that commit (undo, amend) then needs a force push.
+pub fn published_upstream(repo: &git2::Repository, oid: git2::Oid) -> Option<String> {
+    let head = repo.head().ok()?;
+    if !head.is_branch() {
+        return None;
+    }
+    let branch = repo
+        .find_branch(head.shorthand().ok()?, git2::BranchType::Local)
+        .ok()?;
+    let upstream = branch.upstream().ok()?;
+    let tip = upstream.get().target()?;
+    if tip == oid || repo.graph_descendant_of(tip, oid).ok()? {
+        upstream.name().ok().flatten().map(str::to_owned)
+    } else {
+        None
+    }
+}
+
 fn confirmed_repository(state: &crate::state::AppState, path: &Path, epoch: u64) -> bool {
     state.repo_epoch == epoch
         && state

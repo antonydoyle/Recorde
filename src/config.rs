@@ -143,6 +143,7 @@ pub struct RepoLayout {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum PullStrategy {
     #[default]
+    GitConfig,
     Merge,
     Rebase,
     FfOnly,
@@ -151,6 +152,7 @@ pub enum PullStrategy {
 impl PullStrategy {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::GitConfig => "Use Git configuration",
             Self::Merge => "Merge",
             Self::Rebase => "Rebase",
             Self::FfOnly => "Fast-forward only",
@@ -413,6 +415,22 @@ fn config_path() -> PathBuf {
 #[cfg(test)]
 mod session_tests {
     use super::*;
+
+    #[test]
+    fn pull_defaults_to_git_config_and_preserves_saved_choices() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.pull_strategy, PullStrategy::GitConfig);
+        for (saved, expected) in [
+            ("GitConfig", PullStrategy::GitConfig),
+            ("Merge", PullStrategy::Merge),
+            ("Rebase", PullStrategy::Rebase),
+            ("FfOnly", PullStrategy::FfOnly),
+        ] {
+            let config: Config = toml::from_str(&format!("pull_strategy = \"{saved}\"\n")).unwrap();
+            assert_eq!(config.pull_strategy, expected);
+        }
+    }
+
     #[test]
     fn corrupt_configuration_is_preserved_across_load_and_save() {
         let dir = tempfile::tempdir().unwrap();

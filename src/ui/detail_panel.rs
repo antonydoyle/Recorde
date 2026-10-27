@@ -176,6 +176,21 @@ impl DetailPanel {
 
                     row_resp.context_menu(|ui| {
                         ui.set_min_width(175.0);
+                        if ui.button("Open in External Diff Tool").clicked() {
+                            let repo_path = self.state.lock().unwrap().repo_path.clone();
+                            if let Some(repo_path) = repo_path {
+                                if let Err(error) = crate::external::open_diff_tool(
+                                    &repo_path,
+                                    crate::external::DiffToolArgs::Commit {
+                                        path: &file.path,
+                                        oid: &detail.oid,
+                                    },
+                                ) {
+                                    self.state.lock().unwrap().error = Some(error);
+                                }
+                            }
+                            ui.close();
+                        }
                         if ui.button("Show File History").clicked() {
                             load_file_history(&file.path, self.state.clone());
                             ui.close();

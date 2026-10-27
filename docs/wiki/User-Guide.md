@@ -56,7 +56,15 @@ Recorde is organized around four primary areas:
 The Changes panel spans the window height, with a separately scrolling file list
 above the commit form. Use the three-dot menu beside a file for staging and discard
 actions, or check files for batch staging. Commit options contains co-authors,
-sign-off and identity/signing controls. Undo actions are under Undo last commit.
+sign-off and identity/signing controls. Undo actions are under Undo last commit:
+Soft, Mixed and Hard each show the commit being undone and ask for confirmation.
+The target is fixed when you confirm; if HEAD changes before the queued reset
+starts, it is refused. Undoing or amending a commit that is already on the
+upstream warns that the next push needs Force Push with Lease.
+
+File menus open files in the editor set in App Settings (or `VISUAL`/`EDITOR`;
+Notepad on Windows) and reveal them in the system file manager. File names are
+passed as literal arguments, never through a shell.
 
 The diff occupies the centre column below the graph. Its sliders menu contains
 Unified/Split and whitespace options; the search icon opens Find. Light/dark mode,
@@ -137,7 +145,8 @@ all ask for confirmation. A deleted branch's last tip is kept under Recently
 deleted so it can be restored.
 
 Protected branch defaults are `main` and `master`; these are persisted in the
-configuration and can be adjusted.
+configuration and can be adjusted. The same list drives the commit form's
+"committing directly to" warning and the graph's rebase protection.
 
 ## Syncing With Remotes
 
@@ -145,7 +154,10 @@ Remote operations run through a background job runner and report progress back
 to the UI. Supported actions include:
 
 - Fetch all remotes.
-- Pull with merge, rebase, or fast-forward-only strategy.
+- Pull uses Git configuration by default: `branch.<name>.rebase` overrides `pull.rebase`,
+  and `pull.ff` controls merges when rebase is disabled. The tooltip and first context-menu
+  item show the effective strategy. Settings can explicitly select merge, rebase, or
+  fast-forward only; the Pull menu also offers explicit rebase and fast-forward-only actions.
 - Push the current branch.
 - Push with lease.
 - Push and set upstream.

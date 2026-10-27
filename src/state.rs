@@ -1,8 +1,17 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::git::capabilities::RepoCapabilities;
 use crate::git::graph::CommitGraph;
 use crate::git::job::ActiveOp;
+use crate::ui::error_notice::{classify, ErrorKind};
+
+/// A redacted failure waiting for the user to dismiss it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserError {
+    pub kind: ErrorKind,
+    pub message: String,
+}
 
 /// A file in the working directory, with separate staged and unstaged status.
 /// A file may appear in both sections simultaneously (partially staged).
@@ -263,6 +272,7 @@ pub struct AppState {
     pub diff_load_id: u64,
     pub commit_graph: Option<std::sync::Arc<CommitGraph>>,
     pub error: Option<String>,
+    pub errors: VecDeque<UserError>,
 
     pub selected_commit: Option<String>,
     /// Commits chosen with Ctrl/Cmd- or Shift-click. Empty unless two or more
@@ -295,6 +305,10 @@ pub struct AppState {
     pub remote_op: Option<String>,
     /// In-flight jobs dispatched through GitRunner.
     pub active_ops: Vec<ActiveOp>,
+    /// Last failed background fetch, scoped to its repository.
+    pub background_fetch: Option<crate::git::job::BackgroundFetchStatus>,
+    /// Optional (message, percentage) for local jobs, keyed by their job ID.
+    pub local_job_progress: std::collections::HashMap<u64, (String, Option<u8>)>,
     /// Capabilities detected when the repo was last opened.
     pub capabilities: Option<RepoCapabilities>,
     /// Log lines shown in the Console tab.
@@ -376,6 +390,24 @@ pub struct AppState {
 pub type SharedState = Arc<Mutex<AppState>>;
 
 impl AppState {
+    /// Collect the producer slot without replacing failures already being shown.
+    pub fn take_pending_error(&mut self) {
+        let Some(message) = self.error.take() else {
+            return;
+        };
+        let message = crate::auth::redact::text(&message);
+        let error = UserError {
+            kind: classify(&message),
+            message,
+        };
+        if self.errors.back() != Some(&error) {
+            self.errors.push_back(error);
+        }
+        while self.errors.len() > 5 {
+            self.errors.pop_front();
+        }
+    }
+
     /// The multi-selection ordered oldest first (bottom of the graph first).
     pub fn selected_commits_oldest_first(&self) -> Vec<String> {
         let mut oids = self.selected_commits.clone();
@@ -540,4 +572,82 @@ pub fn new_shared_state() -> SharedState {
         git_user_initials,
         ..Default::default()
     }))
+}
+
+#[cfg(test)]
+mod error_queue_tests {
+    use super::*;
+
+    #[test]
+    fn pending_errors_collapse_only_consecutive_duplicates() {
+        let mut state = AppState::default();
+        for message in [
+            "first failure",
+            "first failure",
+            "second failure",
+            "first failure",
+        ] {
+            state.error = Some(message.into());
+            state.take_pending_error();
+            assert!(state.error.is_none());
+        }
+        let messages: Vec<_> = state
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            ["first failure", "second failure", "first failure"]
+        );
+        state.take_pending_error();
+        assert_eq!(state.errors.len(), 3);
+    }
+
+    #[test]
+    fn pending_errors_keep_the_five_newest_in_order() {
+        let mut state = AppState::default();
+        for index in 0..7 {
+            state.error = Some(format!("failure {index}"));
+            state.take_pending_error();
+        }
+        let messages: Vec<_> = state
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "failure 2",
+                "failure 3",
+                "failure 4",
+                "failure 5",
+                "failure 6"
+            ]
+        );
+        state.error = Some("failure 6".into());
+        state.take_pending_error();
+        assert_eq!(state.errors.len(), 5);
+        assert_eq!(state.errors.front().unwrap().message, "failure 2");
+    }
+
+    #[test]
+    fn pending_errors_are_redacted_before_classification_and_deduplication() {
+        let mut state = AppState::default();
+        for userinfo in ["user:secret", "other:password"] {
+            state.error = Some(format!(
+                "fatal: Authentication failed for 'https://{userinfo}@host/o/r.git/'"
+            ));
+            state.take_pending_error();
+        }
+        assert!(state.error.is_none());
+        assert_eq!(state.errors.len(), 1);
+        let error = state.errors.front().unwrap();
+        assert_eq!(error.kind, ErrorKind::SignIn);
+        assert!(error.message.contains("https://[redacted]@host/o/r.git/"));
+        for secret in ["user", "secret", "other", "password"] {
+            assert!(!error.message.contains(secret));
+        }
+    }
 }
