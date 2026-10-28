@@ -2,10 +2,16 @@
 use std::io::{Read, Write};
 use std::path::Path;
 
+/// Scalar fields. Keys ending in `[]` are protocol arrays that Git repeats
+/// (`capability[]`, `wwwauth[]`, `state[]` since Git 2.46); Recorde does not use
+/// them. A repeated scalar is still refused, so `host` or `username` cannot be ambiguous.
 fn fields(input: &str) -> Result<std::collections::HashMap<&str, &str>, String> {
     let mut fields = std::collections::HashMap::new();
     for line in input.lines().take_while(|line| !line.is_empty()) {
         let (key, value) = line.split_once('=').ok_or("Invalid credential request.")?;
+        if key.ends_with("[]") {
+            continue;
+        }
         if fields.insert(key, value).is_some() {
             return Err("Duplicate credential request field.".into());
         }
@@ -193,6 +199,43 @@ mod tests {
         ))))
         .is_err());
     }
+    #[test]
+    fn accepts_git_2_46_array_fields_but_not_repeated_scalars() {
+        // Captured from Git 2.54 on a 401 from github.com.
+        let input = "capability[]=authtype\ncapability[]=state\nprotocol=https\n\
+                     host=github.com\npath=antonydoyle/Recorde.git\n\
+                     wwwauth[]=Basic realm=\"GitHub\"\nwwwauth[]=Bearer realm=\"x\"\n\n";
+        assert_eq!(
+            remote(input).unwrap(),
+            "https://github.com/antonydoyle/Recorde.git"
+        );
+        let output = response(input, |url| {
+            assert_eq!(url, "https://github.com/antonydoyle/Recorde.git");
+            Ok(Some(("alice".into(), "test-pat".into())))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(output, "username=alice\npassword=test-pat\n\n");
+        let store = format!(
+            "{}username=alice\npassword=other\n\n",
+            &input[..input.len() - 1]
+        );
+        assert_eq!(
+            forward_decision("store", &store, |_| Ok(None)),
+            Ok(Some("approve"))
+        );
+        for repeated in [
+            "host=github.com\nhost=evil.test\n",
+            "username=a\nusername=b\n",
+        ] {
+            let input = format!("protocol=https\n{repeated}\n");
+            assert_eq!(
+                fields(&input).unwrap_err(),
+                "Duplicate credential request field."
+            );
+        }
+    }
+
     #[test]
     fn ambiguity_propagates_instead_of_falling_back() {
         let input = "protocol=https\nhost=github.com\n\n";
