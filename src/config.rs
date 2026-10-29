@@ -186,6 +186,9 @@ pub struct Config {
     pub theme_palette: crate::theme::Palette,
     #[serde(default)]
     pub high_contrast: bool,
+    /// Interface animation; `System` follows the OS "show animations" setting.
+    #[serde(default)]
+    pub motion: crate::ui::motion::MotionPreference,
     #[serde(default)]
     pub default_editor: String,
     #[serde(default)]

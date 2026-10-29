@@ -303,7 +303,7 @@ pub(super) fn review(
         let question = format!("{label} 2 commits on {branch}?");
         if require_clean {
             expect_label(stream, &question, true)?;
-            expect_label(stream, "Operation blocked", false)?;
+            expect_label(stream, "Uncommitted changes are in the way", false)?;
             let detail = unique_text(&tree(stream)?, "Repository: ")?;
             let lines: Vec<_> = detail.lines().collect();
             if lines.len() != 3 || lines[0] == "Repository: " {
@@ -344,7 +344,7 @@ pub(super) fn review(
             bulk_details.push(detail);
         } else {
             expect_label(stream, dirty_refusal, true)?;
-            expect_label(stream, "Operation blocked", true)?;
+            expect_label(stream, "Uncommitted changes are in the way", true)?;
             expect_label(stream, &question, false)?;
             capture(
                 stream,

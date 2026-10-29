@@ -5,6 +5,8 @@ pub mod conflict_editor;
 pub mod detail_panel;
 pub mod diff_view;
 pub mod error_notice;
+pub mod kit;
+pub mod motion;
 pub mod provider_editor;
 pub mod rebase_modal;
 pub mod repository_browser;

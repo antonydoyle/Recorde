@@ -562,191 +562,348 @@ impl RecordeApp {
     }
 
     pub(super) fn render_profiles(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            RichText::new("Profiles")
-                .color(theme::text_secondary())
-                .size(13.0)
-                .strong(),
-        );
-        ui.label(styled_muted(
-            "Switch commit identities and provider accounts. Global profiles can also restore colours and external tools.",
-        ));
-        ui.add_space(4.0);
-        let repo = self.state.lock().unwrap().repo_path.clone();
-        let (global_name, global_email) =
-            (self.git_name_input.clone(), self.git_email_input.clone());
-        let mut apply: Option<(usize, bool)> = None;
-        let mut remove: Option<usize> = None;
-        for (index, profile) in self.config.profiles.iter().enumerate() {
-            ui.horizontal(|ui| {
-                let active = profile.matches(&global_name, &global_email);
-                ui.label(
-                    RichText::new(format!(
-                        "{}{}",
-                        profile.name,
-                        if active { "  (global identity)" } else { "" }
-                    ))
-                    .color(if active {
-                        theme::accent_teal()
-                    } else {
-                        theme::text_primary()
-                    }),
-                );
-                ui.label(styled_muted(&format!(
-                    "{} <{}>",
-                    profile.git_name, profile.git_email
-                )));
-                if ui.small_button("Use globally").clicked() {
-                    apply = Some((index, false));
-                }
-                if ui
-                    .add_enabled(
-                        repo.is_some(),
-                        egui::Button::new("Use for this repository").small(),
-                    )
-                    .clicked()
-                {
-                    apply = Some((index, true));
-                }
-                if ui.small_button("Edit").clicked() {
-                    self.profile_input = profile.clone();
-                }
-                if ui.small_button("Delete").clicked() {
-                    remove = Some(index);
-                }
-            });
-        }
-        if let Some((index, local)) = apply {
-            let profile = self.config.profiles[index].clone();
-            let target = if local { repo.as_deref() } else { None };
-            match profile
-                .validate_accounts(&self.config.accounts)
-                .and_then(|()| profile.apply(target))
-            {
-                Ok(()) => {
-                    let mut updated = self.config.clone();
-                    if let Some(path) = target {
-                        updated
-                            .per_repo
-                            .entry(path.display().to_string())
-                            .or_default()
-                            .provider_accounts = profile.provider_accounts.clone();
-                    } else {
-                        updated.provider_accounts = profile.provider_accounts.clone();
-                        if let Some(preferences) = &profile.preferences {
-                            preferences.apply(&mut updated);
-                        }
-                    }
-                    self.load_git_identity_inputs();
-                    self.state.lock().unwrap().git_user_initials =
-                        theme::author_initials(&self.repo_ui.repo_git_name_input);
-                    if let Err(error) = updated.try_save() {
-                        self.profile_message = Some(format!("Git identity applied, but account and appearance settings could not be saved: {error}"));
-                        return;
-                    }
-                    self.config = updated;
-                    self.dark_theme = self.config.dark_theme;
-                    self.high_contrast = self.config.high_contrast;
-                    theme::apply_palette(
-                        ui.ctx(),
-                        self.dark_theme,
-                        self.high_contrast,
-                        self.config.theme_palette,
+        use crate::ui::{kit, motion};
+
+        kit::section(
+            ui,
+            "Profiles",
+            "Switch between identities, for example work and personal. Profiles also choose \
+             hosting accounts and can restore saved colours and external tools when used \
+             everywhere.",
+            |ui| {
+                let repo = self.state.lock().unwrap().repo_path.clone();
+                let (global_name, global_email) =
+                    (self.git_name_input.clone(), self.git_email_input.clone());
+                let mut apply: Option<(usize, bool)> = None;
+                let mut remove: Option<usize> = None;
+                let form_id = ui.make_persistent_id("profile_form");
+                if self.config.profiles.is_empty() {
+                    kit::hint(
+                        ui,
+                        "Save a profile below to reuse a work or personal identity.",
                     );
-                    self.default_editor_input = self.config.default_editor.clone();
-                    self.terminal_input = self.config.terminal.clone();
-                    self.diff_tool_input = self.config.diff_tool.clone();
-                    self.merge_tool_input = self.config.merge_tool.clone();
-                    self.state.lock().unwrap().invalidate_provider_data();
-                    for session in
-                        std::iter::once(&mut self.repo_ui).chain(self.repo_sessions.values_mut())
-                    {
-                        session.issues_fetched = false;
-                        session.ci_fetched = false;
-                        session.releases_fetched = false;
-                    }
-                    self.profile_message = Some(format!(
-                        "Using {} {}.",
-                        profile.name,
-                        if local {
-                            "for this repository"
-                        } else {
-                            "globally"
-                        }
-                    ));
                 }
-                Err(error) => self.profile_message = Some(error),
-            }
-        }
-        if let Some(index) = remove {
-            self.config.profiles.remove(index);
-            self.save_config();
-        }
-        ui.add_space(6.0);
-        egui::CollapsingHeader::new("Add or update a profile")
-            .id_salt("profile_form")
-            .show(ui, |ui| {
-                settings_text_field(ui, "Profile ", &mut self.profile_input.name);
-                settings_text_field(ui, "Name    ", &mut self.profile_input.git_name);
-                settings_text_field(ui, "Email   ", &mut self.profile_input.git_email);
-                settings_text_field(ui, "Sign key", &mut self.profile_input.signing_key);
-                ui.label(styled_muted("An empty signing key leaves the current key unchanged."));
-                let hosts: std::collections::BTreeSet<_> = self.config.accounts.iter().map(|account| account.host.clone()).collect();
-                for host in hosts {
-                    let mut selected = self.profile_input.provider_accounts.get(&host).cloned().unwrap_or_default();
-                    egui::ComboBox::from_id_salt(("profile_account", &host))
-                        .selected_text(if selected.is_empty() { format!("{host}: automatic") } else { format!("{host}: {selected}") })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut selected, String::new(), "Automatic account selection");
-                            for account in self.config.accounts.iter().filter(|account| account.host == host) {
-                                ui.selectable_value(&mut selected, account.username.clone(), &account.username);
+                for (index, profile) in self.config.profiles.iter().enumerate() {
+                    ui.push_id(&profile.name, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(&profile.name).strong());
+                            if profile.matches(&global_name, &global_email) {
+                                kit::status_chip(ui, kit::Status::Ok, "Global identity");
                             }
                         });
-                    if selected.is_empty() { self.profile_input.provider_accounts.remove(&host); }
-                    else { self.profile_input.provider_accounts.insert(host, selected); }
-                }
-                let mut preferences = self.profile_input.preferences.is_some();
-                if ui.checkbox(&mut preferences, "Include current colours and external tools when used globally").changed() {
-                    self.profile_input.preferences = preferences.then(|| crate::profiles::ProfilePreferences::capture(&self.config));
-                }
-                if preferences && ui.small_button("Capture current preferences").clicked() {
-                    self.profile_input.preferences = Some(crate::profiles::ProfilePreferences::capture(&self.config));
-                }
-                ui.horizontal(|ui| {
-                    if ui.add(secondary_btn("Fill from global identity")).clicked() {
-                        let (name, email) = git_identity(None);
-                        self.profile_input.git_name = name;
-                        self.profile_input.git_email = email;
-                    }
-                    if ui.add(primary_btn("Save Profile")).clicked() {
-                        match crate::profiles::upsert(
-                            &mut self.config.profiles,
-                            self.profile_input.clone(),
-                        ) {
-                            Ok(()) => {
-                                self.save_config();
-                                self.profile_message =
-                                    Some(format!("Saved {}.", self.profile_input.name.trim()));
-                                self.profile_input = Default::default();
+                        ui.add(
+                            egui::Label::new(format!(
+                                "{} <{}>",
+                                profile.git_name, profile.git_email
+                            ))
+                            .wrap(),
+                        );
+                        kit::hint(
+                            ui,
+                            &format!(
+                                "Applies commit identity and {} account choice(s){}{}.",
+                                profile.provider_accounts.len(),
+                                if profile.signing_key.trim().is_empty() {
+                                    ""
+                                } else {
+                                    ", plus a signing key"
+                                },
+                                if profile.preferences.is_some() {
+                                    "; saved colours and tools apply only with Use everywhere"
+                                } else {
+                                    ""
+                                },
+                            ),
+                        );
+                        let confirm_id = ui.make_persistent_id("delete_profile");
+                        let mut confirm = motion::is_open(ui.ctx(), confirm_id, false);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .add(kit::small_button("Use everywhere"))
+                                .on_hover_text(
+                                    "Apply this identity and account choices globally, plus any \
+                                     saved colours and tools. Repository overrides still take \
+                                     precedence.",
+                                )
+                                .clicked()
+                            {
+                                apply = Some((index, false));
                             }
-                            Err(error) => self.profile_message = Some(error),
+                            if ui
+                                .add_enabled(
+                                    repo.is_some(),
+                                    kit::small_button("Use for this repository"),
+                                )
+                                .on_hover_text(
+                                    "Apply this identity and account choices only to the open \
+                                     repository.",
+                                )
+                                .on_disabled_hover_text(
+                                    "Open a repository to use this profile there.",
+                                )
+                                .clicked()
+                            {
+                                apply = Some((index, true));
+                            }
+                            if ui.add(kit::small_button("Edit")).clicked() {
+                                self.profile_input = profile.clone();
+                                motion::set_open(ui.ctx(), form_id, true);
+                            }
+                            if ui.add(kit::danger_outline_button("Delete…")).clicked() {
+                                confirm = true;
+                            }
+                        });
+                        motion::reveal(ui, confirm_id, confirm, |ui| {
+                            kit::callout(
+                                ui,
+                                kit::Status::Warning,
+                                &format!(
+                                    "Delete profile “{}”? This removes the saved profile. Your \
+                                     current Git identity, hosting accounts and SSH keys stay \
+                                     in place.",
+                                    profile.name,
+                                ),
+                            );
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.add(kit::secondary_button("Cancel")).clicked() {
+                                    confirm = false;
+                                }
+                                if ui.add(kit::danger_button("Delete profile")).clicked() {
+                                    remove = Some(index);
+                                    confirm = false;
+                                }
+                            });
+                        });
+                        motion::set_open(ui.ctx(), confirm_id, confirm);
+                    });
+                    kit::row_divider(ui);
+                }
+                if let Some((index, local)) = apply {
+                    let profile = self.config.profiles[index].clone();
+                    let target = if local { repo.as_deref() } else { None };
+                    match profile
+                        .validate_accounts(&self.config.accounts)
+                        .and_then(|()| profile.apply(target))
+                    {
+                        Ok(()) => {
+                            let mut updated = self.config.clone();
+                            if let Some(path) = target {
+                                updated
+                                    .per_repo
+                                    .entry(path.display().to_string())
+                                    .or_default()
+                                    .provider_accounts = profile.provider_accounts.clone();
+                            } else {
+                                updated.provider_accounts = profile.provider_accounts.clone();
+                                if let Some(preferences) = &profile.preferences {
+                                    preferences.apply(&mut updated);
+                                }
+                            }
+                            self.load_git_identity_inputs();
+                            self.state.lock().unwrap().git_user_initials =
+                                theme::author_initials(&self.repo_ui.repo_git_name_input);
+                            if let Err(error) = updated.try_save() {
+                                self.profile_message = Some(format!(
+                                    "Git identity applied, but account and appearance settings \
+                                     could not be saved: {error}"
+                                ));
+                                return;
+                            }
+                            self.config = updated;
+                            self.dark_theme = self.config.dark_theme;
+                            self.high_contrast = self.config.high_contrast;
+                            theme::apply_palette(
+                                ui.ctx(),
+                                self.dark_theme,
+                                self.high_contrast,
+                                self.config.theme_palette,
+                            );
+                            self.default_editor_input = self.config.default_editor.clone();
+                            self.terminal_input = self.config.terminal.clone();
+                            self.diff_tool_input = self.config.diff_tool.clone();
+                            self.merge_tool_input = self.config.merge_tool.clone();
+                            self.state.lock().unwrap().invalidate_provider_data();
+                            for session in std::iter::once(&mut self.repo_ui)
+                                .chain(self.repo_sessions.values_mut())
+                            {
+                                session.issues_fetched = false;
+                                session.ci_fetched = false;
+                                session.releases_fetched = false;
+                            }
+                            self.profile_message = Some(format!(
+                                "Using {} {}.",
+                                profile.name,
+                                if local {
+                                    "for this repository"
+                                } else {
+                                    "globally"
+                                }
+                            ));
+                        }
+                        Err(error) => self.profile_message = Some(error),
+                    }
+                }
+                if let Some(index) = remove {
+                    self.config.profiles.remove(index);
+                    self.save_config();
+                }
+
+                kit::disclosure(ui, "profile_form", "Add or update a profile", false, |ui| {
+                    kit::setting_row(
+                        ui,
+                        "Profile name",
+                        "A label such as Work or Personal.",
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.profile_input.name)
+                                    .desired_width(ui.available_width()),
+                            );
+                        },
+                    );
+                    kit::setting_row(
+                        ui,
+                        "Commit author name",
+                        "Written into each new commit.",
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.profile_input.git_name)
+                                    .desired_width(ui.available_width()),
+                            );
+                        },
+                    );
+                    kit::setting_row(
+                        ui,
+                        "Commit email",
+                        "Use an email linked to your hosting account.",
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.profile_input.git_email)
+                                    .desired_width(ui.available_width()),
+                            );
+                        },
+                    );
+                    kit::setting_row(
+                        ui,
+                        "Signing key ID (optional)",
+                        "Identifies your commit signing key. Leave blank to keep the current key.",
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.profile_input.signing_key)
+                                    .desired_width(ui.available_width()),
+                            );
+                        },
+                    );
+                    kit::row_divider(ui);
+                    let hosts: std::collections::BTreeSet<_> = self
+                        .config
+                        .accounts
+                        .iter()
+                        .map(|account| account.host.clone())
+                        .collect();
+                    if !hosts.is_empty() {
+                        kit::group_label(ui, "Hosting accounts in this profile");
+                        kit::hint(
+                            ui,
+                            "Choose one account per host, or let Recorde choose automatically.",
+                        );
+                    }
+                    for host in hosts {
+                        let mut selected = self
+                            .profile_input
+                            .provider_accounts
+                            .get(&host)
+                            .cloned()
+                            .unwrap_or_default();
+                        kit::setting_row(ui, &host, "", |ui| {
+                            egui::ComboBox::from_id_salt(("profile_account", &host))
+                                .selected_text(if selected.is_empty() {
+                                    "Automatic"
+                                } else {
+                                    &selected
+                                })
+                                .width(ui.available_width().min(260.0))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut selected, String::new(), "Automatic");
+                                    for account in self
+                                        .config
+                                        .accounts
+                                        .iter()
+                                        .filter(|account| account.host == host)
+                                    {
+                                        ui.selectable_value(
+                                            &mut selected,
+                                            account.username.clone(),
+                                            &account.username,
+                                        );
+                                    }
+                                });
+                        });
+                        if selected.is_empty() {
+                            self.profile_input.provider_accounts.remove(&host);
+                        } else {
+                            self.profile_input.provider_accounts.insert(host, selected);
                         }
                     }
+                    let mut preferences = self.profile_input.preferences.is_some();
+                    if ui
+                        .checkbox(
+                            &mut preferences,
+                            "Include current colours and external tools when used globally",
+                        )
+                        .changed()
+                    {
+                        self.profile_input.preferences = preferences
+                            .then(|| crate::profiles::ProfilePreferences::capture(&self.config));
+                    }
+                    let capture_id = ui.make_persistent_id("capture_profile_preferences");
+                    motion::reveal(ui, capture_id, preferences, |ui| {
+                        if ui
+                            .add(kit::small_button("Capture current preferences"))
+                            .clicked()
+                        {
+                            self.profile_input.preferences =
+                                Some(crate::profiles::ProfilePreferences::capture(&self.config));
+                        }
+                    });
+                    ui.add_space(kit::space::SM);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add(kit::secondary_button("Fill from global identity"))
+                            .clicked()
+                        {
+                            let (name, email) = git_identity(None);
+                            self.profile_input.git_name = name;
+                            self.profile_input.git_email = email;
+                        }
+                        if ui.add(kit::primary_button("Save profile")).clicked() {
+                            match crate::profiles::upsert(
+                                &mut self.config.profiles,
+                                self.profile_input.clone(),
+                            ) {
+                                Ok(()) => {
+                                    self.save_config();
+                                    self.profile_message =
+                                        Some(format!("Saved {}.", self.profile_input.name.trim()));
+                                    self.profile_input = Default::default();
+                                }
+                                Err(error) => self.profile_message = Some(error),
+                            }
+                        }
+                    });
                 });
-                ui.label(styled_muted(
-                    "The signing key is optional; when empty, switching leaves user.signingkey unchanged.",
-                ));
-            });
-        if let Some(message) = &self.profile_message {
-            ui.label(
-                RichText::new(message)
-                    .color(theme::text_secondary())
-                    .size(12.0),
-            );
-        }
+                let message_id = ui.make_persistent_id("profile_message");
+                motion::reveal(ui, message_id, self.profile_message.is_some(), |ui| {
+                    if let Some(message) = &self.profile_message {
+                        kit::hint(ui, message);
+                    }
+                });
+            },
+        );
     }
 
     pub(super) fn render_ssh_keygen(&mut self, ui: &mut egui::Ui) {
+        use crate::ui::{kit, motion};
+
         if let Some(task) = &self.ssh_task {
             match task.try_recv() {
                 Ok(result) => {
@@ -770,129 +927,206 @@ impl RecordeApp {
             }
         }
         let busy = self.ssh_task.is_some();
-        egui::CollapsingHeader::new("Generate a new SSH key")
-            .id_salt("ssh_keygen")
-            .show(ui, |ui| {
-                if self.ssh_key_path.is_empty() {
-                    self.ssh_key_path =
-                        crate::auth::ssh::suggested_key_path().display().to_string();
-                }
-                if self.ssh_key_comment.is_empty() {
-                    self.ssh_key_comment = self.git_email_input.clone();
-                }
-                ui.add_enabled_ui(!busy, |ui| {
-                    settings_text_field(ui, "File   ", &mut self.ssh_key_path);
-                    settings_text_field(ui, "Comment", &mut self.ssh_key_comment);
-                    ui.horizontal(|ui| {
-                        ui.set_width(460.0);
-                        ui.label(
-                            RichText::new("Passphrase")
-                                .color(theme::text_muted())
-                                .font(egui::FontId::monospace(12.0)),
+        kit::disclosure(ui, "ssh_keygen", "Create a new SSH key", false, |ui| {
+            kit::group_label(ui, "1. Create the key");
+            if self.ssh_key_path.is_empty() {
+                self.ssh_key_path = crate::auth::ssh::suggested_key_path().display().to_string();
+            }
+            if self.ssh_key_comment.is_empty() {
+                self.ssh_key_comment = self.git_email_input.clone();
+            }
+            ui.add_enabled_ui(!busy, |ui| {
+                kit::setting_row(
+                    ui,
+                    "File name",
+                    "Full path for the private key; a .pub file is also created.",
+                    |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.ssh_key_path)
+                                .desired_width(ui.available_width()),
                         );
-                        ui.add_sized(
-                            [300.0, 28.0],
+                    },
+                );
+                kit::setting_row(
+                    ui,
+                    "Comment",
+                    "Usually your email, to help you recognize the key.",
+                    |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.ssh_key_comment)
+                                .desired_width(ui.available_width()),
+                        );
+                    },
+                );
+                kit::setting_row(
+                    ui,
+                    "Passphrase (optional)",
+                    "Encrypts the private key on disk. Recorde does not store this passphrase.",
+                    |ui| {
+                        ui.add(
                             egui::TextEdit::singleline(&mut self.ssh_key_passphrase)
                                 .password(true)
-                                .hint_text("Optional; blank leaves the key unencrypted"),
+                                .desired_width(ui.available_width()),
                         );
-                    });
-                });
-                ui.label(styled_muted(
-                    "Recorde creates an Ed25519 key; existing files are never replaced. \
-                     An optional passphrase encrypts the private key and is not stored by Recorde.",
-                ));
-                if ui.add_enabled(!busy, primary_btn("Generate Key")).clicked() {
-                    let path = std::path::PathBuf::from(self.ssh_key_path.trim());
-                    let comment = self.ssh_key_comment.trim().to_string();
-                    let passphrase =
-                        zeroize::Zeroizing::new(std::mem::take(&mut self.ssh_key_passphrase));
-                    self.ssh_task = Some(ssh_task(move || {
-                        crate::auth::ssh::generate_key(&path, &comment, &passphrase)
-                            .map(|key| SshDone::Generated(path, key))
-                    }));
-                }
+                    },
+                );
             });
-        if let Some((path, key)) = self.ssh_public_key.clone() {
-            ui.add_space(6.0);
-            ui.label(styled_label("Public key"));
-            let mut shown = key.clone();
-            ui.add(
-                egui::TextEdit::multiline(&mut shown)
-                    .font(egui::FontId::monospace(11.0))
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(2)
-                    .interactive(true),
+            kit::hint(
+                ui,
+                "Creates an Ed25519 key. Existing files are never replaced. A blank passphrase \
+                 leaves the private key unencrypted.",
             );
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Copy").clicked() {
+            if ui
+                .add_enabled(!busy, kit::primary_button("Create key"))
+                .on_disabled_hover_text("Wait for the current SSH operation to finish.")
+                .clicked()
+            {
+                let path = std::path::PathBuf::from(self.ssh_key_path.trim());
+                let comment = self.ssh_key_comment.trim().to_string();
+                let passphrase =
+                    zeroize::Zeroizing::new(std::mem::take(&mut self.ssh_key_passphrase));
+                self.ssh_task = Some(ssh_task(move || {
+                    crate::auth::ssh::generate_key(&path, &comment, &passphrase)
+                        .map(|key| SshDone::Generated(path, key))
+                }));
+            }
+        });
+        let key_id = ui.make_persistent_id("ssh_key_next_steps");
+        motion::reveal(ui, key_id, self.ssh_public_key.is_some(), |ui| {
+            if let Some((path, key)) = self.ssh_public_key.clone() {
+                kit::row_divider(ui);
+                kit::group_label(ui, "2. Add the public key to your hosting account");
+                kit::hint(
+                    ui,
+                    "Copy this public key into your host's SSH settings, or upload it directly \
+                     to a connected account below. Only the public key is shared.",
+                );
+                ui.add(
+                    egui::Label::new(RichText::new(&key).monospace())
+                        .wrap()
+                        .selectable(true),
+                );
+                if ui.add(kit::secondary_button("Copy public key")).clicked() {
                     ui.ctx().copy_text(key.clone());
                 }
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Add to SSH agent"))
-                    .on_hover_text(
-                        "Passphrase-protected keys must be added from a terminal with ssh-add.",
+                let accounts = self.config.accounts.clone();
+                if accounts.is_empty() {
+                    kit::hint(
+                        ui,
+                        "Open your hosting website's SSH settings and add the public key. \
+                         Connect a hosting account above to see its setup links here.",
+                    );
+                }
+                for account in accounts {
+                    ui.vertical(|ui| {
+                        kit::hint(
+                            ui,
+                            &format!(
+                                "{} · {}@{}",
+                                account.provider.label(),
+                                account.username,
+                                account.host
+                            ),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            if crate::auth::ssh::can_upload(&account.provider) {
+                                let label =
+                                    format!("Upload to {}@{}", account.username, account.host);
+                                if ui
+                                    .add_enabled(!busy, kit::secondary_button(&label).truncate())
+                                    .on_hover_text(
+                                        "Upload this public key using the account's saved token. \
+                                         The token needs permission to manage SSH keys.",
+                                    )
+                                    .on_disabled_hover_text(
+                                        "Wait for the current SSH operation to finish.",
+                                    )
+                                    .clicked()
+                                {
+                                    let key = key.clone();
+                                    let title = format!(
+                                        "Recorde {}",
+                                        path.file_name()
+                                            .map(|n| n.to_string_lossy().into_owned())
+                                            .unwrap_or_default()
+                                    );
+                                    let upload_account = account.clone();
+                                    self.ssh_task = Some(ssh_task(move || {
+                                        crate::auth::ssh::upload_key(&upload_account, &title, &key)
+                                            .map(|_| {
+                                                SshDone::Message(format!(
+                                                    "Key added to {}.",
+                                                    upload_account.label()
+                                                ))
+                                            })
+                                    }));
+                                }
+                            }
+                            if let Some(url) =
+                                crate::auth::ssh::settings_url(&account.provider, &account.host)
+                            {
+                                let label =
+                                    format!("Open {} SSH settings", account.provider.label());
+                                if ui
+                                    .add(kit::secondary_button(&label).truncate())
+                                    .on_hover_text(
+                                        "Open the host's SSH settings in your browser, then paste \
+                                         the public key. Check that you are signed into the \
+                                         intended account.",
+                                    )
+                                    .clicked()
+                                {
+                                    if let Err(error) = super::open_url(&url) {
+                                        self.ssh_message = Some(error);
+                                    }
+                                }
+                            }
+                        });
+                    });
+                }
+                kit::row_divider(ui);
+                kit::group_label(ui, "3. Add to SSH agent");
+                kit::hint(
+                    ui,
+                    "The SSH agent holds your key for Git to use. If you set a passphrase, \
+                     add the key from a terminal so you can enter it; Recorde cannot ask for it.",
+                );
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("ssh-add \"{}\"", path.display())).monospace(),
                     )
+                    .wrap()
+                    .selectable(true),
+                );
+                if ui
+                    .add_enabled(!busy, kit::secondary_button("Add to SSH agent"))
+                    .on_hover_text(
+                        "Load an unencrypted key into the running SSH agent. Use the terminal \
+                         command above for a key with a passphrase.",
+                    )
+                    .on_disabled_hover_text("Wait for the current SSH operation to finish.")
                     .clicked()
                 {
-                    let path = path.clone();
                     self.ssh_task = Some(ssh_task(move || {
                         crate::auth::ssh::add_to_agent(&path)
                             .map(|_| SshDone::Message("Key added to the SSH agent.".into()))
                     }));
                 }
-                for account in self.config.accounts.clone() {
-                    if crate::auth::ssh::can_upload(&account.provider) {
-                        let label = format!("Add to {}", account.label());
-                        if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
-                            let key = key.clone();
-                            let title = format!(
-                                "Recorde {}",
-                                path.file_name()
-                                    .map(|n| n.to_string_lossy().into_owned())
-                                    .unwrap_or_default()
-                            );
-                            let upload_account = account.clone();
-                            self.ssh_task = Some(ssh_task(move || {
-                                crate::auth::ssh::upload_key(&upload_account, &title, &key).map(
-                                    |_| {
-                                        SshDone::Message(format!(
-                                            "Key added to {}.",
-                                            upload_account.label()
-                                        ))
-                                    },
-                                )
-                            }));
-                        }
-                    }
-                    if let Some(url) =
-                        crate::auth::ssh::settings_url(&account.provider, &account.host)
-                    {
-                        if ui
-                            .button(format!("Open {} SSH keys page", account.provider.label()))
-                            .clicked()
-                        {
-                            if let Err(error) = super::open_url(&url) {
-                                self.ssh_message = Some(error);
-                            }
-                        }
-                    }
-                }
-            });
-        }
-        if busy {
+            }
+        });
+        let busy_id = ui.make_persistent_id("ssh_task_busy");
+        motion::reveal(ui, busy_id, self.ssh_task.is_some(), |ui| {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(styled_muted("Working…"));
+                kit::hint(ui, "Working…");
             });
-        }
-        if let Some(message) = &self.ssh_message {
-            ui.label(
-                RichText::new(message)
-                    .color(theme::text_secondary())
-                    .size(12.0),
-            );
-        }
+        });
+        let message_id = ui.make_persistent_id("ssh_task_message");
+        motion::reveal(ui, message_id, self.ssh_message.is_some(), |ui| {
+            if let Some(message) = &self.ssh_message {
+                kit::callout(ui, kit::Status::Info, message);
+            }
+        });
     }
 
     pub(super) fn show_terminal_panel(&mut self, root_ui: &mut egui::Ui) {

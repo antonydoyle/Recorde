@@ -3,6 +3,7 @@ use egui::{Color32, FontId, Pos2, Rect, Response, RichText, Stroke, Ui, Vec2};
 
 use crate::icons;
 use crate::theme;
+use crate::ui::{kit, motion};
 
 // ── Pill / badge ──────────────────────────────────────────────────────────────
 
@@ -84,22 +85,28 @@ pub fn section_header(ui: &mut Ui, title: &str, count: usize, open: &mut bool) -
     let row_h = 34.0;
     let (rect, resp) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
-    resp.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::CollapsingHeader, ui.is_enabled(), title)
-    });
-    if resp.hovered() || resp.has_focus() {
-        ui.painter().rect_filled(rect, 4.0, theme::bg_hover());
+    if resp.clicked() {
+        *open = !*open;
     }
-    let chevron = if *open {
-        icons::EXPAND_MORE
-    } else {
-        icons::CHEVRON_RIGHT
-    };
-    ui.painter().text(
-        Pos2::new(rect.left() + 10.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        chevron.to_string(),
-        icons::font(16.0),
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::CollapsingHeader,
+            ui.is_enabled(),
+            *open,
+            title,
+        )
+    });
+    let hover = motion::hover(ui, &resp);
+    ui.painter().rect_filled(
+        rect,
+        4.0,
+        motion::mix(Color32::TRANSPARENT, theme::bg_hover(), hover),
+    );
+    let openness = motion::progress(ui.ctx(), resp.id.with("open"), *open, motion::NORMAL);
+    kit::paint_chevron(
+        ui,
+        Pos2::new(rect.left() + 16.0, rect.center().y),
+        openness,
         theme::text_muted(),
     );
     ui.painter().text(
@@ -128,9 +135,6 @@ pub fn section_header(ui: &mut Ui, title: &str, count: usize, open: &mut bool) -
         );
     }
 
-    if resp.clicked() {
-        *open = !*open;
-    }
     resp
 }
 
@@ -203,6 +207,7 @@ pub fn toolbar_btn_icon_colored(
             .corner_radius(7.0)
             .min_size(Vec2::new(content_width + padding * 2.0, 34.0)),
     );
+    paint_button_feedback(ui, &response);
     // Font line boxes have different ascenders/descenders. Centre the visible
     // glyphs independently, keeping native button focus, hover and activation.
     let left = response.rect.center().x - content_width / 2.0;
@@ -224,6 +229,23 @@ pub fn toolbar_btn_icon_colored(
         egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled && ui.is_enabled(), label)
     });
     response
+}
+
+fn paint_button_feedback(ui: &Ui, response: &Response) {
+    let hover = motion::hover(ui, response);
+    ui.painter().rect_filled(
+        response.rect,
+        7.0,
+        motion::mix(Color32::TRANSPARENT, theme::bg_hover(), hover),
+    );
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.shrink(1.0),
+            7.0,
+            Stroke::new(1.5, theme::accent_teal()),
+            egui::StrokeKind::Inside,
+        );
+    }
 }
 
 fn paint_centered_glyphs(
@@ -257,6 +279,7 @@ pub fn icon_btn_mat_colored(
             .fill(Color32::TRANSPARENT)
             .stroke(Stroke::NONE),
     );
+    paint_button_feedback(ui, &response);
     let color = if ui.is_enabled() {
         color
     } else {
@@ -269,6 +292,72 @@ pub fn icon_btn_mat_colored(
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tip));
     response.on_hover_text(tip)
+}
+
+/// Space reserved at the right of a list row, including the button's margin.
+pub(crate) const ROW_ACTIONS_WIDTH: f32 = 28.0;
+
+fn row_actions_rect(row: Rect) -> Rect {
+    let slot_width = row.width().clamp(0.0, ROW_ACTIONS_WIDTH);
+    let width = (slot_width - 4.0).max(0.0);
+    let height = (row.height() - 2.0).clamp(0.0, 24.0);
+    Rect::from_center_size(
+        Pos2::new(row.right() - slot_width / 2.0, row.center().y),
+        Vec2::new(width, height),
+    )
+}
+
+/// A fixed-size, keyboard-accessible overflow button and the row's context menu.
+/// Callers reserve [`ROW_ACTIONS_WIDTH`] so revealing it never moves row content.
+pub(crate) fn row_actions_menu(
+    ui: &mut Ui,
+    row: &Response,
+    name: &str,
+    selected: bool,
+    mut add_menu: impl FnMut(&mut Ui),
+) -> Response {
+    let id = row.id.with("row_actions");
+    let popup_id = id.with("menu");
+    let rect = row_actions_rect(row.rect);
+    // Keep the full target in keyboard order even when its paint is transparent.
+    let response = ui.interact(rect, id, egui::Sense::click());
+    let visible = selected
+        || ui.rect_contains_pointer(row.rect)
+        || row.has_focus()
+        || response.has_focus()
+        || row.context_menu_opened()
+        || egui::Popup::is_id_open(ui.ctx(), popup_id);
+    let opacity = motion::progress(ui.ctx(), id.with("visible"), visible, motion::FAST);
+    let hover = motion::hover(ui, &response);
+    ui.painter().rect_filled(
+        rect,
+        6.0,
+        motion::mix(Color32::TRANSPARENT, theme::bg_hover(), hover).gamma_multiply(opacity),
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icons::MORE_VERT.to_string(),
+        icons::font(18.0),
+        theme::text_secondary().gamma_multiply(opacity),
+    );
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            6.0,
+            Stroke::new(1.5, theme::accent_teal().gamma_multiply(opacity)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let label = format!("Actions for {name}");
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
+    });
+    row.context_menu(&mut add_menu);
+    egui::Popup::menu(&response)
+        .id(popup_id)
+        .show(&mut add_menu);
+    response.on_hover_text(label)
 }
 
 // ── Branch pill (graph labels) ────────────────────────────────────────────────
@@ -352,4 +441,103 @@ pub fn h_line(ui: &Ui, y: f32, color: Color32) {
         [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
         Stroke::new(1.0, color),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overflow_button_fits_the_reserved_slot_at_every_row_size() {
+        for width in [1.0, 20.0, 180.0, 320.0] {
+            for height in [18.0, 26.0, 30.0] {
+                let row = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(width, height));
+                let button = row_actions_rect(row);
+                assert!(row.contains_rect(button));
+                assert!(button.left() >= row.right() - ROW_ACTIONS_WIDTH);
+                assert_eq!(button.center().y, row.center().y);
+            }
+        }
+    }
+
+    fn menu_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        activated: &mut usize,
+    ) -> (Response, Response, Option<Response>) {
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+            events,
+            ..Default::default()
+        });
+        let mut ui = Ui::new(
+            ctx.clone(),
+            egui::Id::new("row_actions_test"),
+            egui::UiBuilder::new().max_rect(ctx.content_rect()),
+        );
+        let (_, row) = ui.allocate_exact_size(Vec2::new(240.0, 26.0), egui::Sense::click());
+        let mut item = None;
+        let overflow = row_actions_menu(&mut ui, &row, "main", false, |ui| {
+            let response = ui.button("Shared action");
+            if response.clicked() {
+                *activated += 1;
+                ui.close();
+            }
+            item = Some(response);
+        });
+        ctx.end_pass().textures_delta.clear();
+        (row, overflow, item)
+    }
+
+    #[test]
+    fn overflow_click_and_row_context_menu_use_the_same_action() {
+        for button in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::icons::font_definitions());
+            let mut activated = 0;
+            let (row, overflow, _) = menu_frame(&ctx, vec![], &mut activated);
+            let position = if button == egui::PointerButton::Primary {
+                overflow.rect.center()
+            } else {
+                row.rect.left_center() + Vec2::new(8.0, 0.0)
+            };
+            let pointer = |pos, button, pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: Default::default(),
+            };
+            menu_frame(
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    pointer(position, button, true),
+                ],
+                &mut activated,
+            );
+            let (row, current, _) =
+                menu_frame(&ctx, vec![pointer(position, button, false)], &mut activated);
+            assert!(!row.clicked(), "Opening actions must not select the row");
+            assert_eq!(
+                current.rect, overflow.rect,
+                "Revealing actions must not move them"
+            );
+            let (_, _, item) = menu_frame(&ctx, vec![], &mut activated);
+            let item = item
+                .expect("Both entry points show the shared menu")
+                .rect
+                .center();
+            for pressed in [true, false] {
+                menu_frame(
+                    &ctx,
+                    vec![
+                        egui::Event::PointerMoved(item),
+                        pointer(item, egui::PointerButton::Primary, pressed),
+                    ],
+                    &mut activated,
+                );
+            }
+            assert_eq!(activated, 1);
+        }
+    }
 }

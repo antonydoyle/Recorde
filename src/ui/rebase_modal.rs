@@ -60,20 +60,20 @@ impl RebaseModal {
         ui.horizontal(|ui| {
             ui.add_space(26.0);
             ui.label(
-                RichText::new("Action")
+                RichText::new("Commit action")
                     .color(theme::text_muted())
                     .size(12.0)
                     .strong(),
             );
             ui.add_space(72.0);
             ui.label(
-                RichText::new("SHA    ")
+                RichText::new("Commit ID")
                     .color(theme::text_muted())
                     .size(12.0)
                     .strong(),
             );
             ui.label(
-                RichText::new("Summary")
+                RichText::new("Commit message")
                     .color(theme::text_muted())
                     .size(12.0)
                     .strong(),
@@ -136,7 +136,8 @@ impl RebaseModal {
                                             RichText::new(a.label())
                                                 .color(action_color(*a))
                                                 .monospace(),
-                                        );
+                                        )
+                                        .on_hover_text(action_description(*a));
                                     }
                                 });
                             if selected_action != cur_action {
@@ -250,12 +251,12 @@ impl RebaseModal {
             ui.colored_label(theme::accent_red(), error);
         }
         let mut result = None;
-        ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add_enabled(
                     validation.is_ok(),
                     Button::new(
-                        RichText::new("Start Rebase")
+                        RichText::new("Start rebase")
                             .color(theme::on_primary())
                             .size(14.0),
                     )
@@ -293,6 +294,21 @@ fn action_color(action: RebaseAction) -> Color32 {
         RebaseAction::Squash => theme::accent_yellow(),
         RebaseAction::Fixup => theme::accent_orange(),
         RebaseAction::Drop => theme::accent_red(),
+    }
+}
+
+fn action_description(action: RebaseAction) -> &'static str {
+    match action {
+        RebaseAction::Pick => "Keep this commit as it is.",
+        RebaseAction::Reword => "Keep the changes and edit the commit message.",
+        RebaseAction::Edit => "Pause here so you can amend or split this commit.",
+        RebaseAction::Squash => {
+            "Combine this commit with the previous commit and edit the message."
+        }
+        RebaseAction::Fixup => {
+            "Combine this commit with the previous commit and discard its message."
+        }
+        RebaseAction::Drop => "Remove this commit from the rebased branch.",
     }
 }
 

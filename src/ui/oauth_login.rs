@@ -67,6 +67,8 @@ impl BrowserLogin {
         saved: Option<&Client>,
         saving: bool,
     ) -> (Option<Client>, Option<Session>) {
+        use crate::ui::{kit, motion};
+
         if self.target.as_ref() != Some(&(provider.clone(), host.to_string())) {
             self.cancel();
             self.target = Some((provider.clone(), host.to_string()));
@@ -76,17 +78,35 @@ impl BrowserLogin {
                 .unwrap_or_default();
         }
         if !Client::supported(provider) {
-            ui.label("Browser sign-in is available for GitHub and GitLab. Use a token for this provider.");
+            kit::hint(
+                ui,
+                "Browser sign-in is available for GitHub and GitLab. Use a token for this \
+                 provider.",
+            );
             return (None, None);
         }
         self.poll();
-        ui.heading("Browser sign-in");
-        ui.label("Use a public client ID registered for this exact provider host, with device authorization enabled. No client secret is needed or stored.");
+        kit::hint(
+            ui,
+            "Recorde has no built-in OAuth app. Register an OAuth application for this host \
+             with device flow enabled, then enter its public client ID. No client secret is \
+             needed or stored.",
+        );
         let editing = self.login.is_none() && self.ready.is_none() && !saving;
-        ui.add_enabled(
-            editing,
-            egui::TextEdit::singleline(&mut self.client_id)
-                .hint_text("Registered public client ID"),
+        kit::setting_row(
+            ui,
+            "OAuth application",
+            "Use an app registered for this exact host.",
+            |ui| {
+                let label = ui.label("Client ID");
+                ui.add_enabled(
+                    editing,
+                    egui::TextEdit::singleline(&mut self.client_id)
+                        .desired_width(ui.available_width())
+                        .hint_text("Registered public client ID"),
+                )
+                .labelled_by(label.id);
+            },
         );
         let mut configured = None;
         let mut save = None;
@@ -94,7 +114,11 @@ impl BrowserLogin {
             if ui
                 .add_enabled(
                     editing && !self.client_id.trim().is_empty(),
-                    egui::Button::new("Start browser sign-in"),
+                    kit::secondary_button("Start browser sign-in"),
+                )
+                .on_disabled_hover_text(
+                    "Enter your registered application's public client ID first, and wait for \
+                     any account save to finish.",
                 )
                 .clicked()
             {
@@ -113,51 +137,93 @@ impl BrowserLogin {
                 }
             }
         }
-        if self.login.is_some() {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
-            if let Some((code, url, deadline)) = &self.verification {
-                ui.label(format!("Enter code {code} at {url}"));
-                ui.label(format!(
-                    "Expires in {} seconds",
-                    deadline.saturating_duration_since(Instant::now()).as_secs()
-                ));
-                ui.horizontal(|ui| {
-                    if ui.button("Copy verification code").clicked() {
-                        ui.ctx().copy_text(code.clone());
+        let progress_id = ui.make_persistent_id("browser_sign_in_progress");
+        motion::reveal(ui, progress_id, self.login.is_some(), |ui| {
+            if self.login.is_some() {
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+                kit::card(ui, |ui| {
+                    if let Some((code, url, deadline)) = &self.verification {
+                        kit::group_label(ui, "Enter this code in your browser");
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(code).monospace().size(26.0).strong(),
+                            )
+                            .wrap()
+                            .selectable(true),
+                        );
+                        kit::hint(ui, &format!("Go to {url}"));
+                        kit::hint(
+                            ui,
+                            &format!(
+                                "Expires in {} seconds. Keep this code private.",
+                                deadline.saturating_duration_since(Instant::now()).as_secs()
+                            ),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.add(kit::secondary_button("Copy code")).clicked() {
+                                ui.ctx().copy_text(code.clone());
+                            }
+                            if ui.add(kit::secondary_button("Open browser")).clicked() {
+                                if let Err(error) = crate::external::open_url(url) {
+                                    self.error = Some(error);
+                                }
+                            }
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            kit::hint(ui, "Requesting a verification code…");
+                        });
                     }
-                    if ui.button("Open browser").clicked() {
-                        if let Err(error) = crate::external::open_url(url) {
-                            self.error = Some(error);
-                        }
+                    if ui
+                        .add(kit::secondary_button("Cancel browser sign-in"))
+                        .clicked()
+                    {
+                        self.cancel();
                     }
                 });
-            } else {
-                ui.label("Requesting a verification code...");
             }
-            if ui.button("Cancel browser sign-in").clicked() {
-                self.cancel();
-            }
-        }
-        if let Some(session) = &self.ready {
-            ui.label(format!(
-                "Verified {} on {}. Save this account to the OS credential store?",
-                session.username, session.client.host
-            ));
-            if ui
-                .add_enabled(!saving, egui::Button::new("Save signed-in account"))
-                .clicked()
+        });
+        let ready_id = ui.make_persistent_id("browser_sign_in_ready");
+        motion::reveal(ui, ready_id, self.ready.is_some(), |ui| {
+            if let Some((username, host)) = self
+                .ready
+                .as_ref()
+                .map(|session| (session.username.clone(), session.client.host.clone()))
             {
-                // Keep the verified grant for retry if the vault is locked.
-                // Successful saving closes this view, which clears it via cancel.
-                save = self.ready.clone();
+                kit::card(ui, |ui| {
+                    kit::status_chip(ui, kit::Status::Ok, "Ready to save");
+                    kit::hint(
+                        ui,
+                        &format!(
+                            "Verified {username}@{host}. Save this account to the system \
+                             credential store to use it in Recorde."
+                        ),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(!saving, kit::primary_button("Save signed-in account"))
+                            .on_disabled_hover_text(
+                                "Wait for the credential store operation to finish.",
+                            )
+                            .clicked()
+                        {
+                            // Retain the verified grant so a locked vault can be retried.
+                            save = self.ready.clone();
+                        }
+                        if ui.add(kit::secondary_button("Discard sign-in")).clicked() {
+                            self.cancel();
+                        }
+                    });
+                });
             }
-            if ui.button("Discard sign-in").clicked() {
-                self.cancel();
+        });
+        let error_id = ui.make_persistent_id("browser_sign_in_error");
+        motion::reveal(ui, error_id, self.error.is_some(), |ui| {
+            if let Some(error) = &self.error {
+                kit::callout(ui, kit::Status::Error, error);
             }
-        }
-        if let Some(error) = &self.error {
-            ui.colored_label(crate::theme::accent_red(), error);
-        }
+        });
         (configured, save)
     }
 }

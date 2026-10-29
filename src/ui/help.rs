@@ -1,6 +1,8 @@
 //! Offline help, compiled from the same Markdown published in the repository wiki.
 use egui::{RichText, Ui};
 
+use crate::ui::kit;
+
 struct Page {
     id: &'static str,
     title: &'static str,
@@ -109,9 +111,14 @@ impl HelpBrowser {
                 });
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut self.query)
-                        .hint_text("Search all help topics...")
+                        .hint_text("Search help")
                         .desired_width(f32::INFINITY),
                 );
+                search.widget_info(|| egui::WidgetInfo::labeled(
+                    egui::WidgetType::TextEdit,
+                    true,
+                    "Search help",
+                ));
                 if std::mem::take(&mut self.focus_search) {
                     search.request_focus();
                 }
@@ -179,7 +186,8 @@ impl HelpBrowser {
         }
         scroll.show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.set_max_width(720.0);
+            ui.spacing_mut().item_spacing.y = kit::space::SM;
             render_markdown(ui, PAGES[self.selected].markdown, target);
         });
     }

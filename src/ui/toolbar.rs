@@ -6,6 +6,7 @@ use egui::{RichText, Stroke};
 use crate::icons;
 use crate::state::SharedState;
 use crate::theme;
+use crate::ui::kit;
 use crate::ui::widgets;
 
 pub enum ToolbarAction {
@@ -225,14 +226,25 @@ impl Toolbar {
                             //    Hide into overflow if it won't fit alongside the overflow btn
                             let avail = ui.available_width();
                             if avail >= SYNC_GROUP_W + OVERFLOW_BTN_W {
-                                if widgets::toolbar_btn_icon(
+                                let fetch_btn = widgets::toolbar_btn_icon(
                                     ui,
                                     icons::DOWNLOAD,
                                     "Fetch",
                                     has_repo && !busy,
-                                )
-                                .on_hover_text("Fetch all remotes  (Ctrl+Shift+F)")
-                                .clicked()
+                                );
+                                let fetch_btn = kit::explain_disabled(
+                                    fetch_btn,
+                                    if busy {
+                                        "Wait for the current operation to finish."
+                                    } else if !has_repo {
+                                        "Open a repository first."
+                                    } else {
+                                        ""
+                                    },
+                                );
+                                if fetch_btn
+                                    .on_hover_text("Fetch — check remotes for new commits without changing your files (Ctrl+Shift+F)")
+                                    .clicked()
                                 {
                                     action = Some(ToolbarAction::Fetch);
                                 }
@@ -244,9 +256,19 @@ impl Toolbar {
                                     icons::SWAP_VERT,
                                     "Pull",
                                     has_repo && !busy,
+                                );
+                                let pull_btn = kit::explain_disabled(
+                                    pull_btn,
+                                    if busy {
+                                        "Wait for the current operation to finish."
+                                    } else if !has_repo {
+                                        "Open a repository first."
+                                    } else {
+                                        ""
+                                    },
                                 )
                                 .on_hover_text(format!(
-                                    "{}  (Ctrl+Shift+P)",
+                                    "{} — download commits and update this branch (Ctrl+Shift+P)",
                                     pull_strategy.label()
                                 ));
                                 if pull_btn.clicked() {
@@ -284,8 +306,18 @@ impl Toolbar {
                                     icons::UPLOAD,
                                     "Push",
                                     has_repo && !busy,
+                                );
+                                let push_btn = kit::explain_disabled(
+                                    push_btn,
+                                    if busy {
+                                        "Wait for the current operation to finish."
+                                    } else if !has_repo {
+                                        "Open a repository first."
+                                    } else {
+                                        ""
+                                    },
                                 )
-                                .on_hover_text("Push current branch  (Ctrl+Shift+U)");
+                                .on_hover_text("Push — upload your commits to the remote (Ctrl+Shift+U)");
                                 if push_btn.clicked() {
                                     action = Some(ToolbarAction::Push);
                                 }
@@ -295,11 +327,20 @@ impl Toolbar {
                                         action = Some(ToolbarAction::Push);
                                         ui.close();
                                     }
-                                    if ui.button("Force Push with Lease").clicked() {
+                                    ui.separator();
+                                    if ui
+                                        .button("Force Push with Lease")
+                                        .on_hover_text("Overwrite the remote branch with yours, but only if nobody else pushed since you last fetched.")
+                                        .clicked()
+                                    {
                                         action = Some(ToolbarAction::PushWithLease);
                                         ui.close();
                                     }
-                                    if ui.button("Push and Set Upstream").clicked() {
+                                    if ui
+                                        .button("Push and Set Upstream")
+                                        .on_hover_text("Publish this branch and remember which remote branch it follows, so future pulls and pushes know where to go.")
+                                        .clicked()
+                                    {
                                         action = Some(ToolbarAction::PushSetUpstream);
                                         ui.close();
                                     }
@@ -332,13 +373,22 @@ impl Toolbar {
                             // ── Branch ops: New Branch / Stash ────────────
                             let avail = ui.available_width();
                             if avail >= BRANCH_OPS_W + OVERFLOW_BTN_W {
-                                if widgets::toolbar_btn_icon(
+                                if kit::explain_disabled(
+                                    widgets::toolbar_btn_icon(
                                     ui,
                                     icons::HUB,
                                     "New Branch",
                                     has_repo && !busy,
+                                    ),
+                                    if busy {
+                                        "Wait for the current operation to finish."
+                                    } else if !has_repo {
+                                        "Open a repository first."
+                                    } else {
+                                        ""
+                                    },
                                 )
-                                .on_hover_text("Create a new branch")
+                                .on_hover_text("Create a separate line of work.")
                                 .clicked()
                                 {
                                     action = Some(ToolbarAction::CreateBranch);
@@ -346,13 +396,24 @@ impl Toolbar {
 
                                 ui.add_space(3.0);
 
-                                if widgets::toolbar_btn_icon(
-                                    ui,
-                                    icons::HISTORY,
-                                    "Stash",
-                                    has_repo && dirty && !busy,
+                                if kit::explain_disabled(
+                                    widgets::toolbar_btn_icon(
+                                        ui,
+                                        icons::HISTORY,
+                                        "Stash",
+                                        has_repo && dirty && !busy,
+                                    ),
+                                    if busy {
+                                        "Wait for the current operation to finish."
+                                    } else if !has_repo {
+                                        "Open a repository first."
+                                    } else if !dirty {
+                                        "There are no uncommitted changes to set aside."
+                                    } else {
+                                        ""
+                                    },
                                 )
-                                .on_hover_text("Stash uncommitted changes")
+                                .on_hover_text("Set aside uncommitted changes so you can switch tasks.")
                                 .clicked()
                                 {
                                     action = Some(ToolbarAction::Stash);
@@ -402,7 +463,7 @@ impl Toolbar {
                                         theme::border()
                                     },
                                 )
-                                .on_hover_text("Toggle: show all branches or current branch only")
+                                .on_hover_text("Show commits from every branch or only this branch.")
                                 .clicked()
                                 {
                                     action = Some(ToolbarAction::ToggleAllBranches);
@@ -425,7 +486,8 @@ impl Toolbar {
                                     icons::MORE_VERT,
                                     18.0,
                                     "More actions",
-                                );
+                                )
+                                .on_hover_text("Show actions that do not fit in the toolbar.");
                                 let mut overflow_action: Option<ToolbarAction> = None;
                                 egui::Popup::from_toggle_button_response(&more_btn)
                                     .id(more_id)
@@ -462,7 +524,8 @@ impl Toolbar {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
 
-                        if widgets::icon_btn_mat(ui, icons::SETTINGS, 19.0, "Settings and accounts")
+                        if widgets::icon_btn_mat(ui, icons::SETTINGS, 19.0, "Open settings")
+                            .on_hover_text("Open settings and account options.")
                             .clicked()
                         {
                             action = Some(ToolbarAction::OpenUserMenu);
@@ -487,8 +550,19 @@ impl Toolbar {
                             (&undo, icons::UNDO, false, "Nothing to undo"),
                         ] {
                             let tip = match step {
-                                Some((_, label)) if redo => format!("{label}  ({key}+Shift+Z)"),
+                                Some((_, label)) if redo => {
+                                    format!("{label}  ({key}+Shift+Z)")
+                                }
                                 Some((_, label)) => format!("{label}  ({key}+Z)"),
+                                None => idle.to_string(),
+                            };
+                            let explanation = match step {
+                                Some((_, label)) if redo => {
+                                    format!("Redo the operation: {label} ({key}+Shift+Z).")
+                                }
+                                Some((_, label)) => {
+                                    format!("Undo the last operation: {label} ({key}+Z).")
+                                }
                                 None => idle.to_string(),
                             };
                             let response = ui
@@ -496,6 +570,17 @@ impl Toolbar {
                                     widgets::icon_btn_mat(ui, icon, 18.0, &tip)
                                 })
                                 .inner;
+                            let response = kit::explain_disabled(
+                                response,
+                                if busy {
+                                    "Wait for the current operation to finish."
+                                } else if !has_repo {
+                                    "Open a repository first."
+                                } else {
+                                    idle
+                                },
+                            )
+                            .on_hover_text(explanation);
                             if response.clicked() {
                                 action = Some(if redo {
                                     ToolbarAction::Redo
@@ -510,7 +595,9 @@ impl Toolbar {
                         vsep(ui);
                         ui.add_space(8.0);
 
-                        if widgets::icon_btn_mat(ui, icons::HISTORY, 18.0, "Reflog").clicked() {
+                        if widgets::icon_btn_mat(ui, icons::HISTORY, 18.0, "Recovery history")
+                            .on_hover_text("Review recent repository changes to recover an earlier state.")
+                            .clicked() {
                             action = Some(ToolbarAction::OpenReflog);
                         }
 
@@ -520,8 +607,9 @@ impl Toolbar {
                             ui,
                             icons::BUG_REPORT,
                             18.0,
-                            "Provider integrations  (issues, CI, releases)",
+                            "Integrations: issues, CI and releases",
                         )
+                        .on_hover_text("View issues, CI checks and releases for this repository.")
                         .clicked()
                         {
                             action = Some(ToolbarAction::OpenProvider);
@@ -534,7 +622,14 @@ impl Toolbar {
                         } else {
                             icons::DARK_MODE
                         };
-                        if widgets::icon_btn_mat(ui, theme_icon, 18.0, "Toggle theme").clicked() {
+                        let theme_tip = if dark_theme {
+                            "Switch to light theme"
+                        } else {
+                            "Switch to dark theme"
+                        };
+                        if widgets::icon_btn_mat(ui, theme_icon, 18.0, theme_tip)
+                            .on_hover_text(theme_tip)
+                            .clicked() {
                             action = Some(ToolbarAction::ToggleTheme);
                         }
 
@@ -544,8 +639,9 @@ impl Toolbar {
                             ui,
                             icons::TERMINAL,
                             18.0,
-                            "Command palette  (Ctrl+K)",
+                            "Command palette",
                         )
+                        .on_hover_text("Find and run a command (Ctrl+K).")
                         .clicked()
                         {
                             action = Some(ToolbarAction::OpenCommandPalette);
@@ -562,9 +658,10 @@ impl Toolbar {
                             ui,
                             icons::SEARCH,
                             18.0,
-                            "Search commits  (Ctrl+F)",
+                            "Search commits",
                             sc,
                         )
+                        .on_hover_text("Search commit messages, authors and changes (Ctrl+F).")
                         .clicked()
                         {
                             action = Some(ToolbarAction::ToggleSearch);
@@ -597,7 +694,7 @@ impl Toolbar {
                                 theme::bg_panel(),
                                 theme::accent_teal().gamma_multiply(0.4),
                             )
-                            .on_hover_text("Switch branch  (Ctrl+B)")
+                            .on_hover_text("Current branch — click to switch (Ctrl+B).")
                             .clicked()
                             {
                                 action = Some(ToolbarAction::OpenBranchSwitcher);
@@ -676,10 +773,10 @@ pub fn recent_repositories_menu(
                     let name = path
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string());
+                        .unwrap_or_else(|| crate::ui::kit::display_path(path));
                     let parent = path
                         .parent()
-                        .map(|path| path.display().to_string())
+                        .map(crate::ui::kit::display_path)
                         .unwrap_or_default();
                     let active = current == Some(path.as_path());
                     ui.horizontal(|ui| {
@@ -763,10 +860,13 @@ pub fn recent_repositories_menu(
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Button,
                                 ui.is_enabled(),
-                                format!("Open {}", path.display()),
+                                format!("Open {}", crate::ui::kit::display_path(path)),
                             )
                         });
-                        if row.on_hover_text(path.display().to_string()).clicked() {
+                        if row
+                            .on_hover_text(crate::ui::kit::display_path(path))
+                            .clicked()
+                        {
                             if !active {
                                 action = Some(ToolbarAction::OpenRepo(path.clone()));
                             }

@@ -693,7 +693,9 @@ pub fn apply_palette(ctx: &egui::Context, dark: bool, contrast: bool, palette: P
     v.widgets.noninteractive.bg_fill = bg_panel_alt();
     v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text_secondary());
     v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border());
-    v.widgets.inactive.bg_fill = bg_panel_alt();
+    // Checkbox, radio and slider tracks use `bg_fill`; the app background keeps them
+    // visible on cards and panels. Buttons use `weak_bg_fill`.
+    v.widgets.inactive.bg_fill = bg_app();
     v.widgets.inactive.weak_bg_fill = bg_panel_alt();
     v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text_secondary());
     v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border());
@@ -737,6 +739,9 @@ pub fn apply_palette(ctx: &egui::Context, dark: bool, contrast: bool, palette: P
         s.spacing.window_margin = egui::Margin::same(16);
         s.spacing.button_padding = egui::vec2(12.0, 7.0);
         s.spacing.interact_size.y = 32.0;
+        // Reveals, collapsing headers and windows share one duration (zero when
+        // reduced motion is in effect).
+        s.animation_time = crate::ui::motion::duration(crate::ui::motion::NORMAL);
         s.text_styles
             .insert(egui::TextStyle::Heading, egui::FontId::proportional(22.0));
         s.text_styles.insert(

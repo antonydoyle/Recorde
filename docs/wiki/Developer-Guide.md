@@ -197,6 +197,12 @@ screenshot dimensions. `wayland_smoke.py` uses an existing compositor with X11
 fallback disabled to check that a first frame is rendered. Production builds do
 not enable the inspector feature or its listener.
 
+For design review, set `RECORDE_UI_TOUR=1` when running the inspector (for example
+through `windows_smoke.ps1 -Inspector ...`). Instead of acceptance checks it captures
+the main window, working-tree and file selection, batch selection, a selected commit,
+every top-level menu and every Settings page (with scrolled captures) into the artifact
+directory, and writes `tour.log` listing any step that could not be reached.
+
 ## Development Workflow
 
 1. Make focused changes in the relevant module.

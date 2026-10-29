@@ -5,7 +5,7 @@ use egui::{Color32, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 
 use crate::state::SharedState;
 use crate::theme;
-use crate::ui::widgets;
+use crate::ui::{kit, motion, widgets};
 
 pub enum SidebarAction {
     OpenRepository(std::path::PathBuf),
@@ -89,10 +89,12 @@ impl Sidebar {
         };
 
         let mut action: Option<SidebarAction> = None;
+        let sidebar_width = ui.available_width();
 
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
+                ui.set_width(ui.available_width().min(sidebar_width));
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     ui.add_space(16.0);
@@ -119,11 +121,28 @@ impl Sidebar {
 
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.add(
+                    ui.label(
+                        crate::icons::rich(crate::icons::SEARCH, 16.0).color(theme::text_muted()),
+                    );
+                    let clear_width = if self.filter.is_empty() {
+                        0.0
+                    } else {
+                        32.0 + ui.spacing().item_spacing.x
+                    };
+                    let field_width =
+                        (ui.available_width() - clear_width - kit::space::SM).max(1.0);
+                    ui.add_sized(
+                        [field_width, 24.0],
                         egui::TextEdit::singleline(&mut self.filter)
                             .hint_text("Filter branches and tags")
-                            .desired_width((ui.available_width() - 12.0).max(40.0)),
+                            .desired_width(field_width),
                     );
+                    if !self.filter.is_empty()
+                        && widgets::icon_btn_mat(ui, crate::icons::CLOSE, 16.0, "Clear filter")
+                            .clicked()
+                    {
+                        self.filter.clear();
+                    }
                 });
                 ui.add_space(8.0);
                 let needle = self.filter.trim().to_lowercase();
@@ -141,12 +160,16 @@ impl Sidebar {
                 local.retain(shown);
                 tags.retain(shown);
                 let remote_rows: Vec<&str> = remote.iter().copied().filter(shown).collect();
+                let stash_rows: Vec<_> = stashes
+                    .iter()
+                    .filter(|stash| !filtering || stash.message.to_lowercase().contains(&needle))
+                    .collect();
 
                 // ── LOCAL BRANCHES ────────────────────────────────────
                 {
                     let open = self.open.entry("LOCAL").or_insert(true);
                     widgets::section_header(ui, "Local branches", local.len(), open);
-                    if *open || filtering {
+                    motion::reveal(ui, egui::Id::new("sidebar_local"), *open || filtering, |ui| {
                         ui.add_space(2.0);
                         for name in &local {
                             let is_head = *name == head.as_str();
@@ -164,7 +187,9 @@ impl Sidebar {
                                     action = Some(SidebarAction::RevealCommit(tip));
                                 }
                             }
-                            resp.context_menu(|ui| {
+                            let selected = is_head
+                                || (tip.is_some() && tip.as_ref() == selected_commit.as_ref());
+                            widgets::row_actions_menu(ui, &resp, name, selected, |ui| {
                                 ui.set_min_width(195.0);
                                 if !is_head {
                                     if ui.button("Checkout").clicked() {
@@ -208,7 +233,11 @@ impl Sidebar {
                                 }
                                 if !is_head {
                                     ui.separator();
-                                    if ui.button("Merge into current").clicked() {
+                                    if ui
+                                        .button("Merge into current")
+                                        .on_hover_text(format!("Merge {name} into {head}."))
+                                        .clicked()
+                                    {
                                         action = Some(SidebarAction::MergeBranch(name.to_string()));
                                         ui.close();
                                     }
@@ -216,7 +245,14 @@ impl Sidebar {
                                         action = Some(SidebarAction::MergeWithOptions(name.to_string()));
                                         ui.close();
                                     }
-                                    if ui.button("Rebase onto").clicked() {
+                                    if ui
+                                        .button("Rebase onto")
+                                        .on_hover_text(format!(
+                                            "Rebase {head} onto {name} — \
+                                             replays your commits on top of it."
+                                        ))
+                                        .clicked()
+                                    {
                                         action = Some(SidebarAction::RebaseOnto(name.to_string()));
                                         ui.close();
                                     }
@@ -265,17 +301,20 @@ impl Sidebar {
                             });
                         }
                         if local.is_empty() {
-                            empty_hint(ui, none("No local branches"));
+                            empty_hint(
+                                ui,
+                                none("No local branches yet. Create a branch to get started."),
+                            );
                         }
                         ui.add_space(4.0);
-                    }
+                    });
                 }
 
                 // ── REMOTE BRANCHES ───────────────────────────────────
                 {
                     let open = self.open.entry("REMOTE").or_insert(false);
                     widgets::section_header(ui, "Remotes", remote_rows.len(), open);
-                    if *open || filtering {
+                    motion::reveal(ui, egui::Id::new("sidebar_remotes"), *open || filtering, |ui| {
                         ui.add_space(2.0);
                         for (remote_name, branches) in group_remote_branches(&remote_rows, &graph.configured_remotes) {
                             egui::CollapsingHeader::new(format!("{remote_name} ({})", branches.len()))
@@ -296,14 +335,20 @@ impl Sidebar {
                                     action = Some(SidebarAction::RevealCommit(tip));
                                 }
                             }
-                            resp.context_menu(|ui| {
+                            let selected =
+                                tip.is_some() && tip.as_ref() == selected_commit.as_ref();
+                            widgets::row_actions_menu(ui, &resp, name, selected, |ui| {
                                 ui.set_min_width(195.0);
                                 if ui.button("Checkout").on_hover_text("Create or switch to a local branch that tracks this branch").clicked() {
                                     action = Some(SidebarAction::CheckoutRemoteBranch(name.to_string()));
                                     ui.close();
                                 }
                                 ui.separator();
-                                if ui.button("Merge into current").clicked() {
+                                if ui
+                                    .button("Merge into current")
+                                    .on_hover_text(format!("Merge {name} into {head}."))
+                                    .clicked()
+                                {
                                     action = Some(SidebarAction::MergeBranch(name.to_string()));
                                     ui.close();
                                 }
@@ -311,7 +356,14 @@ impl Sidebar {
                                     action = Some(SidebarAction::MergeWithOptions(name.to_string()));
                                     ui.close();
                                 }
-                                if ui.button("Rebase onto").clicked() {
+                                if ui
+                                    .button("Rebase onto")
+                                    .on_hover_text(format!(
+                                        "Rebase {head} onto {name} — \
+                                         replays your commits on top of it."
+                                    ))
+                                    .clicked()
+                                {
                                     action = Some(SidebarAction::RebaseOnto(name.to_string()));
                                     ui.close();
                                 }
@@ -339,17 +391,54 @@ impl Sidebar {
                                 });
                         }
                         if remote_rows.is_empty() {
-                            empty_hint(ui, none("No remote branches"));
+                            empty_hint(
+                                ui,
+                                none("No remote branches yet. Fetch to check for branches."),
+                            );
                         }
                         ui.add_space(4.0);
-                    }
+                    });
                 }
 
                 // ── TAGS ──────────────────────────────────────────────
                 {
                     let open = self.open.entry("TAGS").or_insert(false);
-                    widgets::section_header(ui, "Tags", tags.len(), open);
-                    if *open || filtering {
+                    let (label, tooltip) = if selected_commit.is_some() {
+                        ("+ Tag Selected Commit", "Tag the selected commit")
+                    } else {
+                        ("+ Create Tag at HEAD", "Create a tag at HEAD")
+                    };
+                    let create_tag = ui
+                        .horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            let header_width =
+                                (ui.available_width() - 32.0 - kit::space::SM).max(1.0);
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(header_width, 34.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.set_width(header_width);
+                                    widgets::section_header(ui, "Tags", tags.len(), open);
+                                },
+                            );
+                            let button =
+                                widgets::icon_btn_mat(ui, crate::icons::ADD, 16.0, tooltip);
+                            button.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    label,
+                                )
+                            });
+                            button.clicked()
+                        })
+                        .inner;
+                    if create_tag {
+                        action = Some(SidebarAction::CreateTag(
+                            selected_commit.clone().unwrap_or_default(),
+                        ));
+                    }
+                    motion::reveal(ui, egui::Id::new("sidebar_tags"), *open || filtering, |ui| {
                         ui.add_space(2.0);
                         for name in &tags {
                             let resp = tag_row(ui, name)
@@ -359,7 +448,10 @@ impl Sidebar {
                                     action = Some(SidebarAction::RevealCommit(tip.clone()));
                                 }
                             }
-                            resp.context_menu(|ui| {
+                            let selected = selected_commit.as_ref().is_some_and(|oid| {
+                                graph.ref_targets.get(&format!("refs/tags/{name}")) == Some(oid)
+                            });
+                            widgets::row_actions_menu(ui, &resp, name, selected, |ui| {
                                 ui.set_min_width(160.0);
                                 if ui.button("Push to Remote").clicked() {
                                     action = Some(SidebarAction::PushTag(name.to_string()));
@@ -381,45 +473,20 @@ impl Sidebar {
                                 }
                             });
                         }
-                        // Create tag button — tag the selected commit if one is active
-                        ui.horizontal(|ui| {
-                            ui.add_space(14.0);
-                            let label = if selected_commit.is_some() {
-                                RichText::new("+ Tag Selected Commit")
-                                    .color(theme::accent_teal())
-                                    .size(12.0)
-                            } else {
-                                RichText::new("+ Create Tag at HEAD")
-                                    .color(theme::text_muted())
-                                    .size(12.0)
-                            };
-                            if ui
-                                .add(
-                                    Button::new(label)
-                                        .fill(Color32::TRANSPARENT)
-                                        .stroke(Stroke::NONE),
-                                )
-                                .clicked()
-                            {
-                                action = Some(SidebarAction::CreateTag(
-                                    selected_commit.clone().unwrap_or_default(),
-                                ));
-                            }
-                        });
                         if tags.is_empty() {
-                            empty_hint(ui, none("No tags"));
+                            empty_hint(ui, none("No tags yet. Create a tag to mark a commit."));
                         }
                         ui.add_space(4.0);
-                    }
+                    });
                 }
 
                 // ── STASHES ───────────────────────────────────────────
                 {
                     let open = self.open.entry("STASHES").or_insert(false);
-                    widgets::section_header(ui, "Stashes", stashes.len(), open);
-                    if *open {
+                    widgets::section_header(ui, "Stashes", stash_rows.len(), open);
+                    motion::reveal(ui, egui::Id::new("sidebar_stashes"), *open || filtering, |ui| {
                         ui.add_space(2.0);
-                        for stash in &stashes {
+                        for stash in &stash_rows {
                             let idx = stash.index;
                             let oid = stash.oid.clone();
                             let display = stash
@@ -427,8 +494,11 @@ impl Sidebar {
                                 .trim_start_matches("On ")
                                 .trim_start_matches("WIP on ")
                                 .to_string();
+                            let row_width = (ui.available_width() - kit::space::SM).max(1.0);
                             let resp = ui
                                 .horizontal(|ui| {
+                                    ui.set_width(row_width);
+                                    ui.set_min_height(26.0);
                                     ui.add_space(14.0);
                                     let (dr, _) = ui.allocate_exact_size(
                                         Vec2::splat(8.0),
@@ -440,26 +510,41 @@ impl Sidebar {
                                         theme::accent_yellow(),
                                     );
                                     ui.add_space(6.0);
-                                    ui.label(
-                                        RichText::new(&display)
-                                            .color(theme::text_secondary())
-                                            .size(13.0),
+                                    let width = (ui.available_width() - widgets::ROW_ACTIONS_WIDTH)
+                                        .max(1.0);
+                                    ui.add_sized(
+                                        [width, 22.0],
+                                        egui::Label::new(
+                                            RichText::new(&display)
+                                                .color(theme::text_secondary())
+                                                .size(13.0),
+                                        )
+                                        .truncate(),
                                     );
                                 })
                                 .response
                                 .on_hover_text("Right-click for options");
-                            resp.context_menu(|ui| {
+                            let selected = selected_commit.as_deref() == Some(oid.as_str());
+                            widgets::row_actions_menu(ui, &resp, &display, selected, |ui| {
                                 ui.set_min_width(155.0);
                                 if ui.button("Preview Diff").clicked() {
                                     action = Some(SidebarAction::PreviewStash(idx, oid.clone()));
                                     ui.close();
                                 }
                                 ui.separator();
-                                if ui.button("Apply").clicked() {
+                                if ui
+                                    .button("Apply")
+                                    .on_hover_text("Apply the saved changes and keep the stash.")
+                                    .clicked()
+                                {
                                     action = Some(SidebarAction::StashApply(idx, oid.clone()));
                                     ui.close();
                                 }
-                                if ui.button("Pop").clicked() {
+                                if ui
+                                    .button("Pop")
+                                    .on_hover_text("Apply the saved changes and delete the stash.")
+                                    .clicked()
+                                {
                                     action = Some(SidebarAction::StashPop(idx, oid.clone()));
                                     ui.close();
                                 }
@@ -479,11 +564,14 @@ impl Sidebar {
                                 }
                             });
                         }
-                        if stashes.is_empty() {
-                            empty_hint(ui, "No stashes");
+                        if stash_rows.is_empty() {
+                            empty_hint(
+                                ui,
+                                none("No stashes yet. Stash changes to save them for later."),
+                            );
                         }
                         ui.add_space(4.0);
-                    }
+                    });
                 }
 
                 // ── WORKTREES ─────────────────────────────────────────
@@ -492,7 +580,7 @@ impl Sidebar {
                     let linked: Vec<_> = worktrees.iter().filter(|w| !w.is_main).collect();
                     let open = self.open.entry("WORKTREES").or_insert(true);
                     widgets::section_header(ui, "Worktrees", linked.len(), open);
-                    if *open {
+                    motion::reveal(ui, egui::Id::new("sidebar_worktrees"), *open, |ui| {
                         ui.add_space(2.0);
                         for wt in &linked {
                             let label = wt
@@ -507,11 +595,14 @@ impl Sidebar {
                                     .circle_filled(dr.center(), 3.5, theme::accent_teal());
                                 ui.add_space(6.0);
                                 if ui
-                                    .selectable_label(
-                                        false,
-                                        RichText::new(label)
-                                            .color(theme::text_secondary())
-                                            .size(13.0),
+                                    .add(
+                                        egui::Button::selectable(
+                                            false,
+                                            RichText::new(label)
+                                                .color(theme::text_secondary())
+                                                .size(13.0),
+                                        )
+                                        .truncate(),
                                     )
                                     .on_hover_text(&wt.path)
                                     .clicked()
@@ -522,14 +613,14 @@ impl Sidebar {
                             });
                         }
                         ui.add_space(4.0);
-                    }
+                    });
                 }
 
                 // ── RECENTLY DELETED ──────────────────────────────────
                 if !deleted.is_empty() {
                     let open = self.open.entry("DELETED").or_insert(true);
                     widgets::section_header(ui, "RECENTLY DELETED", deleted.len(), open);
-                    if *open {
+                    motion::reveal(ui, egui::Id::new("sidebar_deleted"), *open, |ui| {
                         ui.add_space(2.0);
                         for entry in deleted.iter().rev() {
                             let resp = ui
@@ -545,11 +636,14 @@ impl Sidebar {
                                         theme::accent_red(),
                                     );
                                     ui.add_space(6.0);
-                                    ui.label(
-                                        RichText::new(&entry.name)
-                                            .color(theme::text_secondary())
-                                            .size(13.0)
-                                            .strikethrough(),
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&entry.name)
+                                                .color(theme::text_secondary())
+                                                .size(13.0)
+                                                .strikethrough(),
+                                        )
+                                        .truncate(),
                                     );
                                 })
                                 .response
@@ -566,7 +660,7 @@ impl Sidebar {
                             });
                         }
                         ui.add_space(4.0);
-                    }
+                    });
                 }
             });
 
@@ -689,7 +783,7 @@ fn branch_row(
     is_merged: bool,
 ) -> egui::Response {
     let row_h = 26.0;
-    let avail = ui.available_width();
+    let avail = (ui.available_width() - kit::space::SM).max(1.0);
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
 
     resp.widget_info(|| {
@@ -704,15 +798,12 @@ fn branch_row(
             ),
         )
     });
-    let hovered = resp.hovered() || resp.has_focus();
-    let bg = if hovered {
-        theme::bg_hover()
-    } else {
-        Color32::TRANSPARENT
-    };
-    if bg != Color32::TRANSPARENT {
-        ui.painter().rect_filled(row_rect, 0.0, bg);
-    }
+    let bg = motion::mix(
+        Color32::TRANSPARENT,
+        theme::bg_hover(),
+        motion::hover(ui, &resp),
+    );
+    ui.painter().rect_filled(row_rect, 0.0, bg);
 
     // Teal left accent bar for current branch
     if is_head {
@@ -761,6 +852,7 @@ fn branch_row(
         (txt, theme::text_muted())
     };
 
+    let right_edge = row_rect.right() - widgets::ROW_ACTIONS_WIDTH;
     let right_margin = if ab_text.is_empty() { 8.0 } else { 4.0 };
     let ab_width = if ab_text.is_empty() {
         0.0
@@ -774,7 +866,7 @@ fn branch_row(
 
     let text_rect = Rect::from_min_max(
         Pos2::new(dot_x + 12.0, row_rect.min.y),
-        Pos2::new(row_rect.max.x - ab_width - right_margin, row_rect.max.y),
+        Pos2::new(right_edge - ab_width - right_margin, row_rect.max.y),
     );
     ui.painter_at(text_rect).text(
         Pos2::new(text_rect.left() + 4.0, text_rect.center().y),
@@ -786,13 +878,15 @@ fn branch_row(
 
     if !ab_text.is_empty() {
         let ab_rect = Rect::from_min_max(
-            Pos2::new(row_rect.max.x - ab_width - 4.0, row_rect.min.y),
-            Pos2::new(row_rect.max.x - 4.0, row_rect.max.y),
+            Pos2::new(right_edge - ab_width - 4.0, row_rect.min.y),
+            Pos2::new(right_edge - 4.0, row_rect.max.y),
         );
         let ab_id = ui.make_persistent_id(("branch-status", name));
         let ab_resp = ui.interact(ab_rect, ab_id, egui::Sense::hover());
-        if compact_merged {
+        if is_merged {
             ab_resp.on_hover_text("Merged into current branch");
+        } else if let Some((ahead, behind)) = ahead_behind {
+            ab_resp.on_hover_text(format!("{ahead} to push, {behind} to pull"));
         }
         ui.painter_at(ab_rect).text(
             ab_rect.center(),
@@ -808,7 +902,7 @@ fn branch_row(
 
 fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
     let row_h = 30.0;
-    let avail = ui.available_width();
+    let avail = (ui.available_width() - kit::space::SM).max(1.0);
     let (row_rect, resp) = ui.allocate_exact_size(Vec2::new(avail, row_h), egui::Sense::click());
 
     resp.widget_info(|| {
@@ -839,14 +933,20 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
 
     let text_rect = Rect::from_min_max(
         Pos2::new(cx + 12.0, row_rect.min.y),
-        Pos2::new(row_rect.max.x - 8.0, row_rect.max.y),
+        Pos2::new(
+            row_rect.max.x - widgets::ROW_ACTIONS_WIDTH - 8.0,
+            row_rect.max.y,
+        ),
     );
     ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
         ui.horizontal_centered(|ui| {
-            ui.label(
-                RichText::new(name)
-                    .color(theme::text_secondary())
-                    .size(13.0),
+            ui.add(
+                egui::Label::new(
+                    RichText::new(name)
+                        .color(theme::text_secondary())
+                        .size(13.0),
+                )
+                .truncate(),
             );
         });
     });
@@ -857,13 +957,48 @@ fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {
 fn empty_hint(ui: &mut Ui, text: &str) {
     ui.horizontal(|ui| {
         ui.add_space(20.0);
-        ui.label(RichText::new(text).color(theme::text_muted()).size(12.0));
+        ui.add(egui::Label::new(RichText::new(text).color(theme::text_muted()).size(12.0)).wrap());
     });
 }
 
 #[cfg(test)]
 mod interaction_tests {
     use super::*;
+
+    #[test]
+    fn narrow_sidebar_keeps_empty_hints_and_actions_inside_its_width() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::icons::font_definitions());
+        let state = crate::state::new_shared_state();
+        let mut graph = crate::git::graph::CommitGraph::default();
+        graph.local_names.insert("main".into());
+        {
+            let mut state = state.lock().unwrap();
+            state.commit_graph = Some(std::sync::Arc::new(graph));
+            state.head_branch = Some("main".into());
+        }
+        let mut sidebar = Sidebar::new(state);
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(266.0, 800.0));
+        for _ in 0..2 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            });
+            let mut ui = Ui::new(
+                ctx.clone(),
+                egui::Id::new("narrow_sidebar"),
+                egui::UiBuilder::new().max_rect(rect),
+            );
+            assert!(sidebar.show(&mut ui).is_none());
+            assert!(ui.min_rect().right() <= rect.right() + 0.5);
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            assert!(has_text(
+                &output,
+                "No tags yet. Create a tag to mark a commit."
+            ));
+        }
+    }
 
     #[test]
     fn remote_groups_use_longest_configured_name_and_keep_branch_paths() {

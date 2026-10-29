@@ -33,6 +33,26 @@ No artwork from these references is shipped.
 - Icon fonts and symbol fallbacks are bundled. Incorrect Filter, Brightness and
   Rocket codepoints were corrected against the upstream Material icon map.
 
+## Layout kit and motion (October 2026)
+
+- `src/ui/kit.rs` is the shared vocabulary for screens: spacing scale
+  (4/8/12/16/24), titled section cards, labelled setting rows that stack when
+  narrow, disclosures, navigation items, status chips, callouts, empty states, a
+  toggle switch, menu items with right-aligned shortcuts, and one button hierarchy
+  (primary, secondary, danger, small, icon).
+- `src/ui/motion.rs` provides short ease-out transitions: 0.12 s for hover and fades,
+  0.18 s for accordion reveals and disclosures, 0.24 s for panels and banners. Panels
+  slide, stage/unstage controls and batch actions expand in place, chevrons rotate and
+  hover fills fade. Direct results (staging, selection, scrolling) are immediate.
+  Settings > Appearance > Motion chooses Match system setting, Always animate or
+  Reduce motion; reduced motion shows every end state instantly.
+- Settings uses a searchable left category list (General, Appearance, Accounts & SSH,
+  Git, Tools, Keyboard, Repository, Updates, About) with carded pages.
+- The Changes panel pins the commit composer to the bottom at its measured height; the
+  file list uses the remaining space and scrolls by itself.
+- Design inputs and the work plan: `docs/reviews/2026-10-28-ui-polish-plan.md`,
+  `2026-10-28-ui-audit.md` and `2026-10-28-git-client-ux-benchmark.md`.
+
 ## Verification
 
 Run `scripts/ui_review.py <binary> <external-artifacts>` through `linux_task.py`.

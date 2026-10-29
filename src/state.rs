@@ -285,6 +285,8 @@ pub struct AppState {
     pub git_user_initials: String,
     pub head_branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
+    /// The checked-out branch's upstream (`origin/main`), when it has one.
+    pub head_upstream: Option<String>,
     pub branch_ahead_behind: std::collections::HashMap<String, (usize, usize)>,
     pub dirty_count: usize,
     pub working_dir_files: Vec<WorkingDirFile>,

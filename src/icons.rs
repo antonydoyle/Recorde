@@ -75,6 +75,31 @@ pub const BUG_REPORT: char = '\u{E868}'; // provider integrations / issues
 pub const ROCKET_LAUNCH: char = '\u{EB9B}'; // releases
 pub const CHECK_CIRCLE: char = '\u{E86C}'; // CI success
 pub const CANCEL: char = '\u{E5C9}'; // CI failure
+pub const KEYBOARD: char = '\u{E312}';
+pub const PALETTE: char = '\u{E40A}'; // appearance
+pub const UPDATE: char = '\u{E923}';
+pub const FOLDER: char = '\u{E2C7}';
+pub const LINK: char = '\u{E157}';
+pub const CLOUD: char = '\u{E2BD}';
+pub const VPN_KEY: char = '\u{E0DA}'; // SSH keys
+pub const ACCOUNT_TREE: char = '\u{E97A}'; // branches
+pub const PUBLIC: char = '\u{E80B}'; // remotes
+pub const VERIFIED_USER: char = '\u{E8E8}';
+pub const BADGE: char = '\u{EA67}'; // commit identity
+pub const MANAGE_ACCOUNTS: char = '\u{F02E}';
+pub const CALL_SPLIT: char = '\u{E0B6}';
+pub const ARCHIVE: char = '\u{E149}'; // stash
+pub const UNARCHIVE: char = '\u{E169}';
+pub const EXPAND_LESS: char = '\u{E5CE}';
+pub const REMOVE: char = '\u{E15B}';
+pub const DONE_ALL: char = '\u{E877}';
+pub const SYNC: char = '\u{E627}';
+pub const BLOCK: char = '\u{E14B}';
+pub const CONSTRUCTION: char = '\u{EA3C}'; // tools
+pub const DESKTOP: char = '\u{E30C}';
+pub const DIFFERENCE: char = '\u{EB7D}';
+pub const PLAYLIST_ADD: char = '\u{E03B}';
+pub const LIGHTBULB: char = '\u{E0F0}'; // tips
 
 /// Embedded fonts: no dependency on the operating system font installation.
 pub fn font_definitions() -> egui::FontDefinitions {

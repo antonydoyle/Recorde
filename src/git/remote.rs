@@ -519,6 +519,19 @@ pub fn compute_ahead_behind(repo: &git2::Repository) -> Option<(usize, usize)> {
     repo.graph_ahead_behind(local_oid, upstream_oid).ok()
 }
 
+/// Short name of the checked-out branch's upstream, e.g. `origin/main`.
+pub fn head_upstream_name(repo: &git2::Repository) -> Option<String> {
+    let head = repo.head().ok()?;
+    if !head.is_branch() {
+        return None;
+    }
+    let branch = repo
+        .find_branch(head.shorthand().ok()?, git2::BranchType::Local)
+        .ok()?;
+    let upstream = branch.upstream().ok()?;
+    upstream.name().ok().flatten().map(str::to_owned)
+}
+
 /// Never guess between multiple remotes: repository settings make the choice explicit.
 pub fn default_push_remote(repo: &git2::Repository) -> Result<String, GitError> {
     if let Ok(name) = repo.config()?.get_string("remote.pushDefault") {

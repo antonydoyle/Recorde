@@ -4,7 +4,7 @@ use egui::{RichText, Stroke};
 
 use crate::state::UserError;
 use crate::theme;
-use crate::ui::button::Button;
+use crate::ui::{kit, motion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -17,6 +17,13 @@ pub enum ErrorKind {
     Hook,
     Network,
     Other,
+}
+
+/// Short messages (usually Recorde's own one-sentence refusals) are the useful
+/// part of the notice, so they start expanded; long Git output stays collapsed
+/// under a recognised title and guidance.
+fn details_open_by_default(kind: ErrorKind, message: &str) -> bool {
+    kind == ErrorKind::Other || (message.len() <= 240 && message.lines().count() <= 2)
 }
 
 pub fn classify(message: &str) -> ErrorKind {
@@ -61,6 +68,8 @@ pub fn classify(message: &str) -> ErrorKind {
             &[
                 "would be overwritten",
                 "please commit your changes or stash them",
+                // Recorde's own refusals before multi-commit operations.
+                "commit or stash",
             ],
         ),
         (ErrorKind::Conflict, &["conflict"]),
@@ -93,7 +102,7 @@ impl ErrorKind {
             Self::WorkflowScope => "GitHub needs the workflow permission",
             Self::HostKey => "Unknown SSH host",
             Self::PushRejected => "Push rejected",
-            Self::LocalChanges => "Local changes would be overwritten",
+            Self::LocalChanges => "Uncommitted changes are in the way",
             Self::Conflict => "Conflicts need resolving",
             Self::Hook => "A Git hook stopped the operation",
             Self::Network => "Network problem",
@@ -129,15 +138,40 @@ impl ErrorKind {
 }
 
 pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) {
-    let Some(error) = errors.front() else {
-        return;
+    let visible_id = egui::Id::new("error_overlay_visible");
+    // The last dismissed notice, kept only while it fades out.
+    let closing_id = egui::Id::new("error_overlay_closing");
+    let (error, live) = match errors.front() {
+        Some(error) => {
+            ctx.data_mut(|data| data.remove::<UserError>(closing_id));
+            (error.clone(), true)
+        }
+        None => match ctx.data(|data| data.get_temp::<UserError>(closing_id)) {
+            Some(error) => (error, false),
+            None => {
+                motion::progress(ctx, visible_id, false, motion::FAST);
+                return;
+            }
+        },
     };
+    let seconds = if live { motion::SLOW } else { motion::FAST };
+    let progress = motion::progress(ctx, visible_id, live, seconds);
+    if !live && progress <= 0.0 {
+        ctx.data_mut(|data| data.remove::<UserError>(closing_id));
+        return;
+    }
+    let error = &error;
     let mut dismiss = false;
     let mut dismiss_all = false;
     egui::Area::new(egui::Id::new("error_overlay"))
         .anchor(egui::Align2::CENTER_TOP, [0.0, 146.0])
         .order(egui::Order::Foreground)
+        .interactable(live)
         .show(ctx, |ui| {
+            ui.add_space(motion::slide(progress, -12.0));
+            if progress < 1.0 {
+                ui.multiply_opacity(progress);
+            }
             egui::Frame::NONE
                 .fill(theme::bg_diff_del())
                 .stroke(Stroke::new(1.5, theme::accent_red()))
@@ -145,12 +179,15 @@ pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) {
                 .inner_margin(egui::Margin::symmetric(16, 12))
                 .show(ui, |ui| {
                     ui.set_max_width(720.0);
-                    ui.label(
-                        RichText::new(error.kind.title())
-                            .color(theme::text_primary())
-                            .size(13.5)
-                            .strong(),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("! ").color(theme::accent_red()).strong());
+                        ui.label(
+                            RichText::new(error.kind.title())
+                                .color(theme::text_primary())
+                                .size(13.5)
+                                .strong(),
+                        );
+                    });
                     let guidance = error.kind.guidance();
                     if !guidance.is_empty() {
                         ui.add(
@@ -158,42 +195,66 @@ pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) {
                                 .wrap(),
                         );
                     }
-                    egui::ScrollArea::vertical()
-                        .id_salt("error_details")
-                        .max_height(160.0)
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&error.message)
-                                        .color(theme::text_primary())
-                                        .size(13.0),
-                                )
-                                .wrap()
-                                .selectable(true),
-                            );
-                        });
+                    kit::disclosure(
+                        ui,
+                        "error_details",
+                        "Details",
+                        details_open_by_default(error.kind, &error.message),
+                        |ui| {
+                            egui::ScrollArea::vertical()
+                                .max_height(160.0)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&error.message)
+                                                .color(theme::text_primary())
+                                                .size(13.0),
+                                        )
+                                        .wrap()
+                                        .selectable(true),
+                                    );
+                                });
+                        },
+                    );
                     ui.horizontal(|ui| {
-                        if ui.add(Button::new("Copy details")).clicked() {
+                        if ui.add(kit::secondary_button("Copy details")).clicked() {
                             ctx.copy_text(error.message.clone());
                         }
-                        dismiss = ui.add(Button::new("Dismiss")).clicked();
+                        dismiss = ui.add(kit::primary_button("Dismiss")).clicked();
                         if errors.len() > 1 {
-                            dismiss_all = ui.add(Button::new("Dismiss all")).clicked();
+                            dismiss_all = ui.add(kit::secondary_button("Dismiss all")).clicked();
                             ui.label(format!("1 of {}", errors.len()));
                         }
                     });
                 });
         });
+    if !live {
+        return;
+    }
     if dismiss_all {
         errors.clear();
     } else if dismiss {
         errors.pop_front();
+    }
+    if (dismiss || dismiss_all) && errors.is_empty() {
+        ctx.data_mut(|data| data.insert_temp(closing_id, error.clone()));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_messages_start_expanded_and_long_git_output_collapsed() {
+        assert!(details_open_by_default(
+            ErrorKind::LocalChanges,
+            "Commit or stash staged and tracked working-tree changes before applying multiple commits."
+        ));
+        let long = "error: line\n".repeat(5);
+        assert!(!details_open_by_default(ErrorKind::PushRejected, &long));
+        assert!(details_open_by_default(ErrorKind::Other, &long));
+    }
 
     #[test]
     fn classifies_git_failures_with_specific_rules_first() {
@@ -245,6 +306,58 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[test]
+    fn dismissed_last_notice_fades_out_then_disappears() {
+        let ctx = egui::Context::default();
+        let mut errors = VecDeque::from([UserError {
+            kind: ErrorKind::Network,
+            message: "fatal: Could not resolve host: github.com".into(),
+        }]);
+        let frame = |errors: &mut VecDeque<UserError>, time: f64, events| {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 700.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            });
+            show(&ctx, errors);
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Dismiss" => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+        };
+        let _ = frame(&mut errors, 0.0, vec![]);
+        let position = frame(&mut errors, 1.0, vec![]).expect("Dismiss is rendered");
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let _ = frame(
+            &mut errors,
+            1.1,
+            vec![egui::Event::PointerMoved(position), pointer(true)],
+        );
+        let _ = frame(&mut errors, 1.2, vec![pointer(false)]);
+        // Dismissal empties the queue at once; the notice only lingers visually.
+        assert!(errors.is_empty());
+        let lingering = frame(&mut errors, 1.21, vec![]).is_some();
+        assert!(lingering || motion::reduced());
+        let _ = frame(&mut errors, 2.0, vec![]);
+        assert!(
+            frame(&mut errors, 3.0, vec![]).is_none(),
+            "the faded notice is removed"
+        );
     }
 
     #[test]

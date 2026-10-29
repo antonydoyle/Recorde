@@ -19,6 +19,8 @@ mod gitflow;
 mod graph_actions;
 #[path = "inspection/recovery.rs"]
 mod recovery;
+#[path = "inspection/tour.rs"]
+mod tour;
 
 fn request(
     stream: &mut TcpStream,
@@ -364,6 +366,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if egui_inspection::protocol::read_handshake(&mut stream)? != egui_inspection::PROTOCOL_VERSION
     {
         return Err("Incompatible inspection protocol".into());
+    }
+    // Design review: RECORDE_UI_TOUR=1 captures screens instead of acceptance checks.
+    if std::env::var_os("RECORDE_UI_TOUR").is_some() {
+        return tour::run(&mut stream, &directory);
     }
     let mut focused = HashSet::new();
     for step in 0..7 {

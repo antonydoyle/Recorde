@@ -1,4 +1,3 @@
-use crate::ui::button::Button;
 use egui::{Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -7,6 +6,7 @@ use crate::git::operations::{load_diff, load_workdir_diff};
 use crate::git::staging;
 use crate::state::{DiffContext, FileDiff, PendingDiscard, SharedState};
 use crate::theme;
+use crate::ui::{kit, motion};
 
 const ROW_HEIGHT: f32 = 22.0;
 const FONT_SIZE: f32 = 13.0;
@@ -532,13 +532,15 @@ impl DiffView {
                     ui.menu_button(crate::icons::rich(crate::icons::TUNE, 18.0), |ui| {
                         ui.label("Diff display");
                         if ui
-                            .selectable_value(&mut self.split_view, false, "Unified diff")
+                            .selectable_value(&mut self.split_view, false, "Inline")
+                            .on_hover_text("Show old and new lines together.")
                             .clicked()
                         {
                             ui.close();
                         }
                         if ui
-                            .selectable_value(&mut self.split_view, true, "Split diff")
+                            .selectable_value(&mut self.split_view, true, "Side by side")
+                            .on_hover_text("Show old and new lines in separate columns.")
                             .clicked()
                         {
                             ui.close();
@@ -583,35 +585,57 @@ impl DiffView {
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(file_rect), |ui| {
             ui.horizontal_centered(|ui| {
-                let filename = selected_file
-                    .as_deref()
-                    .unwrap_or("Select a file to review its changes");
+                let filename = selected_file.as_deref().unwrap_or("");
+                let (directory, basename) = filename
+                    .rfind('/')
+                    .map(|index| filename.split_at(index + 1))
+                    .unwrap_or(("", filename));
+                let mut path = egui::text::LayoutJob::default();
+                path.append(
+                    directory,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: FontId::proportional(13.0),
+                        color: theme::text_muted(),
+                        ..Default::default()
+                    },
+                );
+                path.append(
+                    basename,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: FontId::proportional(13.0),
+                        color: theme::text_primary(),
+                        ..Default::default()
+                    },
+                );
                 let filename_width =
                     (ui.available_width() - if diff_opt.is_some() { 130.0 } else { 0.0 }).max(60.0);
-                ui.add_sized(
-                    [filename_width, 28.0],
-                    egui::Label::new(
-                        egui::RichText::new(filename)
-                            .size(13.0)
-                            .color(theme::text_primary()),
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(filename);
+                ui.add_sized([filename_width, 28.0], egui::Label::new(path).truncate())
+                    .on_hover_text(filename);
                 if let Some(diff) = diff_opt {
                     let context = match diff_context {
                         DiffContext::StagedFile => "Staged",
                         DiffContext::UnstagedFile => "Unstaged",
                         _ => "Commit",
                     };
+                    crate::ui::kit::status_chip(ui, crate::ui::kit::Status::Neutral, context)
+                        .on_hover_text(match diff_context {
+                            DiffContext::StagedFile => "Staged: included in your next commit",
+                            DiffContext::UnstagedFile => {
+                                "Unstaged: not yet included in your next commit"
+                            }
+                            _ => "Changes in this commit",
+                        });
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{context}  +{} −{}",
-                            diff.additions, diff.deletions
-                        ))
-                        .size(12.0)
-                        .color(theme::text_muted()),
-                    );
+                        egui::RichText::new(format!("+{} −{}", diff.additions, diff.deletions))
+                            .size(12.0)
+                            .color(theme::text_muted()),
+                    )
+                    .on_hover_text(format!(
+                        "{} lines added, {} removed",
+                        diff.additions, diff.deletions
+                    ));
                 }
             });
         });
@@ -622,61 +646,85 @@ impl DiffView {
         );
 
         let mut scroll_to = None;
-        if self.search_open && !self.show_console && !self.show_blame {
+        if !self.show_console && !self.show_blame {
+            let search_id = ui.id().with("diff_search_reveal");
+            let search_height = 36.0
+                * crate::ui::motion::progress(
+                    ui.ctx(),
+                    search_id.with("height"),
+                    self.search_open,
+                    crate::ui::motion::NORMAL,
+                );
             let toolbar =
                 Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 36.0));
-            content_rect.min.y += 36.0;
+            content_rect.min.y += search_height;
             ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar), |ui| {
-                ui.horizontal(|ui| {
-                    let changed = ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.search_query)
-                                .hint_text("Find in diff")
-                                .desired_width(180.0),
-                        )
-                        .changed();
-                    let previous = ui.button("Previous").clicked();
-                    let next = ui.button("Next").clicked();
-                    let change = ui.button("Next change").clicked();
-                    if ui.button("Close").clicked() {
-                        self.search_open = false;
-                    }
-                    if changed || previous || next || change {
-                        let query = self.search_query.to_lowercase();
-                        let matches: Vec<_> = self
-                            .items
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(row, item)| match item {
-                                Item::HunkHeader { .. } if change => Some(row),
-                                Item::Line { content, .. }
-                                    if !change
-                                        && !query.is_empty()
-                                        && content.to_lowercase().contains(&query) =>
-                                {
-                                    Some(row)
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        self.search_row = if changed {
-                            matches.first().copied()
-                        } else if previous {
-                            matches
+                crate::ui::motion::reveal(ui, search_id, self.search_open, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Find in diff");
+                        let changed = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut self.search_query)
+                                    .hint_text("Find in diff")
+                                    .desired_width(180.0),
+                            )
+                            .changed();
+                        let previous = ui
+                            .button("Previous")
+                            .on_hover_text("Find the previous match.")
+                            .clicked();
+                        let next = ui
+                            .button("Next")
+                            .on_hover_text("Find the next match.")
+                            .clicked();
+                        let change = ui
+                            .button("Next change")
+                            .on_hover_text("Jump to the next changed section.")
+                            .clicked();
+                        if ui
+                            .button("Close")
+                            .on_hover_text("Close diff search.")
+                            .clicked()
+                        {
+                            self.search_open = false;
+                        }
+                        if changed || previous || next || change {
+                            let query = self.search_query.to_lowercase();
+                            let matches: Vec<_> = self
+                                .items
                                 .iter()
-                                .rev()
-                                .copied()
-                                .find(|row| *row < self.search_row.unwrap_or(usize::MAX))
-                                .or_else(|| matches.last().copied())
-                        } else {
-                            matches
-                                .iter()
-                                .copied()
-                                .find(|row| *row > self.search_row.unwrap_or(0))
-                                .or_else(|| matches.first().copied())
-                        };
-                        scroll_to = self.search_row;
-                    }
+                                .enumerate()
+                                .filter_map(|(row, item)| match item {
+                                    Item::HunkHeader { .. } if change => Some(row),
+                                    Item::Line { content, .. }
+                                        if !change
+                                            && !query.is_empty()
+                                            && content.to_lowercase().contains(&query) =>
+                                    {
+                                        Some(row)
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            self.search_row = if changed {
+                                matches.first().copied()
+                            } else if previous {
+                                matches
+                                    .iter()
+                                    .rev()
+                                    .copied()
+                                    .find(|row| *row < self.search_row.unwrap_or(usize::MAX))
+                                    .or_else(|| matches.last().copied())
+                            } else {
+                                matches
+                                    .iter()
+                                    .copied()
+                                    .find(|row| *row > self.search_row.unwrap_or(0))
+                                    .or_else(|| matches.first().copied())
+                            };
+                            scroll_to = self.search_row;
+                        }
+                    });
                 });
             });
         }
@@ -688,22 +736,65 @@ impl DiffView {
                 .as_ref()
                 .is_some_and(|d| !d.is_binary && !d.is_rename)
         {
-            let toolbar =
-                Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 36.0));
-            content_rect.min.y += 36.0;
             let mut apply = false;
             let mut discard = false;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar), |ui| {
-                ui.horizontal(|ui| {
-                    let label = if diff_context == DiffContext::StagedFile { "Unstage" } else { "Stage" };
-                    apply = ui.add_enabled(!self.selected_rows.is_empty(), Button::new(format!("{label} ({})", self.selected_rows.len()))).clicked();
-                    if diff_context == DiffContext::UnstagedFile {
-                        discard = ui.add_enabled(!self.selected_rows.is_empty(), Button::new("Discard")).clicked();
-                    }
-                    if ui.button("Clear").clicked() { self.selected_rows.clear(); self.selection_anchor = None; }
-                    ui.label(crate::icons::rich(crate::icons::INFO, 16.0).color(theme::text_muted())).on_hover_text("Click lines to select. Ctrl/Cmd toggles a line, Shift selects a range. The gutter stages or unstages one line.");
+            let has_selection = !self.selected_rows.is_empty();
+            let toolbar = ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                let id = ui.id().with("diff_line_selection");
+                motion::reveal(ui, id, has_selection, |ui| {
+                    // A closing reveal can still paint its contents; disable stale actions.
+                    ui.add_enabled_ui(has_selection, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            let label = if diff_context == DiffContext::StagedFile {
+                                "Unstage selected lines"
+                            } else {
+                                "Stage selected lines"
+                            };
+                            apply = ui
+                                .add(kit::small_button(&format!(
+                                    "{label} ({})",
+                                    self.selected_rows.len()
+                                )))
+                                .on_hover_text(if diff_context == DiffContext::StagedFile {
+                                    concat!(
+                                        "Leave these lines out of the next commit; ",
+                                        "keep their changes."
+                                    )
+                                } else {
+                                    "Include these lines in your next commit."
+                                })
+                                .clicked();
+                            if diff_context == DiffContext::UnstagedFile {
+                                discard = ui
+                                    .add(kit::danger_outline_button("Discard selected lines…"))
+                                    .on_hover_text("Discard selected lines after confirmation.")
+                                    .clicked();
+                            }
+                            if ui.add(kit::small_button("Clear selection")).clicked() {
+                                self.selected_rows.clear();
+                                self.selection_anchor = None;
+                            }
+                        });
+                    });
+                    ui.add_space(kit::space::XS);
+                });
+                motion::reveal(ui, id.with("hint"), !has_selection, |ui| {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(12, 0))
+                        .show(ui, |ui| {
+                            kit::hint(
+                                ui,
+                                "Tip: click line numbers to select lines to stage or discard.",
+                            )
+                            .on_hover_text(concat!(
+                                "Ctrl/Cmd toggles a line, Shift selects a range. ",
+                                "The gutter stages or unstages one line."
+                            ));
+                        });
+                    ui.add_space(kit::space::XS);
                 });
             });
+            content_rect.min.y += toolbar.response.rect.height();
             if apply || discard {
                 let lines = self
                     .selected_rows
@@ -781,7 +872,11 @@ impl DiffView {
                                 let message = if selected_file.is_some() {
                                     "Loading blame..."
                                 } else {
-                                    "Select a file to view blame."
+                                    concat!(
+                                        "Blame shows who last changed each line ",
+                                        "and in which commit. ",
+                                        "Select a file to see it."
+                                    )
                                 };
                                 ui.label(
                                     egui::RichText::new(message)
@@ -891,13 +986,23 @@ impl DiffView {
         };
         if let Some(msg) = empty_msg {
             ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.label(
-                        egui::RichText::new(msg)
-                            .color(theme::text_muted())
-                            .size(13.0),
+                if selected_file.is_none() {
+                    crate::ui::kit::empty_state(
+                        ui,
+                        crate::icons::DIFFERENCE,
+                        "No file selected",
+                        "Select a file in Changes or in a commit to see what changed.",
+                        None,
                     );
-                });
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            egui::RichText::new(msg)
+                                .color(theme::text_muted())
+                                .size(13.0),
+                        );
+                    });
+                }
             });
             return Vec::new();
         }
@@ -1047,40 +1152,61 @@ fn render_unified(
                                         Pos2::new(btn_x, y + 2.0),
                                         Vec2::new(btn_w, btn_h),
                                     );
-                                    let hovered = hover_pos.map_or(false, |p| btn_rect.contains(p));
-                                    painter.rect_filled(
-                                        btn_rect,
-                                        3.0,
-                                        if hovered {
-                                            col.gamma_multiply(0.25)
-                                        } else {
-                                            Color32::TRANSPARENT
-                                        },
-                                    );
-                                    painter.rect_stroke(
-                                        btn_rect,
-                                        3.0,
-                                        Stroke::new(1.0, *col),
-                                        egui::StrokeKind::Middle,
-                                    );
+                                    let button = ui
+                                        .scope_builder(
+                                            egui::UiBuilder::new()
+                                                .id_salt(("diff_hunk_button", hi, label))
+                                                .max_rect(btn_rect),
+                                            |ui| {
+                                                // Preserve the dense diff row's height.
+                                                ui.spacing_mut().button_padding =
+                                                    Vec2::new(4.0, 0.0);
+                                                ui.spacing_mut().interact_size.y = btn_h;
+                                                ui.put(
+                                                    btn_rect,
+                                                    kit::small_button("")
+                                                        .min_size(Vec2::new(btn_w, btn_h)),
+                                                )
+                                            },
+                                        )
+                                        .inner;
+                                    button.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            ui.is_enabled(),
+                                            *label,
+                                        )
+                                    });
+                                    // Keep the kit surface and the action's text tint.
                                     painter.text(
-                                        btn_rect.center(),
+                                        button.rect.center(),
                                         egui::Align2::CENTER_CENTER,
                                         *label,
                                         FontId::proportional(12.0),
-                                        *col,
+                                        if ui.is_enabled() {
+                                            *col
+                                        } else {
+                                            theme::text_muted()
+                                        },
                                     );
-
-                                    if let Some(cp) = click_pos {
-                                        if btn_rect.contains(cp) {
-                                            let mut acts = actions.borrow_mut();
-                                            if *is_discard {
-                                                acts.push(DiffAction::DiscardHunk(hi));
-                                            } else if is_staged {
-                                                acts.push(DiffAction::UnstageHunk(hi));
-                                            } else {
-                                                acts.push(DiffAction::StageHunk(hi));
-                                            }
+                                    let button = button.on_hover_text(if *is_discard {
+                                        "Discard this section's changes after confirmation."
+                                    } else if is_staged {
+                                        concat!(
+                                            "Leave this section out of the next commit; ",
+                                            "keep its changes."
+                                        )
+                                    } else {
+                                        "Include this section's changes in your next commit."
+                                    });
+                                    if button.clicked() {
+                                        let mut acts = actions.borrow_mut();
+                                        if *is_discard {
+                                            acts.push(DiffAction::DiscardHunk(hi));
+                                        } else if is_staged {
+                                            acts.push(DiffAction::UnstageHunk(hi));
+                                        } else {
+                                            acts.push(DiffAction::StageHunk(hi));
                                         }
                                     }
                                     btn_x += btn_w + 4.0;
@@ -1944,6 +2070,135 @@ mod tests {
                 .expect("added line background");
             assert_eq!(row_width > rect.width(), should_scroll);
             assert!(clip_width <= rect.width());
+        }
+    }
+
+    #[test]
+    fn selection_toolbar_replaces_the_hint_and_uses_a_distinct_discard_label() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::icons::font_definitions());
+        ctx.global_style_mut(|style| style.animation_time = 0.0);
+        let mut view = DiffView::new(crate::state::new_shared_state());
+        let file_diff = Some(Arc::new(diff(&[('-', "old"), ('+', "new")])));
+        let selected_file = Some("example.rs".to_owned());
+        let draw = |view: &mut DiffView| {
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 300.0));
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            });
+            let mut ui = Ui::new(
+                ctx.clone(),
+                egui::Id::new("selection_toolbar_test"),
+                egui::UiBuilder::new().max_rect(rect),
+            );
+            let actions = view.show_diff_area(
+                &mut ui,
+                &file_diff,
+                &selected_file,
+                &[],
+                DiffContext::UnstagedFile,
+                &[],
+                0,
+            );
+            assert!(actions.is_empty());
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            output
+        };
+        let has_text = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+            })
+        };
+        let hint = "Tip: click line numbers to select lines to stage or discard.";
+        let output = draw(&mut view);
+        assert!(has_text(&output, hint));
+        assert!(!has_text(&output, "Discard selected lines…"));
+        view.selected_rows.insert(1);
+        let output = draw(&mut view);
+        assert!(has_text(&output, "Stage selected lines (1)"));
+        assert!(has_text(&output, "Discard selected lines…"));
+        assert!(!has_text(&output, "Discard"));
+        assert!(!has_text(&output, hint));
+        view.selected_rows.clear();
+        let output = draw(&mut view);
+        assert!(has_text(&output, hint));
+        assert!(!has_text(&output, "Discard selected lines…"));
+    }
+
+    #[test]
+    fn hunk_buttons_emit_the_existing_actions_without_selecting_lines() {
+        for (context, label) in [
+            (DiffContext::UnstagedFile, "Stage Hunk"),
+            (DiffContext::UnstagedFile, "Discard Hunk"),
+            (DiffContext::StagedFile, "Unstage Hunk"),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::icons::font_definitions());
+            let items = flatten_unified(&diff(&[('-', "old"), ('+', "new")]));
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 200.0));
+            let mut selected = BTreeSet::new();
+            let mut anchor = None;
+            let mut draw = |events| {
+                ctx.begin_pass(egui::RawInput {
+                    screen_rect: Some(rect),
+                    events,
+                    ..Default::default()
+                });
+                let mut ui = Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("hunk_buttons_test"),
+                    egui::UiBuilder::new().max_rect(rect),
+                );
+                let actions = render_unified(
+                    &mut ui,
+                    rect,
+                    &items,
+                    100.0,
+                    context,
+                    &mut selected,
+                    &mut anchor,
+                    None,
+                    false,
+                    false,
+                );
+                let mut output = ctx.end_pass();
+                output.textures_delta.clear();
+                (actions, output)
+            };
+            let (_, output) = draw(vec![]);
+            let position = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .expect("Hunk action label is rendered");
+            let mut actions = Vec::new();
+            for pressed in [true, false] {
+                let (emitted, _) = draw(vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ]);
+                actions.extend(emitted);
+            }
+            assert!(matches!(
+                (label, actions.as_slice()),
+                ("Stage Hunk", [DiffAction::StageHunk(0)])
+                    | ("Discard Hunk", [DiffAction::DiscardHunk(0)])
+                    | ("Unstage Hunk", [DiffAction::UnstageHunk(0)])
+            ));
+            assert!(selected.is_empty());
+            assert!(anchor.is_none());
         }
     }
 

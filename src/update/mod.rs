@@ -262,62 +262,91 @@ impl Controller {
         accounts: &[crate::auth::StoredAccount],
         can_apply: bool,
     ) -> bool {
-        ui.heading("Application updates");
-        ui.label(format!("Installed version {}", env!("CARGO_PKG_VERSION")));
-        ui.label("Recorde verifies every update before installation.");
+        use crate::ui::kit;
         let busy = self.task.is_some() || self.applying;
+        kit::setting_row(
+            ui,
+            "Installed version",
+            "Recorde checks the signature of every update before installing it.",
+            |ui| ui.label(env!("CARGO_PKG_VERSION")),
+        );
+        kit::row_divider(ui);
         ui.add_enabled_ui(!busy && !self.persistence_failed, |ui| {
-            if ui
-                .checkbox(
-                    &mut self.preferences.automatic_checks,
-                    "Check automatically once a day",
-                )
-                .changed()
-            {
-                self.save();
-            }
-            let mut changed = false;
-            egui::ComboBox::from_id_salt("update-channel")
-                .selected_text(&self.preferences.channel)
-                .show_ui(ui, |ui| {
-                    for channel in ["stable", "preview"] {
-                        changed |= ui
-                            .selectable_value(
-                                &mut self.preferences.channel,
-                                channel.into(),
-                                channel,
-                            )
-                            .changed();
-                    }
-                });
-            egui::ComboBox::from_id_salt("update-account")
-                .selected_text(
-                    self.preferences
-                        .account
-                        .as_deref()
-                        .unwrap_or("Public access (no account)"),
-                )
-                .show_ui(ui, |ui| {
-                    changed |= ui
-                        .selectable_value(
-                            &mut self.preferences.account,
-                            None,
-                            "Public access (no account)",
-                        )
-                        .changed();
-                    for account in accounts
-                        .iter()
-                        .filter(|account| account.host == "github.com")
+            kit::setting_row(
+                ui,
+                "Automatic checks",
+                "Look for a new version once a day. Nothing is installed without asking.",
+                |ui| {
+                    if kit::toggle(
+                        ui,
+                        &mut self.preferences.automatic_checks,
+                        "Check automatically once a day",
+                    )
+                    .changed()
                     {
-                        changed |= ui
-                            .selectable_value(
-                                &mut self.preferences.account,
-                                Some(account.username.clone()),
-                                &account.username,
-                            )
-                            .changed();
+                        self.save();
                     }
-                });
+                },
+            );
+            kit::row_divider(ui);
+            let mut changed = false;
+            kit::setting_row(
+                ui,
+                "Release channel",
+                "Stable is recommended. Preview gets new features sooner but may have rough edges.",
+                |ui| {
+                    egui::ComboBox::from_id_salt("update-channel")
+                        .selected_text(channel_label(&self.preferences.channel))
+                        .show_ui(ui, |ui| {
+                            for channel in ["stable", "preview"] {
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.preferences.channel,
+                                        channel.into(),
+                                        channel_label(channel),
+                                    )
+                                    .changed();
+                            }
+                        });
+                },
+            );
+            kit::row_divider(ui);
+            kit::setting_row(
+                ui,
+                "Download with",
+                "Public releases need no account. Private releases need a GitHub account \
+                 with access to antonydoyle/Recorde.",
+                |ui| {
+                    egui::ComboBox::from_id_salt("update-account")
+                        .selected_text(
+                            self.preferences
+                                .account
+                                .as_deref()
+                                .unwrap_or("Public access (no account)"),
+                        )
+                        .show_ui(ui, |ui| {
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.preferences.account,
+                                    None,
+                                    "Public access (no account)",
+                                )
+                                .changed();
+                            for account in accounts
+                                .iter()
+                                .filter(|account| account.host == "github.com")
+                            {
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.preferences.account,
+                                        Some(account.username.clone()),
+                                        &account.username,
+                                    )
+                                    .changed();
+                            }
+                        });
+                },
+            );
             if changed {
                 self.offer = None;
                 self.staged = None;
@@ -325,30 +354,57 @@ impl Controller {
                 self.status.clear();
                 self.save();
             }
-            ui.label("Private releases need a GitHub account with access to antonydoyle/Recorde.");
-            if ui.button("Check for updates").clicked() {
-                self.check();
-            }
-            if self.offer.is_some()
-                && self.staged.is_none()
-                && ui.button("Download verified update").clicked()
-            {
-                self.download();
+        });
+        ui.add_space(kit::space::MD);
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!busy && !self.persistence_failed, |ui| {
+                let download = self.offer.is_some() && self.staged.is_none();
+                if download
+                    && ui
+                        .add(kit::primary_button("Download verified update"))
+                        .on_hover_text("Download the new version and check its signature.")
+                        .clicked()
+                {
+                    self.download();
+                }
+                let check = if download {
+                    kit::secondary_button("Check for updates")
+                } else {
+                    kit::primary_button("Check for updates")
+                };
+                if ui
+                    .add(check)
+                    .on_hover_text("Ask the release server whether a newer version exists.")
+                    .clicked()
+                {
+                    self.check();
+                }
+            });
+            if busy {
+                ui.spinner();
+                if !self.applying
+                    && ui
+                        .add(kit::secondary_button("Cancel"))
+                        .on_hover_text("Stop the current check or download.")
+                        .clicked()
+                {
+                    self.cancel.store(true, Ordering::Relaxed);
+                }
             }
         });
-        if busy {
-            ui.spinner();
-            if !self.applying && ui.button("Cancel download/check").clicked() {
-                self.cancel.store(true, Ordering::Relaxed);
-            }
-        }
         if !self.status.is_empty() {
-            ui.label(&self.status);
+            ui.add_space(kit::space::SM);
+            kit::callout(ui, kit::Status::Info, &self.status);
         }
         if let Some(error) = &self.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
+            ui.add_space(kit::space::SM);
+            kit::callout(ui, kit::Status::Error, error);
         }
-        if self.persistence_failed && !busy && ui.button("Retry loading update settings").clicked()
+        if self.persistence_failed
+            && !busy
+            && ui
+                .add(kit::secondary_button("Retry loading update settings"))
+                .clicked()
         {
             match persistence::preferences() {
                 Ok(preferences) => {
@@ -365,48 +421,81 @@ impl Controller {
         }
         let mut apply = false;
         if let Some(staged) = &self.staged {
-            ui.label(format!("Verified download: {}", staged.directory.display()));
-            ui.label(&staged.artifact_name);
-            if ui.button("Open download folder").clicked() {
-                crate::git::lifecycle::reveal_in_file_manager(&staged.directory);
-            }
+            ui.add_space(kit::space::MD);
+            kit::callout(
+                ui,
+                kit::Status::Ok,
+                &format!("{} is downloaded and verified.", staged.artifact_name),
+            );
+            kit::hint(ui, &staged.directory.display().to_string());
             let supported = staged.can_install;
-            if ui
-                .add_enabled(
-                    !busy && supported && can_apply,
-                    egui::Button::new("Install and restart…"),
-                )
-                .clicked()
-            {
-                self.confirm = true;
-            }
-            if !supported {
-                ui.label("Automatic installation is unavailable here. Open the download folder to install the verified update manually.");
-            }
-            if !can_apply {
-                ui.label("Finish repository operations, clones and merge/rebase sequences before restarting.");
-            }
-            if self.confirm {
-                if staged.target.package_kind == "msi" {
-                    ui.label("Windows Installer may ask for administrator permission.");
+            let reason = if !supported {
+                "Automatic installation is unavailable here. Open the download folder to \
+                 install the verified update manually."
+            } else if !can_apply {
+                "Finish repository operations, clones and merge or rebase sequences before \
+                 restarting."
+            } else {
+                ""
+            };
+            ui.add_space(kit::space::SM);
+            ui.horizontal(|ui| {
+                if !self.confirm {
+                    let install = ui.add_enabled(
+                        !busy && supported && can_apply,
+                        kit::primary_button("Install and restart…"),
+                    );
+                    if kit::explain_disabled(install, reason).clicked() {
+                        self.confirm = true;
+                    }
                 }
-                ui.label("Recorde will save your drafts, close, and install the update. It will reopen when installation finishes.");
                 if ui
-                    .add_enabled(
-                        !busy && can_apply,
-                        egui::Button::new("Confirm install and restart"),
-                    )
+                    .add(kit::secondary_button("Open download folder"))
                     .clicked()
                 {
-                    apply = true;
-                    self.confirm = false;
+                    crate::git::lifecycle::reveal_in_file_manager(&staged.directory);
                 }
-                if ui.button("Cancel").clicked() {
-                    self.confirm = false;
+            });
+            if !reason.is_empty() {
+                kit::hint(ui, reason);
+            }
+            if self.confirm {
+                ui.add_space(kit::space::SM);
+                let mut text = String::from(
+                    "Recorde will save your drafts, close, and install the update. It reopens \
+                     when installation finishes.",
+                );
+                if staged.target.package_kind == "msi" {
+                    text.push_str(" Windows Installer may ask for administrator permission.");
                 }
+                kit::callout(ui, kit::Status::Warning, &text);
+                ui.add_space(kit::space::SM);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !busy && can_apply,
+                            kit::primary_button("Confirm install and restart"),
+                        )
+                        .clicked()
+                    {
+                        apply = true;
+                        self.confirm = false;
+                    }
+                    if ui.add(kit::secondary_button("Cancel")).clicked() {
+                        self.confirm = false;
+                    }
+                });
             }
         }
         apply
+    }
+}
+
+fn channel_label(channel: &str) -> &str {
+    match channel {
+        "stable" => "Stable",
+        "preview" => "Preview",
+        other => other,
     }
 }
 

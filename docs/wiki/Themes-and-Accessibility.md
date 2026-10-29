@@ -14,6 +14,10 @@ Use high contrast when you need stronger separation between text, controls and b
 
 Recorde bundles its UI font, Material Icons, Noto Symbols and monochrome emoji fallbacks; no font installation is required. Report any missing symbol with the app version, platform and display scale.
 
+## Motion
+
+Panels slide, lists and options expand like an accordion, and hover highlights fade, so you can see what changed. Animations are short (about a fifth of a second) and never delay an action: staging a file or selecting a commit happens immediately. Settings > Appearance > Motion chooses Match system setting (the default), Always animate or Reduce motion. On Windows, Match system setting follows Settings > Accessibility > Visual effects > Animation effects. Reduce motion shows every change instantly.
+
 ## Arrange the workspace
 
 Use the View menu and command palette to focus or show the sidebar, graph, changes and diff areas. Resize panel dividers to suit the task. The graph's Columns menu, also available by right-clicking a header, hides columns, moves them left/right and changes the date format. Relative dates, ISO dates and UTC date/time are available. The Commit column remains visible. Column choices, order, date format and widths are saved per repository.

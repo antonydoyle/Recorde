@@ -274,6 +274,7 @@ fn apply_repo_result(
             graph,
             head_branch,
             ahead_behind,
+            head_upstream,
             branch_ahead_behind,
             dirty_count,
             files,
@@ -324,6 +325,7 @@ fn apply_repo_result(
             }
             s.head_branch = Some(head_branch);
             s.ahead_behind = ahead_behind;
+            s.head_upstream = head_upstream;
             s.branch_ahead_behind = branch_ahead_behind;
             s.dirty_count = dirty_count;
             s.working_dir_files = files;
@@ -431,6 +433,7 @@ type RepoInnerResult = (
     CommitGraph,
     String,
     Option<(usize, usize)>,
+    Option<String>,
     std::collections::HashMap<String, (usize, usize)>,
     usize,
     Vec<WorkingDirFile>,
@@ -459,6 +462,7 @@ fn load_repo_inner_limit(
     let dirty_count;
     let status;
     let ahead_behind;
+    let head_upstream;
     let branch_ahead_behind;
     {
         let repo = git2::Repository::open(path)?;
@@ -470,6 +474,7 @@ fn load_repo_inner_limit(
             .unwrap_or_else(|| "HEAD".to_string());
         (dirty_count, status) = collect_status(&repo)?;
         ahead_behind = remote::compute_ahead_behind(&repo);
+        head_upstream = remote::head_upstream_name(&repo);
         branch_ahead_behind = remote::compute_all_ahead_behind(&repo);
     }
 
@@ -514,6 +519,7 @@ fn load_repo_inner_limit(
         graph,
         head_branch,
         ahead_behind,
+        head_upstream,
         branch_ahead_behind,
         dirty_count,
         status,

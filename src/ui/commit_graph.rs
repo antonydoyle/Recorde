@@ -370,7 +370,10 @@ impl CommitGraphView {
         let window = egui::Window::new("Confirm graph operation").order(egui::Order::Foreground).collapsible(false).resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
                 ui.set_max_width(540.0);
-                ui.label(format!("Repository: {}", preview.path.display()));
+                ui.label(format!(
+                    "Repository: {}",
+                    crate::ui::kit::display_path(&preview.path)
+                ));
                 ui.label(format!("From: {}", preview.source.label()));
                 ui.label(format!("Destination: {}", preview.destination.label()));
                 ui.horizontal(|ui| {
@@ -500,13 +503,13 @@ impl CommitGraphView {
             .rect_filled(ui.max_rect(), 0.0, theme::bg_app());
 
         let Some(graph) = graph_opt else {
-            ui.centered_and_justified(|ui| {
-                ui.label(
-                    egui::RichText::new("Open a repository to view commits.")
-                        .color(theme::text_muted())
-                        .size(14.0),
-                );
-            });
+            crate::ui::kit::empty_state(
+                ui,
+                crate::icons::COMMIT,
+                "No repository open",
+                "Open a repository to view its history.",
+                None,
+            );
             return;
         };
 
@@ -623,17 +626,27 @@ impl CommitGraphView {
             ui.horizontal(|ui| {
                 ui.add_space(10.0);
                 let (dirty, loading) = { let s = self.state.lock().unwrap(); (s.dirty_count, s.repo_load_path.is_some()) };
-                if ui.button(format!("Working changes ({dirty})")).clicked() {
+                if ui
+                    .button(format!("Working changes ({dirty})"))
+                    .on_hover_text("Review uncommitted changes and create a commit.")
+                    .clicked()
+                {
                     let mut s = self.state.lock().unwrap();
                     s.selected_commit = None; s.selected_commit_detail = None; s.current_diff = None; s.focused_pane = 3;
                 }
-                if ui.button("Jump to HEAD").clicked() {
+                if ui
+                    .button("Jump to HEAD")
+                    .on_hover_text("Show the current commit in history.")
+                    .clicked()
+                {
                     if let Some(oid) = &graph.head_oid {
                         self.reveal_commit(oid);
                     }
                 }
                 self.filter_menu(ui, &graph);
-                ui.menu_button("Columns", |ui| self.preferences_menu(ui));
+                ui.menu_button("Columns", |ui| self.preferences_menu(ui))
+                    .response
+                    .on_hover_text("Choose which history columns to show.");
                 ui.label(format!("{} commits", graph.nodes.len()));
                 if graph.order_may_refine && graph.has_more { ui.label("Progressive history").on_hover_text("History loads without writing an index. As more commits load, rows may move to keep children before parents when commit clocks differ. Optimize History builds Git's index for stable ordering."); }
                 if graph.replacement_refs { ui.colored_label(theme::accent_yellow(), "Replacement history").on_hover_text("This graph and commit detail honor Git replacement objects. Original commit IDs are retained; replacement metadata and ancestry are shown."); }
@@ -823,7 +836,11 @@ impl CommitGraphView {
                     ).intersect(painter.clip_rect()));
                     if show_wip {
                         let rect = Rect::from_min_size(resp.rect.min, Vec2::new(avail, ROW_H));
-                        let response = ui.interact(rect, egui::Id::new("wip_row"), Sense::click());
+                        let response = ui
+                            .interact(rect, egui::Id::new("wip_row"), Sense::click())
+                            .on_hover_text(
+                                "Your uncommitted work. Select to review changes and commit.",
+                            );
                         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), selected.is_none(), "Working tree: uncommitted changes"));
                         ui.ctx().accesskit_node_builder(response.id, |node| {
                             node.set_role(egui::accesskit::Role::ListBoxOption);
@@ -838,10 +855,12 @@ impl CommitGraphView {
                             0.0,
                             if selected.is_none() {
                                 theme::bg_selected()
-                            } else if response.hovered() {
-                                theme::bg_hover()
                             } else {
-                                theme::bg_panel()
+                                crate::ui::motion::mix(
+                                    theme::bg_panel(),
+                                    theme::bg_hover(),
+                                    crate::ui::motion::hover(ui, &response),
+                                )
                             },
                         );
                         let head_row = graph
@@ -923,10 +942,12 @@ impl CommitGraphView {
 
                         let row_bg = if is_sel {
                             theme::bg_selected()
-                        } else if row_resp.hovered() {
-                            theme::bg_hover()
                         } else {
-                            Color32::TRANSPARENT
+                            crate::ui::motion::mix(
+                                Color32::TRANSPARENT,
+                                theme::bg_hover(),
+                                crate::ui::motion::hover(ui, &row_resp),
+                            )
                         };
                         if row_bg != Color32::TRANSPARENT {
                             painter.rect_filled(row_rect, 0.0, row_bg);
@@ -938,7 +959,11 @@ impl CommitGraphView {
                         let dimmed = (search_matches.is_some() && !is_match)
                             || (!file_history_oids.is_empty() && !in_file_history);
                         if dimmed {
-                            painter.rect_filled(row_rect, 0.0, Color32::from_black_alpha(80));
+                            painter.rect_filled(
+                                row_rect,
+                                0.0,
+                                theme::bg_app().gamma_multiply(0.32),
+                            );
                         }
                     }
 
@@ -1311,6 +1336,20 @@ impl CommitGraphView {
                     });
                     }
 
+                    if nodes.is_empty()
+                        && graph.head_oid.is_none()
+                        && graph.ref_targets.is_empty()
+                        && !graph.has_more
+                        && self.state.lock().unwrap().repo_load_path.is_none()
+                    {
+                        crate::ui::kit::empty_state(
+                            ui,
+                            crate::icons::COMMIT,
+                            "No commits yet",
+                            "Stage some files in Changes and create your first commit.",
+                            None,
+                        );
+                    }
                 });
         });
 
@@ -1324,7 +1363,15 @@ impl CommitGraphView {
             {
                 let mut s = self.state.lock().unwrap();
                 s.selected_commits = new_multi.unwrap_or_default();
+                let changed = s.selected_commit != new_sel;
                 s.selected_commit = new_sel.clone();
+                if new_sel.is_some() && clears_file_for_commit(changed, s.diff_context) {
+                    // A working-tree diff, or another commit's file, would be
+                    // shown beside this commit's details. Cancel its load too.
+                    s.diff_load_id += 1;
+                    s.selected_file = None;
+                    s.current_diff = None;
+                }
                 if new_sel.is_none() {
                     s.selected_commit_detail = None;
                     s.current_diff = None;
@@ -1611,6 +1658,12 @@ impl CommitGraphView {
 }
 
 /// UTC dates are explicit and deterministic, including timestamps before 1970.
+/// Selecting a commit keeps its own file open (the selection did not change)
+/// but drops a working-tree diff or a file chosen in a different commit.
+fn clears_file_for_commit(selection_changed: bool, context: crate::state::DiffContext) -> bool {
+    selection_changed || context != crate::state::DiffContext::CommitDiff
+}
+
 fn format_graph_date(timestamp: i64, format: GraphDateFormat) -> String {
     if format == GraphDateFormat::Relative {
         return theme::relative_time(timestamp);
@@ -1900,6 +1953,35 @@ fn draw_ref_column(
 mod interaction_tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn first_commit_guidance_is_only_shown_for_loaded_empty_history() {
+        for (has_head, loading, expected) in [
+            (false, false, true),
+            (true, false, false),
+            (false, true, false),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::icons::font_definitions());
+            let state = crate::state::new_shared_state();
+            let mut graph = crate::git::graph::CommitGraph::default();
+            graph.head_oid = has_head.then(|| "filtered-out-commit".into());
+            {
+                let mut state = state.lock().unwrap();
+                state.commit_graph = Some(std::sync::Arc::new(graph));
+                state.repo_load_path = loading.then(|| std::path::PathBuf::from("loading"));
+            }
+            let mut view = CommitGraphView::new(state);
+            let output = frame(&ctx, &mut view, vec![], true);
+            let shown = output.shapes.iter().any(|shape| {
+                matches!(
+                    &shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == "No commits yet"
+                )
+            });
+            assert_eq!(shown, expected);
+        }
+    }
 
     fn search_test_graph() -> std::sync::Arc<crate::git::graph::CommitGraph> {
         let node = |oid: &str, summary: &str, author: &str, time, refs: Vec<String>| {
@@ -2315,6 +2397,56 @@ mod interaction_tests {
         let s = view.state.lock().unwrap();
         assert!(s.selected_commits.is_empty());
         assert_eq!(s.selected_commit.as_deref(), Some(b.as_str()));
+    }
+
+    #[test]
+    fn selecting_a_commit_drops_the_working_tree_diff() {
+        use crate::state::DiffContext;
+        let repo = TestRepo::new();
+        let a = repo.commit("file", b"a").to_string();
+        let b = repo.commit("file", b"b").to_string();
+        let (ctx, mut view) = setup(&repo);
+        ctx.set_fonts(crate::icons::font_definitions());
+        frame(&ctx, &mut view, vec![], true);
+        {
+            let mut s = view.state.lock().unwrap();
+            s.selected_commit = None;
+            s.selected_file = Some("file".into());
+            s.diff_context = DiffContext::UnstagedFile;
+        }
+        let row = |oid: &str| {
+            ctx.read_response(egui::Id::new(("commit_row", oid.to_string())))
+                .unwrap()
+                .rect
+                .center()
+        };
+        let primary = egui::PointerButton::Primary;
+        click_with(&ctx, &mut view, row(&a), egui::Modifiers::NONE, primary);
+        {
+            let mut s = view.state.lock().unwrap();
+            assert_eq!(s.selected_commit.as_deref(), Some(a.as_str()));
+            assert!(s.selected_file.is_none() && s.current_diff.is_none());
+            // A file opened from this commit's details survives re-selecting it...
+            s.selected_file = Some("file".into());
+            s.diff_context = DiffContext::CommitDiff;
+        }
+        click_with(&ctx, &mut view, row(&a), egui::Modifiers::NONE, primary);
+        assert_eq!(
+            view.state.lock().unwrap().selected_file.as_deref(),
+            Some("file")
+        );
+        // ...but not moving to another commit.
+        click_with(&ctx, &mut view, row(&b), egui::Modifiers::NONE, primary);
+        assert!(view.state.lock().unwrap().selected_file.is_none());
+    }
+
+    #[test]
+    fn clears_file_unless_the_same_commit_keeps_its_own_diff() {
+        use crate::state::DiffContext::*;
+        assert!(!clears_file_for_commit(false, CommitDiff));
+        assert!(clears_file_for_commit(true, CommitDiff));
+        assert!(clears_file_for_commit(false, UnstagedFile));
+        assert!(clears_file_for_commit(false, StagedFile));
     }
 
     #[test]

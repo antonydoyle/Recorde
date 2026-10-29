@@ -52,6 +52,7 @@ The `Config` model contains:
 - `recent_repos`: up to ten recently opened repositories.
 - `dark_theme`: enabled by default.
 - `high_contrast`: high contrast UI mode.
+- `motion`: `system` (default; follows the OS animation setting on Windows), `full` or `reduced`.
 - `default_editor`: external editor command.
 - `terminal`: external terminal executable and optional literal arguments.
 - `diff_tool`: Git diff tool name; falls back to Git's `diff.tool` or `diff.guitool`.

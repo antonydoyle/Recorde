@@ -192,6 +192,55 @@ impl Command {
             Self::GitFlow => "Git Flow",
         }
     }
+    /// Plain-language explanation shown in menus, tooltips and command search.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Palette => "Find and run an available command.",
+            Self::Open => "Open a repository folder on this computer.",
+            Self::Clone => "Copy a remote repository to this computer.",
+            Self::Init => "Start tracking a folder with Git.",
+            Self::Settings => "Change Recorde preferences.",
+            Self::Shortcuts => "View and change keyboard shortcuts.",
+            Self::Accounts => "Connect provider accounts and manage SSH keys.",
+            Self::Theme => "Switch between light and dark appearance.",
+            Self::Fetch => "Check remotes for new commits without changing your files.",
+            Self::Pull => "Download new commits and update your current branch.",
+            Self::PullRebase => "Download commits and replay your work on top of them.",
+            Self::PullFf => "Download commits only when your branch can move forward cleanly.",
+            Self::Push => "Upload your commits to the remote repository.",
+            Self::PushLease => "Update the remote only if nobody pushed since your last fetch.",
+            Self::PushUpstream => "Publish this branch and remember its remote branch.",
+            Self::Branch => "Create a separate line of work.",
+            Self::SwitchBranch => "Switch to another branch.",
+            Self::Merge => "Bring another branch's commits into this branch.",
+            Self::Rebase => "Replay this branch's commits on top of another branch.",
+            Self::Stash => "Set aside uncommitted changes so you can switch tasks.",
+            Self::Search => "Find commits by message, author or change.",
+            Self::DiffSearch => "Find text in the selected file changes.",
+            Self::AllBranches => "Show commits from every branch or only this branch.",
+            Self::Reflog => "Review recent branch and commit movements for recovery.",
+            Self::Bisect => "Find which commit introduced a problem by testing revisions.",
+            Self::Provider => "View issues, CI checks and releases for this repository.",
+            Self::Refresh => "Re-read repository information from disk.",
+            Self::Terminal => "Open a terminal in the repository folder.",
+            Self::Reveal => "Open the repository folder in your file manager.",
+            Self::CopyPath => "Copy the repository folder path.",
+            Self::Sidebar => "Move keyboard focus to the repository list.",
+            Self::Graph => "Move keyboard focus to the commit history.",
+            Self::Changes => "Move keyboard focus to changed files.",
+            Self::Diff => "Move keyboard focus to the selected file changes.",
+            Self::NewTag => "Mark the selected commit with a named version.",
+            Self::CopyCommit => "Copy the selected commit's identifier.",
+            Self::InteractiveRebase => "Choose which commits to keep or edit from this point.",
+            Self::PreviewCherryPick => "Preview bringing the selected commit onto this branch.",
+            Self::PreviewGraphRebase => "Preview replaying this branch on the selected commit.",
+            Self::ResetToCommit => "Move this branch back to the selected commit.",
+            Self::Undo => "Restore the repository state from before the last operation.",
+            Self::Redo => "Repeat the operation you just undid.",
+            Self::IntegratedTerminal => "Show or hide the terminal inside Recorde.",
+            Self::GitFlow => "Create and finish feature, release and hotfix branches.",
+        }
+    }
     pub fn disabled_reason(self, s: &crate::state::AppState) -> Option<&'static str> {
         if s.pending_discard.is_some() || !matches!(s.modal, crate::state::ModalKind::None) {
             return Some("Finish or cancel the open confirmation first");
@@ -482,6 +531,13 @@ impl Shortcuts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn every_command_has_a_distinct_non_empty_description() {
+        for command in Command::ALL {
+            assert!(!command.description().trim().is_empty());
+            assert_ne!(command.description(), command.label());
+        }
+    }
     #[test]
     fn preferences_persist_disable_conflict_and_reset() {
         let mut shortcuts = Shortcuts::default();
