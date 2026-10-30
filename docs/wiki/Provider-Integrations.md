@@ -44,9 +44,12 @@ another remote. Azure fork creation stays within one organization. See the
 
 ## Browser sign-in
 
-GitHub and GitLab support device authorization from **Accounts & SSH**. Register
-an application with the provider, enter its public client ID, then start sign-in.
-Recorde displays a short code and opens the provider's verification page. Check
+GitHub and GitLab support device authorization from **Accounts & SSH**. For
+github.com and gitlab.com, official builds include Recorde's own app: choose
+**Sign in with browser** and approve Recorde. For GitHub Enterprise or a
+self-managed GitLab server, register an application there (steps below), enter
+its public client ID, then sign in. **Use your own OAuth app** overrides the
+built-in app when an organisation requires its own registration. Recorde displays a short code and opens the provider's verification page. Check
 the account and requested permissions there. After authorization, Recorde shows
 the verified account; choose **Save** to store it or **Discard** to cancel.
 

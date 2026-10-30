@@ -2094,17 +2094,30 @@ impl RecordeApp {
             "About",
             "Learn about Recorde and its open-source components.",
         );
+        kit::section(ui, "Info", "", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.label("Recorde is built and maintained by ");
+                ui.hyperlink_to("Antony Doyle", "https://antonydoyle.com")
+                    .on_hover_text("https://antonydoyle.com");
+                ui.label(".");
+            });
+            ui.add_space(kit::space::SM);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.label("If you like and use Recorde, please consider ");
+                ui.hyperlink_to("buying me a coffee", "https://buymeacoffee.com/spaceant")
+                    .on_hover_text("https://buymeacoffee.com/spaceant");
+                ui.label(".");
+            });
+        });
         kit::section(ui, "Recorde", env!("CARGO_PKG_VERSION"), |ui| {
-            kit::hint(
-                ui,
-                "A cross-platform desktop Git client built with Rust by Antony Doyle",
-            );
+            kit::hint(ui, "A cross-platform desktop Git client built with Rust.");
             ui.add_space(kit::space::SM);
             ui.hyperlink_to(
                 "https://github.com/antonydoyle/recorde",
                 "https://github.com/antonydoyle/recorde",
             );
-            ui.hyperlink_to("https://antonydoyle.com/", "https://antonydoyle.com/");
             kit::row_divider(ui);
             kit::hint(
                 ui,

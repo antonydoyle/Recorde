@@ -69,11 +69,14 @@ impl BrowserLogin {
     ) -> (Option<Client>, Option<Session>) {
         use crate::ui::{kit, motion};
 
+        let built_in = crate::auth::oauth::built_in(provider, host);
         if self.target.as_ref() != Some(&(provider.clone(), host.to_string())) {
             self.cancel();
             self.target = Some((provider.clone(), host.to_string()));
+            // Only a user-registered app is remembered; the built-in one comes from the build.
             self.client_id = saved
                 .filter(|client| &client.provider == provider && client.host == host)
+                .filter(|client| !client.is_built_in())
                 .map(|client| client.client_id.clone())
                 .unwrap_or_default();
         }
@@ -86,56 +89,82 @@ impl BrowserLogin {
             return (None, None);
         }
         self.poll();
-        kit::hint(
-            ui,
-            "Recorde has no built-in OAuth app. Register an OAuth application for this host \
-             with device flow enabled, then enter its public client ID. No client secret is \
-             needed or stored.",
-        );
         let editing = self.login.is_none() && self.ready.is_none() && !saving;
-        kit::setting_row(
-            ui,
-            "OAuth application",
-            "Use an app registered for this exact host.",
-            |ui| {
-                let label = ui.label("Client ID");
-                ui.add_enabled(
-                    editing,
-                    egui::TextEdit::singleline(&mut self.client_id)
-                        .desired_width(ui.available_width())
-                        .hint_text("Registered public client ID"),
-                )
-                .labelled_by(label.id);
-            },
-        );
+        let client_id_row = |ui: &mut egui::Ui, client_id: &mut String| {
+            kit::setting_row(
+                ui,
+                "OAuth application",
+                "Use an app registered for this exact host.",
+                |ui| {
+                    let label = ui.label("Client ID");
+                    ui.add_enabled(
+                        editing,
+                        egui::TextEdit::singleline(client_id)
+                            .desired_width(ui.available_width())
+                            .hint_text("Registered public client ID"),
+                    )
+                    .labelled_by(label.id);
+                },
+            );
+        };
+        if built_in.is_none() {
+            kit::hint(
+                ui,
+                "This server needs its own OAuth application. Register one with device flow \
+                 enabled, then enter its public client ID. No client secret is needed or \
+                 stored.",
+            );
+            client_id_row(ui, &mut self.client_id);
+        }
+        let chosen = chosen_client(provider, host, &self.client_id, built_in.clone());
         let mut configured = None;
         let mut save = None;
         if self.login.is_none() && self.ready.is_none() {
-            if ui
-                .add_enabled(
-                    editing && !self.client_id.trim().is_empty(),
-                    kit::secondary_button("Start browser sign-in"),
-                )
-                .on_disabled_hover_text(
-                    "Enter your registered application's public client ID first, and wait for \
-                     any account save to finish.",
-                )
+            let button = if built_in.is_some() {
+                kit::primary_button("Sign in with browser")
+            } else {
+                kit::secondary_button("Sign in with browser")
+            };
+            let disabled_reason = if chosen.is_none() {
+                "Enter your registered application's public client ID first."
+            } else {
+                "Wait for the account save to finish."
+            };
+            let response = ui.add_enabled(editing && chosen.is_some(), button);
+            if kit::explain_disabled(response, disabled_reason)
+                .on_hover_text("Opens a sign-in page where you approve Recorde with a short code.")
                 .clicked()
             {
-                let client = Client {
-                    provider: provider.clone(),
-                    host: host.into(),
-                    client_id: self.client_id.trim().into(),
-                };
-                match client.validate() {
-                    Ok(()) => {
-                        self.error = None;
-                        self.login = Some(Login::start(client.clone()));
-                        configured = Some(client);
+                if let Some(client) = chosen {
+                    match client.validate() {
+                        Ok(()) => {
+                            self.error = None;
+                            self.login = Some(Login::start(client.clone()));
+                            // Remember only apps the user registered.
+                            if !client.is_built_in() {
+                                configured = Some(client);
+                            }
+                        }
+                        Err(error) => self.error = Some(error),
                     }
-                    Err(error) => self.error = Some(error),
                 }
             }
+        }
+        if built_in.is_some() {
+            kit::disclosure(
+                ui,
+                "own_oauth_app",
+                "Use your own OAuth app",
+                !self.client_id.is_empty(),
+                |ui| {
+                    kit::hint(
+                        ui,
+                        "Only needed if your organisation requires its own registered app. \
+                         Leave it blank to use Recorde's.",
+                    );
+                    client_id_row(ui, &mut self.client_id);
+                },
+            );
         }
         let progress_id = ui.make_persistent_id("browser_sign_in_progress");
         motion::reveal(ui, progress_id, self.login.is_some(), |ui| {
@@ -228,9 +257,44 @@ impl BrowserLogin {
     }
 }
 
+/// A client ID the user typed wins; otherwise the build's built-in app, if any.
+fn chosen_client(
+    provider: &ProviderKind,
+    host: &str,
+    custom: &str,
+    built_in: Option<Client>,
+) -> Option<Client> {
+    let custom = custom.trim();
+    if custom.is_empty() {
+        return built_in;
+    }
+    Some(Client {
+        provider: provider.clone(),
+        host: host.into(),
+        client_id: custom.into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_client_id_overrides_the_built_in_app() {
+        let built_in = Client {
+            provider: ProviderKind::GitHubCom,
+            host: "github.com".into(),
+            client_id: "built-in".into(),
+        };
+        let github = ProviderKind::GitHubCom;
+        assert_eq!(
+            chosen_client(&github, "github.com", "  ", Some(built_in.clone())),
+            Some(built_in.clone())
+        );
+        let custom = chosen_client(&github, "github.com", " mine ", Some(built_in)).unwrap();
+        assert_eq!(custom.client_id, "mine");
+        assert!(chosen_client(&github, "github.com", "", None).is_none());
+    }
     fn session() -> Session {
         Session {
             client: Client {

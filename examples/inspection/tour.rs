@@ -219,6 +219,30 @@ pub fn run(stream: &mut TcpStream, directory: &Path) -> Result<(), Box<dyn Error
             })(),
         );
     }
+    step(
+        &mut log,
+        "Add account",
+        (|| {
+            click_lowest(stream, "Accounts & SSH")?;
+            // Earlier captures scrolled this page; start from the top.
+            let navigation = tree(stream)?
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.label().as_deref() == Some("General"))
+                .filter_map(|(_, node)| node.bounds())
+                .max_by(|a, b| a.y0.total_cmp(&b.y0))
+                .ok_or("No settings navigation")?;
+            let page = egui::pos2(
+                (navigation.x1 + 360.0) as f32,
+                (navigation.y0 + 220.0) as f32,
+            );
+            scroll_at(stream, page, 4000.0)?;
+            click_prefix(stream, "Add account")?;
+            capture(stream, directory, "tour-300-add-account")?;
+            scroll_at(stream, page, -400.0)?;
+            capture(stream, directory, "tour-301-add-account-sign-in")
+        })(),
+    );
     std::fs::write(directory.join("tour.log"), log.join("\n"))?;
     Ok(())
 }

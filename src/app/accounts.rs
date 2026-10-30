@@ -236,131 +236,46 @@ impl RecordeApp {
                         .to_string();
                     kit::row_divider(ui);
                     kit::group_label(ui, "2. Sign in");
-                    kit::hint(ui, token_guidance(&self.add_account_provider));
-                    if let Ok(host) = crate::auth::endpoint::normalize_host(&eff_host) {
-                        let url = match self.add_account_provider {
-                            ProviderKind::GitHubCom | ProviderKind::GitHubEnterprise => {
-                                Some(format!("https://{host}/settings/tokens"))
-                            }
-                            ProviderKind::GitLabCom | ProviderKind::GitLabSelf => Some(format!(
-                                "https://{host}/-/user_settings/personal_access_tokens"
-                            )),
-                            _ => None,
-                        };
-                        if let Some(url) = url {
-                            if ui
-                                .add(kit::secondary_button("Open token settings"))
-                                .clicked()
-                            {
-                                if let Err(error) = super::open_url(&url) {
-                                    self.add_account_error = Some(error);
-                                }
-                            }
-                        }
+                    let built_in = crate::auth::endpoint::normalize_host(&eff_host)
+                        .ok()
+                        .and_then(|host| {
+                            crate::auth::oauth::built_in(&self.add_account_provider, &host)
+                        })
+                        .is_some();
+                    if built_in {
+                        kit::hint(
+                            ui,
+                            "Sign in through your browser. Recorde never sees your password, \
+                             and you can revoke its access from your account settings at any time.",
+                        );
+                        self.render_browser_sign_in(ui);
+                        kit::row_divider(ui);
+                        kit::disclosure(
+                            ui,
+                            "token_sign_in",
+                            "Use a personal access token instead",
+                            false,
+                            |ui| self.render_token_sign_in(ui, eff_host),
+                        );
+                    } else {
+                        self.render_token_sign_in(ui, eff_host);
+                        kit::row_divider(ui);
+                        kit::disclosure(
+                            ui,
+                            "advanced_browser_sign_in",
+                            "Sign in with a browser instead (advanced)",
+                            false,
+                            |ui| self.render_browser_sign_in(ui),
+                        );
                     }
-                    kit::setting_row(
-                        ui,
-                        "Username",
-                        "Use your Atlassian email for Bitbucket Cloud.",
-                        |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.add_account_username)
-                                    .desired_width(ui.available_width()),
-                            );
-                        },
-                    );
-                    kit::setting_row(
-                        ui,
-                        "Personal access token",
-                        "Used instead of your password. Keep it private.",
-                        |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.add_account_token)
-                                    .password(true)
-                                    .desired_width(ui.available_width()),
-                            );
-                        },
-                    );
-                    let reason = account_save_hint(
-                        &self.add_account_username,
-                        &self.add_account_token,
-                        &eff_host,
-                    );
-                    let validation_id = ui.make_persistent_id("account_validation");
-                    motion::reveal(ui, validation_id, reason.is_some(), |ui| {
-                        if let Some(reason) = reason {
-                            kit::hint(ui, reason);
-                        }
-                    });
                     ui.add_space(kit::space::SM);
-                    ui.horizontal_wrapped(|ui| {
-                        if kit::explain_disabled(
-                            ui.add_enabled(
-                                reason.is_none() && self.account_task.is_none(),
-                                kit::primary_button("Save account"),
-                            ),
-                            reason.unwrap_or("Wait for the credential store operation to finish."),
-                        )
-                        .clicked()
-                        {
-                            let username = self.add_account_username.trim().to_string();
-                            let token = self.add_account_token.trim().to_string();
-                            let provider = self.add_account_provider.clone();
-                            self.account_task = Some(account_task(move || {
-                                let host = crate::auth::endpoint::normalize_host(&eff_host)?;
-                                crate::auth::store::save(&host, &username, &token)?;
-                                Ok(AccountChange::Saved(StoredAccount {
-                                    provider,
-                                    host,
-                                    username,
-                                }))
-                            }));
-                        }
-                        if ui.add(kit::secondary_button("Cancel")).clicked() {
-                            self.add_account_open = false;
-                            self.browser_login.cancel();
-                            self.add_account_username.clear();
-                            self.add_account_token.clear();
-                            self.add_account_error = None;
-                        }
-                    });
-                    kit::row_divider(ui);
-                    kit::disclosure(
-                        ui,
-                        "advanced_browser_sign_in",
-                        "Sign in with a browser instead (advanced)",
-                        false,
-                        |ui| {
-                            let browser_host = crate::auth::endpoint::normalize_host(
-                                self.add_account_provider
-                                    .effective_host(&self.add_account_host),
-                            )
-                            .unwrap_or_default();
-                            let (configured, session) = self.browser_login.show(
-                                ui,
-                                &self.add_account_provider,
-                                &browser_host,
-                                self.config.oauth_clients.get(&browser_host),
-                                self.account_task.is_some(),
-                            );
-                            if let Some(client) = configured {
-                                self.config
-                                    .oauth_clients
-                                    .insert(client.host.clone(), client);
-                                self.save_config();
-                            }
-                            if let Some(session) = session {
-                                self.account_task = Some(account_task(move || {
-                                    crate::auth::store::save_oauth(&session)?;
-                                    Ok(AccountChange::Saved(StoredAccount {
-                                        provider: session.client.provider,
-                                        host: session.client.host,
-                                        username: session.username,
-                                    }))
-                                }));
-                            }
-                        },
-                    );
+                    if ui.add(kit::secondary_button("Cancel")).clicked() {
+                        self.add_account_open = false;
+                        self.browser_login.cancel();
+                        self.add_account_username.clear();
+                        self.add_account_token.clear();
+                        self.add_account_error = None;
+                    }
                 });
                 let busy_id = ui.make_persistent_id("credential_store_busy");
                 motion::reveal(ui, busy_id, self.account_task.is_some(), |ui| {
@@ -550,6 +465,124 @@ impl RecordeApp {
                 );
             },
         );
+    }
+    /// Personal access token entry for the add-account form.
+    fn render_token_sign_in(&mut self, ui: &mut egui::Ui, eff_host: String) {
+        use crate::ui::{kit, motion};
+
+        kit::hint(ui, token_guidance(&self.add_account_provider));
+        if let Ok(host) = crate::auth::endpoint::normalize_host(&eff_host) {
+            let url = match self.add_account_provider {
+                ProviderKind::GitHubCom | ProviderKind::GitHubEnterprise => {
+                    Some(format!("https://{host}/settings/tokens"))
+                }
+                ProviderKind::GitLabCom | ProviderKind::GitLabSelf => Some(format!(
+                    "https://{host}/-/user_settings/personal_access_tokens"
+                )),
+                _ => None,
+            };
+            if let Some(url) = url {
+                if ui
+                    .add(kit::secondary_button("Open token settings"))
+                    .clicked()
+                {
+                    if let Err(error) = super::open_url(&url) {
+                        self.add_account_error = Some(error);
+                    }
+                }
+            }
+        }
+        kit::setting_row(
+            ui,
+            "Username",
+            "Use your Atlassian email for Bitbucket Cloud.",
+            |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.add_account_username)
+                        .desired_width(ui.available_width()),
+                );
+            },
+        );
+        kit::setting_row(
+            ui,
+            "Personal access token",
+            "Used instead of your password. Keep it private.",
+            |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.add_account_token)
+                        .password(true)
+                        .desired_width(ui.available_width()),
+                );
+            },
+        );
+        let reason = account_save_hint(
+            &self.add_account_username,
+            &self.add_account_token,
+            &eff_host,
+        );
+        let validation_id = ui.make_persistent_id("account_validation");
+        motion::reveal(ui, validation_id, reason.is_some(), |ui| {
+            if let Some(reason) = reason {
+                kit::hint(ui, reason);
+            }
+        });
+        ui.add_space(kit::space::SM);
+        ui.horizontal_wrapped(|ui| {
+            if kit::explain_disabled(
+                ui.add_enabled(
+                    reason.is_none() && self.account_task.is_none(),
+                    kit::primary_button("Save account"),
+                ),
+                reason.unwrap_or("Wait for the credential store operation to finish."),
+            )
+            .clicked()
+            {
+                let username = self.add_account_username.trim().to_string();
+                let token = self.add_account_token.trim().to_string();
+                let provider = self.add_account_provider.clone();
+                self.account_task = Some(account_task(move || {
+                    let host = crate::auth::endpoint::normalize_host(&eff_host)?;
+                    crate::auth::store::save(&host, &username, &token)?;
+                    Ok(AccountChange::Saved(StoredAccount {
+                        provider,
+                        host,
+                        username,
+                    }))
+                }));
+            }
+        });
+    }
+
+    /// Device-flow browser sign-in for the add-account form.
+    fn render_browser_sign_in(&mut self, ui: &mut egui::Ui) {
+        let browser_host = crate::auth::endpoint::normalize_host(
+            self.add_account_provider
+                .effective_host(&self.add_account_host),
+        )
+        .unwrap_or_default();
+        let (configured, session) = self.browser_login.show(
+            ui,
+            &self.add_account_provider,
+            &browser_host,
+            self.config.oauth_clients.get(&browser_host),
+            self.account_task.is_some(),
+        );
+        if let Some(client) = configured {
+            self.config
+                .oauth_clients
+                .insert(client.host.clone(), client);
+            self.save_config();
+        }
+        if let Some(session) = session {
+            self.account_task = Some(account_task(move || {
+                crate::auth::store::save_oauth(&session)?;
+                Ok(AccountChange::Saved(StoredAccount {
+                    provider: session.client.provider,
+                    host: session.client.host,
+                    username: session.username,
+                }))
+            }));
+        }
     }
 }
 

@@ -40,7 +40,43 @@ struct Endpoints {
     scope: &'static str,
 }
 
+/// Public client IDs of Recorde's own OAuth apps, injected by `build.rs` from
+/// the environment (release secrets) or the untracked `recorde-oauth.env`.
+/// Builds without them fall back to a user-registered app.
+const GITHUB_CLIENT_ID: Option<&str> = option_env!("RECORDE_GITHUB_OAUTH_CLIENT_ID");
+const GITLAB_CLIENT_ID: Option<&str> = option_env!("RECORDE_GITLAB_OAUTH_CLIENT_ID");
+
+/// Recorde's registered app for github.com or gitlab.com, when this build has
+/// one. Enterprise and self-managed servers always need their own app.
+pub fn built_in(provider: &ProviderKind, host: &str) -> Option<Client> {
+    built_in_from(provider, host, GITHUB_CLIENT_ID, GITLAB_CLIENT_ID)
+}
+
+fn built_in_from(
+    provider: &ProviderKind,
+    host: &str,
+    github: Option<&str>,
+    gitlab: Option<&str>,
+) -> Option<Client> {
+    let client_id = match (provider, host) {
+        (ProviderKind::GitHubCom, "github.com") => github,
+        (ProviderKind::GitLabCom, "gitlab.com") => gitlab,
+        _ => None,
+    }?;
+    let client = Client {
+        provider: provider.clone(),
+        host: host.into(),
+        client_id: client_id.into(),
+    };
+    client.validate().ok().map(|()| client)
+}
+
 impl Client {
+    /// True when this is the build's built-in app rather than one the user registered.
+    pub fn is_built_in(&self) -> bool {
+        built_in(&self.provider, &self.host).as_ref() == Some(self)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         self.endpoints().map(|_| ())
     }

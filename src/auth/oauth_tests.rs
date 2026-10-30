@@ -379,3 +379,33 @@ fn renamed_refresh_account_has_a_specific_reconnect_diagnostic() {
     .unwrap_err();
     assert!(error.contains("renamed") && error.contains("reconnect"));
 }
+
+#[test]
+fn built_in_apps_cover_only_github_com_and_gitlab_com() {
+    let github = Some("Ov23liFixture");
+    let gitlab = Some("0123456789abcdef");
+    let client = built_in_from(&ProviderKind::GitHubCom, "github.com", github, gitlab).unwrap();
+    assert_eq!(client.client_id, "Ov23liFixture");
+    let client = built_in_from(&ProviderKind::GitLabCom, "gitlab.com", github, gitlab).unwrap();
+    assert_eq!(client.client_id, "0123456789abcdef");
+    for (provider, host) in [
+        (ProviderKind::GitHubEnterprise, "github.example.com"),
+        (ProviderKind::GitLabSelf, "gitlab.example.com"),
+        (ProviderKind::GitHubCom, "gitlab.com"),
+        (ProviderKind::BitbucketCloud, "bitbucket.org"),
+    ] {
+        assert!(
+            built_in_from(&provider, host, github, gitlab).is_none(),
+            "{host}"
+        );
+    }
+    // Builds without injected IDs, or with malformed ones, have no built-in app.
+    assert!(built_in_from(&ProviderKind::GitHubCom, "github.com", None, gitlab).is_none());
+    assert!(built_in_from(
+        &ProviderKind::GitHubCom,
+        "github.com",
+        Some("bad id"),
+        gitlab
+    )
+    .is_none());
+}

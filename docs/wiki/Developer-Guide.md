@@ -127,6 +127,26 @@ commit, build profile, platform requirements and SHA-256 checksums. Debug builds
 are for functionality testing; release-performance measurements require a release
 build. Do not describe a portable test build as installer or upgrade acceptance.
 
+### Built-in OAuth apps
+
+`build.rs` injects the public client IDs of Recorde's registered OAuth apps as
+`RECORDE_GITHUB_OAUTH_CLIENT_ID` and `RECORDE_GITLAB_OAUTH_CLIENT_ID`. Release
+builds take them from the repository's GitHub Actions secrets of the same names.
+Local builds read the environment first, then the untracked `recorde-oauth.env`
+at the repository root:
+
+```text
+RECORDE_GITHUB_OAUTH_CLIENT_ID=<client ID>
+RECORDE_GITLAB_OAUTH_CLIENT_ID=<application ID>
+```
+
+The file is in `.gitignore`; never commit it. After creating it for the first
+time, run `cargo clean -p recorde` once so the build script reruns. Builds
+without the IDs (forks, CI checks) work normally and ask for a user-registered
+client ID instead. The IDs are public by design (device flow uses no client
+secret), but keeping them out of the source stops forks from shipping builds
+that appear as Recorde on the consent screen.
+
 ## Run
 
 ```bash

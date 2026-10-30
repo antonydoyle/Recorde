@@ -36,3 +36,6 @@ recorde-*.tar.gz
 recorde_*.deb
 Recorde*.AppImage
 Recorde*.dmg
+
+# Public OAuth client IDs for local builds (release builds use GitHub secrets)
+/recorde-oauth.env
