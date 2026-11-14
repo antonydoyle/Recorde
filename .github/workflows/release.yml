@@ -109,19 +109,42 @@ jobs:
           DEB=$(ls target/debian/*.deb | head -1)
           cp "$DEB" "dist/recorde_${VERSION}_amd64.deb"
 
-      - name: Download installer upgrade baseline
+      - name: Find installer upgrade baseline
+        id: baseline
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v0.3.10 --repo "$GITHUB_REPOSITORY" --pattern 'recorde_0.3.10_amd64.deb' --pattern SHA256SUMS --dir "$RUNNER_TEMP/installer-baseline"
+          # Upgrade acceptance installs the newest published release, then this
+          # build over it. The first public release has none to upgrade from.
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 20 --json tagName -q '.[].tagName' | grep -vx "v${VERSION}" | head -n 1 || true)
+          if [[ -z "$tag" ]]; then
+            echo "::notice::No previous release to upgrade from; installer upgrade acceptance is skipped."
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - name: Download installer upgrade baseline
+        if: steps.baseline.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ steps.baseline.outputs.tag }}
+          PREVIOUS: ${{ steps.baseline.outputs.version }}
+        run: |
+          gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --pattern "recorde_${PREVIOUS}_amd64.deb" --pattern SHA256SUMS --dir "$RUNNER_TEMP/installer-baseline"
       - name: Verify DEB installation and upgrade
+        if: steps.baseline.outputs.tag != ''
+        env:
+          PREVIOUS: ${{ steps.baseline.outputs.version }}
         run: |
           python3 scripts/check_process_safety.py
-          python3 scripts/linux_task.py --purpose 'Release DEB acceptance' --artifacts "$RUNNER_TEMP/process-safety" --timeout 900 -- python3 scripts/linux_installer_acceptance.py --previous "$RUNNER_TEMP/installer-baseline/recorde_0.3.10_amd64.deb" --checksums "$RUNNER_TEMP/installer-baseline/SHA256SUMS" --candidate "dist/recorde_${VERSION}_amd64.deb" --binary target/release/recorde --artifacts "$RUNNER_TEMP/installer-acceptance"
+          python3 scripts/linux_task.py --purpose 'Release DEB acceptance' --artifacts "$RUNNER_TEMP/process-safety" --timeout 900 -- python3 scripts/linux_installer_acceptance.py --previous "$RUNNER_TEMP/installer-baseline/recorde_${PREVIOUS}_amd64.deb" --checksums "$RUNNER_TEMP/installer-baseline/SHA256SUMS" --candidate "dist/recorde_${VERSION}_amd64.deb" --binary target/release/recorde --artifacts "$RUNNER_TEMP/installer-acceptance"
       - name: Verify isolated privileged updater on disposable runner
+        if: steps.baseline.outputs.tag != ''
+        env:
+          PREVIOUS: ${{ steps.baseline.outputs.version }}
         run: |
           cargo build --release --locked --manifest-path tools/update-signing/Cargo.toml
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,GITHUB_WORKSPACE,RUNNER_TEMP "$pythonLocation/bin/python3" scripts/linux_task.py --purpose 'Signed DEB helper acceptance' --artifacts "$RUNNER_TEMP/privileged-process-safety" --timeout 3600 -- "$pythonLocation/bin/python3" scripts/linux_update_installer_acceptance.py --previous "$RUNNER_TEMP/installer-baseline/recorde_0.3.10_amd64.deb" --checksums "$RUNNER_TEMP/installer-baseline/SHA256SUMS" --candidate "dist/recorde_${VERSION}_amd64.deb" --binary target/release/recorde --helper tools/update-installer/target/release/recorde-update-installer --signer tools/update-signing/target/release/recorde-update-signing --artifacts "$RUNNER_TEMP/privileged-installer-acceptance"
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,GITHUB_WORKSPACE,RUNNER_TEMP "$pythonLocation/bin/python3" scripts/linux_task.py --purpose 'Signed DEB helper acceptance' --artifacts "$RUNNER_TEMP/privileged-process-safety" --timeout 3600 -- "$pythonLocation/bin/python3" scripts/linux_update_installer_acceptance.py --previous "$RUNNER_TEMP/installer-baseline/recorde_${PREVIOUS}_amd64.deb" --checksums "$RUNNER_TEMP/installer-baseline/SHA256SUMS" --candidate "dist/recorde_${VERSION}_amd64.deb" --binary target/release/recorde --helper tools/update-installer/target/release/recorde-update-installer --signer tools/update-signing/target/release/recorde-update-signing --artifacts "$RUNNER_TEMP/privileged-installer-acceptance"
       - name: Make privileged acceptance ledgers readable for upload
         if: always()
         run: |
@@ -224,16 +247,36 @@ jobs:
           $msi = Get-ChildItem target\wix\*.msi | Select-Object -First 1
           Copy-Item $msi.FullName "dist\recorde-$env:VERSION-windows-x86_64.msi"
 
-      - name: Download installer upgrade baseline
+      - name: Find installer upgrade baseline
+        id: baseline
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+        run: |
+          # Upgrade acceptance installs the newest published release, then this
+          # build over it. The first public release has none to upgrade from.
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 20 --json tagName -q '.[].tagName' | grep -vx "v${VERSION}" | head -n 1 || true)
+          if [[ -z "$tag" ]]; then
+            echo "::notice::No previous release to upgrade from; installer upgrade acceptance is skipped."
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - name: Download installer upgrade baseline
+        if: steps.baseline.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ steps.baseline.outputs.tag }}
+          PREVIOUS: ${{ steps.baseline.outputs.version }}
         shell: pwsh
-        run: gh release download v0.3.10 --repo $env:GITHUB_REPOSITORY --pattern 'recorde-0.3.10-windows-x86_64.msi' --pattern SHA256SUMS --dir "$env:RUNNER_TEMP/installer-baseline"
+        run: gh release download $env:PREVIOUS_TAG --repo $env:GITHUB_REPOSITORY --pattern "recorde-$env:PREVIOUS-windows-x86_64.msi" --pattern SHA256SUMS --dir "$env:RUNNER_TEMP/installer-baseline"
       - name: Verify MSI installation and upgrade
+        if: steps.baseline.outputs.tag != ''
+        env:
+          PREVIOUS: ${{ steps.baseline.outputs.version }}
         shell: pwsh
         run: |
           python scripts/check_process_safety.py
-          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_installer_acceptance.ps1', '-PreviousMsi', "$env:RUNNER_TEMP/installer-baseline/recorde-0.3.10-windows-x86_64.msi", '-PreviousChecksums', "$env:RUNNER_TEMP/installer-baseline/SHA256SUMS", '-CandidateMsi', "dist/recorde-$env:VERSION-windows-x86_64.msi", '-ExpectedBinary', 'target/release/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/installer-acceptance") -Purpose 'Release MSI acceptance' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 900
+          ./scripts/windows_task.ps1 -Executable pwsh -Arguments @('-NoProfile', '-File', './scripts/windows_installer_acceptance.ps1', '-PreviousMsi', "$env:RUNNER_TEMP/installer-baseline/recorde-$env:PREVIOUS-windows-x86_64.msi", '-PreviousChecksums', "$env:RUNNER_TEMP/installer-baseline/SHA256SUMS", '-CandidateMsi', "dist/recorde-$env:VERSION-windows-x86_64.msi", '-ExpectedBinary', 'target/release/recorde.exe', '-Artifacts', "$env:RUNNER_TEMP/installer-acceptance") -Purpose 'Release MSI acceptance' -Artifacts "$env:RUNNER_TEMP/process-safety" -TimeoutSeconds 900
       - name: Upload Windows installer evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
