@@ -27,7 +27,6 @@ open in your browser.
 - [Developer Guide](Developer-Guide.md): local setup, tests, and release process.
 - [Packaging](Packaging.md): Linux, macOS, and Windows packaging assets.
 - [Troubleshooting](Troubleshooting.md): common runtime and Git issues.
-- [GitKraken Gap Analysis](GitKraken-Gap-Analysis.md): audit findings, priorities, and implementation milestones.
 
 ## Repository Map
 

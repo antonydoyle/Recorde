@@ -77,8 +77,6 @@ No artwork from these references is shipped.
   Git, Tools, Keyboard, Repository, Updates, About) with carded pages.
 - The Changes panel pins the commit composer to the bottom at its measured height; the
   file list uses the remaining space and scrolls by itself.
-- Design inputs and the work plan: `docs/reviews/2026-10-28-ui-polish-plan.md`,
-  `2026-10-28-ui-audit.md` and `2026-10-28-git-client-ux-benchmark.md`.
 
 ## Verification
 

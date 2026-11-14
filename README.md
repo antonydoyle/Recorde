@@ -17,25 +17,19 @@ Start with:
 - [Packaging](docs/wiki/Packaging.md) for platform prerequisites, including the
   Microsoft Visual C++ x64 runtime required by Windows MSVC builds.
 
-## Roadmap
+## What's new
 
-Planned work is tracked on the Recorde Product Roadmap
-board. The `T1`–`T13` cards in its Backlog list are ordered by run sequence and
-derive from the [gap analysis](docs/wiki/GitKraken-Gap-Analysis.md) and the
-[parity review](docs/reviews/2026-10-27-parity-review.md). Each card states its
-evidence, target files, and the local command that verifies it, since hosted CI is
-currently paused.
+See the [0.5.0 release notes](docs/release-notes/0.5.0.md).
 
-## Local test builds
+## Building and testing
 
 Windows and Linux validation uses bounded task runners, isolated test repositories,
 and process cleanup checks. See the [Developer Guide](docs/wiki/Developer-Guide.md)
 for commands. Local build packages belong in the ignored `dist/` directory;
 generated executables, process logs and smoke-test repositories are not committed.
 
-The [gap analysis](docs/wiki/GitKraken-Gap-Analysis.md) records completed acceptance
-checks and remaining limits. macOS acceptance and executable signing are parked.
+Windows builds are not Authenticode-signed and macOS builds are not notarized yet.
 
-## Roadmap analysis
+## Licence
 
-The preserved GitKraken analysis and review provenance are indexed in [docs/analysis/gitkraken-2026-11-04/README.md](docs/analysis/gitkraken-2026-11-04/README.md). Read the limitations before using historical findings.
+Recorde is released under the [MIT licence](LICENSE).

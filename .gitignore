@@ -39,3 +39,7 @@ Recorde*.dmg
 
 # Public OAuth client IDs for local builds (release builds use GitHub secrets)
 /recorde-oauth.env
+
+# Internal agent and design-context notes kept locally (see Recorde-private)
+AGENTS.md
+PRODUCT.md
