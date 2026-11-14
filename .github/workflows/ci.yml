@@ -1,9 +1,9 @@
 name: CI
 
+# Builds run for pull requests, manual runs and release tags (release.yml calls
+# this workflow), not for every push or merge to main.
 on:
   pull_request:
-  push:
-    branches: [main, master]
   workflow_call:
   workflow_dispatch:
 
