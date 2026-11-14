@@ -11,11 +11,32 @@ use crate::state::{DiffContext, PendingDiscard, SharedState, WorkingDirFile};
 use crate::theme;
 use crate::ui::{kit, motion};
 
+/// Height kept for the file list before the composer's optional details grow:
+/// filter, Stage all and one section header, plus four 42-pixel file rows.
+/// Four rather than five lets Commit options and Undo last commit fit at
+/// 1440 by 900 without scrolling.
+const LIST_RESERVE_HEIGHT: f32 = 112.0 + 4.0 * 42.0;
+
+/// Width kept beside the composer title for Amend and Copy message, with gaps.
+const COMPOSER_HEADER_BUTTONS_W: f32 = 180.0;
+
+/// Keyboard and mouse guidance shown with a file row's path when hovered.
+const FILE_ROW_HELP: &str = "Click to inspect. Up and Down move between files; \
+Tab reaches the selection box and Stage button, and Space activates it.";
+
 pub struct StagingPanel {
     state: SharedState,
     drafts: super::commit_draft::Drafts,
     selections:
         std::collections::HashMap<std::path::PathBuf, std::collections::BTreeSet<(bool, String)>>,
+    path_filters: std::collections::HashMap<std::path::PathBuf, String>,
+    commit_request: Option<(std::path::PathBuf, u64)>,
+    file_action: Option<FileAction>,
+    preparing_file_action: Option<(
+        std::path::PathBuf,
+        u64,
+        std::sync::mpsc::Receiver<Result<FileAction, String>>,
+    )>,
     conflicts_expanded: bool,
     staged_expanded: bool,
     unstaged_expanded: bool,
@@ -44,6 +65,11 @@ struct AmendPrefill {
     body: String,
 }
 
+enum FileAction {
+    Delete(crate::git::untracked::Preview),
+    Ignore(crate::git::untracked::IgnorePreview),
+}
+
 impl AmendPrefill {
     /// Switching Amend off restores the earlier draft if the copied message is unchanged.
     fn restore(self, repo: &Option<std::path::PathBuf>, subject: &mut String, body: &mut String) {
@@ -60,6 +86,10 @@ impl StagingPanel {
             state,
             drafts: Default::default(),
             selections: Default::default(),
+            path_filters: Default::default(),
+            commit_request: None,
+            file_action: None,
+            preparing_file_action: None,
             conflicts_expanded: true,
             staged_expanded: true,
             unstaged_expanded: true,
@@ -80,6 +110,117 @@ impl StagingPanel {
 
     /// `editor` and `protected_branches` come from App Settings.
     pub fn show(&mut self, ui: &mut Ui, editor: &str, protected_branches: &[String]) {
+        self.show_with_shortcuts(ui, editor, protected_branches, &Default::default());
+    }
+
+    pub fn request_commit(&mut self) {
+        let state = self.state.lock().unwrap();
+        self.commit_request = state.repo_path.clone().map(|path| (path, state.repo_epoch));
+    }
+
+    pub fn has_file_confirmation(&self) -> bool {
+        self.file_action.is_some() || self.preparing_file_action.is_some()
+    }
+
+    fn prepare_file_action(&mut self, file: String, delete: bool) {
+        if self.has_file_confirmation() {
+            return;
+        }
+        let (path, epoch) = {
+            let s = self.state.lock().unwrap();
+            (s.repo_path.clone(), s.repo_epoch)
+        };
+        let Some(path) = path else { return };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.preparing_file_action = Some((path.clone(), epoch, rx));
+        let work_path = path.clone();
+        crate::git::mutation::spawn_job(
+            path,
+            "Review untracked file action",
+            self.state.clone(),
+            move || {
+                if delete {
+                    crate::git::untracked::Preview::capture(&work_path, epoch, &file)
+                        .map(FileAction::Delete)
+                } else {
+                    crate::git::untracked::IgnorePreview::capture(&work_path, epoch, &file)
+                        .map(FileAction::Ignore)
+                }
+            },
+            move |result, _| {
+                let _ = tx.send(result);
+            },
+        );
+    }
+
+    fn poll_file_action(&mut self) {
+        let result =
+            self.preparing_file_action
+                .as_ref()
+                .and_then(|(_, _, rx)| match rx.try_recv() {
+                    Ok(value) => Some(value),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(
+                        "File preview stopped unexpectedly; no file was changed.".into(),
+                    )),
+                    Err(_) => None,
+                });
+        if let Some(result) = result {
+            let (path, epoch, _) = self.preparing_file_action.take().unwrap();
+            let mut s = self.state.lock().unwrap();
+            if s.repo_path.as_ref() == Some(&path) && s.repo_epoch == epoch {
+                match result {
+                    Ok(action) => self.file_action = Some(action),
+                    Err(error) => s.error = Some(error),
+                }
+            }
+        }
+        let current = {
+            let s = self.state.lock().unwrap();
+            (s.repo_path.clone(), s.repo_epoch)
+        };
+        if self.file_action.as_ref().is_some_and(|action| {
+            let (path, epoch) = match action {
+                FileAction::Delete(p) => (&p.path, p.epoch),
+                FileAction::Ignore(p) => (&p.path, p.epoch),
+            };
+            current.0.as_ref() != Some(path) || current.1 != epoch
+        }) {
+            self.file_action = None;
+        }
+    }
+
+    fn show_file_action(&mut self, ctx: &egui::Context) {
+        let Some(action) = &self.file_action else {
+            return;
+        };
+        let (mut confirm, mut cancel) = (false, false);
+        egui::Modal::new(egui::Id::new("untracked_file_confirmation")).show(ctx,|ui| {
+            ui.set_max_width(460.0);
+            let(file,delete)=match action {FileAction::Delete(p)=>{ui.heading("Delete untracked file?");ui.label(format!("{} bytes",p.bytes.len()));(&p.file,true)},FileAction::Ignore(p)=>{ui.heading("Ignore untracked file?");ui.label("Add this anchored rule to the repository .gitignore:");ui.monospace(&p.rule);(&p.file,false)}};
+            ui.label(file);
+            ui.label(if delete {"Recorde will verify an exact-byte recovery snapshot before deleting this single file. Undo restores it while its Git attributes and EOL settings remain unchanged. Files with conversion or filters are refused."} else {"The file stays on disk. This adds a rule without rewriting existing .gitignore content. Ignore is outside Undo; review or edit .gitignore in Changes to reverse it."});
+            ui.horizontal(|ui| {cancel=ui.button("Cancel").clicked();confirm=ui.add(if delete {kit::danger_outline_button("Delete file")} else {kit::primary_button("Add ignore rule")}).clicked();});
+        });
+        if cancel {
+            self.file_action = None;
+        }
+        if confirm {
+            match self.file_action.take().unwrap() {
+                FileAction::Delete(p) => p.submit(self.state.clone()),
+                FileAction::Ignore(p) => p.submit(self.state.clone()),
+            }
+        }
+    }
+
+    pub fn show_with_shortcuts(
+        &mut self,
+        ui: &mut Ui,
+        editor: &str,
+        protected_branches: &[String],
+        shortcuts: &crate::commands::Shortcuts,
+    ) {
+        self.poll_file_action();
+        let file_confirmation = self.has_file_confirmation();
         let repo = self.state.lock().unwrap().repo_path.clone();
         self.drafts.switch_to(repo);
         if !self.drafts.current.is_amend {
@@ -106,16 +247,23 @@ impl StagingPanel {
         };
 
         // Partition files into three groups
-        let staged: Vec<&WorkingDirFile> =
+        let mut staged: Vec<&WorkingDirFile> =
             files.iter().filter(|f| f.staged_status.is_some()).collect();
-        let unstaged: Vec<&WorkingDirFile> = files
+        let mut unstaged: Vec<&WorkingDirFile> = files
             .iter()
             .filter(|f| f.unstaged_status.is_some() && f.unstaged_status != Some('?'))
             .collect();
-        let untracked: Vec<&WorkingDirFile> = files
+        let mut untracked: Vec<&WorkingDirFile> = files
             .iter()
             .filter(|f| f.unstaged_status == Some('?'))
             .collect();
+
+        let stage_all_available = !unstaged.is_empty() || !untracked.is_empty();
+        let mut path_filter = self
+            .path_filters
+            .get(&repo_path.clone().unwrap_or_default())
+            .cloned()
+            .unwrap_or_default();
 
         let selection = self
             .selections
@@ -132,6 +280,7 @@ impl StagingPanel {
             })
         });
         let mut batch = None;
+        let mut visible_rows = Vec::new();
 
         // Actions collected during rendering, applied after
         let mut do_choose_ours: Option<String> = None;
@@ -145,6 +294,18 @@ impl StagingPanel {
         let mut do_unstage_all = false;
         let mut do_commit = false;
         let mut do_amend = false;
+        let mut composer_input_focus = false;
+        let (repo_epoch, repository_busy) = {
+            let s = self.state.lock().unwrap();
+            (
+                s.repo_epoch,
+                !s.local_jobs.is_empty() || !s.active_ops.is_empty(),
+            )
+        };
+        let requested_commit = self
+            .commit_request
+            .take()
+            .is_some_and(|(path, epoch)| Some(&path) == repo_path.as_ref() && epoch == repo_epoch);
         let mut view_file: Option<(String, DiffContext)> = None;
         let mut launch_error: Option<String> = None;
         let mut request_undo: Option<ResetMode> = None;
@@ -158,6 +319,7 @@ impl StagingPanel {
         }
         let mut do_discard_file: Option<String> = None;
         let mut do_ignore_file: Option<String> = None;
+        let mut do_delete_untracked: Option<String> = None;
 
         let panel_rect = ui.available_rect_before_wrap();
         let composer_height = self.composer_height.unwrap_or(panel_rect.height());
@@ -202,27 +364,38 @@ impl StagingPanel {
                     }
                 }
 
-                let narrow_header = ui.available_width() < 300.0;
+                // The title names the mode, so Amend's effect is visible, not only
+                // its button tint. Measure title and buttons to decide whether the
+                // title needs its own line.
+                let title = if self.drafts.current.is_amend {
+                    "Amending last commit"
+                } else {
+                    "Create a commit"
+                };
+                let title_text = RichText::new(title)
+                    .size(15.0)
+                    .strong()
+                    .color(theme::text_primary());
+                let title_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        title.to_owned(),
+                        egui::FontId::proportional(15.0),
+                        theme::text_primary(),
+                    )
+                    .size()
+                    .x;
+                let narrow_header = ui.available_width() < title_width + COMPOSER_HEADER_BUTTONS_W;
                 if narrow_header {
-                    ui.label(
-                        RichText::new("Create a commit")
-                            .size(15.0)
-                            .strong()
-                            .color(theme::text_primary()),
-                    );
+                    ui.label(title_text.clone());
                 }
                 ui.horizontal(|ui| {
                     if !narrow_header {
-                        ui.label(
-                            RichText::new("Create a commit")
-                                .size(15.0)
-                                .strong()
-                                .color(theme::text_primary()),
-                        );
+                        ui.label(title_text);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add(kit::small_button("Copy"))
+                            .add(kit::small_button("Copy message"))
                             .on_hover_text(
                                 "Copy the summary, description and author credits to the \
                                     clipboard.",
@@ -324,23 +497,34 @@ impl StagingPanel {
                     })
                     .inner;
                 ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [ui.available_width(), 28.0],
-                        egui::TextEdit::singleline(&mut self.drafts.current.subject)
-                            .margin(egui::Vec2::new(8.0, 5.0))
-                            .hint_text("Short summary, e.g. Fix login redirect")
-                            .font(egui::FontId::proportional(13.0)),
-                    )
-                    .labelled_by(summary_label.id);
+                    composer_input_focus |= ui
+                        .add_sized(
+                            [ui.available_width(), 28.0],
+                            crate::ui::kit::compact_text_field(&mut self.drafts.current.subject)
+                                .margin(egui::Vec2::new(8.0, 5.0))
+                                .hint_text("Short summary, e.g. Fix login redirect")
+                                .font(egui::FontId::proportional(13.0)),
+                        )
+                        .labelled_by(summary_label.id)
+                        .has_focus();
                 });
                 ui.add_space(kit::space::XS);
                 let header_height = ui.cursor().top() - composer_rect.top();
                 let footer_height = self.composer_footer_height.unwrap_or(
                     38.0 + kit::space::SM + kit::space::MD + ui.spacing().item_spacing.y,
                 );
-                let details_height = (panel_rect.height() - header_height - footer_height)
-                    .max(0.0)
-                    .min(panel_rect.height() * 0.38);
+                // The file list leads the panel: reserve room for its controls and
+                // about four rows before the optional details claim space. Summary
+                // and Commit stay pinned; the details scroll inside their own area.
+                let list_reserve = LIST_RESERVE_HEIGHT.min(panel_rect.height() * 0.5);
+                let details_height =
+                    (panel_rect.height() - header_height - footer_height - list_reserve)
+                        .max(0.0)
+                        .min(panel_rect.height() * 0.38);
+                // Floating scroll bars stay invisible until hovered; a solid bar
+                // shows that Commit options and Undo last commit sit below.
+                let scroll_style = ui.spacing().scroll;
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                 egui::ScrollArea::vertical()
                     .id_salt("commit_composer_details")
                     .max_height(details_height)
@@ -352,17 +536,31 @@ impl StagingPanel {
                                 .size(12.0)
                                 .color(theme::text_secondary()),
                         );
+                        // An empty, unfocused description stays two rows tall so
+                        // Commit options and Undo last commit fit without scrolling;
+                        // it grows to three rows once focused or filled.
+                        let description_id = ui.make_persistent_id("commit_description");
+                        let description_expanded = !self.drafts.current.body.is_empty()
+                            || ui.memory(|memory| memory.has_focus(description_id));
+                        let (description_height, description_rows) = if description_expanded {
+                            (60.0, 3)
+                        } else {
+                            (44.0, 2)
+                        };
                         ui.horizontal(|ui| {
-                            ui.add_sized(
-                                [ui.available_width(), 60.0],
-                                egui::TextEdit::multiline(&mut self.drafts.current.body)
-                                    .desired_width(ui.available_width())
-                                    .desired_rows(3)
-                                    .hint_text("Explain why, not just what (optional)")
-                                    .margin(egui::Vec2::new(8.0, 6.0))
-                                    .font(egui::FontId::proportional(13.0)),
-                            )
-                            .labelled_by(description_label.id);
+                            composer_input_focus |= ui
+                                .add_sized(
+                                    [ui.available_width(), description_height],
+                                    egui::TextEdit::multiline(&mut self.drafts.current.body)
+                                        .id(description_id)
+                                        .desired_width(ui.available_width())
+                                        .desired_rows(description_rows)
+                                        .hint_text("Explain why, not just what (optional)")
+                                        .margin(egui::Vec2::new(8.0, 6.0))
+                                        .font(egui::FontId::proportional(13.0)),
+                                )
+                                .labelled_by(description_label.id)
+                                .has_focus();
                         });
 
                         kit::disclosure(ui, "commit_options", "Commit options", false, |ui| {
@@ -371,7 +569,7 @@ impl StagingPanel {
                             ui.horizontal(|ui| {
                                 ui.add_sized(
                                     [form_width(ui, 68.0, 190.0), 28.0],
-                                    egui::TextEdit::singleline(
+                                    crate::ui::kit::compact_text_field(
                                         &mut self.drafts.current.co_author_input,
                                     )
                                     .margin(egui::Vec2::new(8.0, 5.0))
@@ -426,63 +624,8 @@ impl StagingPanel {
                             ui.add_space(8.0);
                         });
 
-                        // ── Branch protection warning ─────────────────────────────
-                        let amend_notice = self
-                            .amend_published
-                            .as_ref()
-                            .filter(|_| self.drafts.current.is_amend)
-                            .map(|upstream| {
-                                format!(
-                                "This commit is already on {upstream}. After amending, pushing \
-                                    requires Force Push with Lease."
-                        )
-                            });
-                        animated_notice(
-                            ui,
-                            "amend_notice",
-                            kit::Status::Warning,
-                            amend_notice.as_deref(),
-                        );
-                        let protected_notice =
-                            (is_protected_branch(&head_branch, protected_branches)
-                                && !self.drafts.current.is_amend)
-                                .then(|| {
-                                    format!(
-                                        "Committing directly to {head_branch}. Make sure this is \
-                                    intentional."
-                                    )
-                                });
-                        animated_notice(
-                            ui,
-                            "protected_notice",
-                            kit::Status::Warning,
-                            protected_notice.as_deref(),
-                        );
-                        animated_notice(
-                            ui,
-                            "sequence_notice",
-                            kit::Status::Ok,
-                            (any_seq_in_progress && conflicted.is_empty()).then_some(
-                                "All conflicts resolved. Stage remaining changes, then click \
-                                    Continue in the banner above.",
-                            ),
-                        );
-                        let draft_errors = self
-                            .drafts
-                            .save_errors
-                            .iter()
-                            .map(|(path, error)| {
-                                format!("Draft is only in memory ({}): {error}", path.display())
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        animated_notice(
-                            ui,
-                            "draft_errors",
-                            kit::Status::Error,
-                            (!draft_errors.is_empty()).then_some(draft_errors.as_str()),
-                        );
                         ui.add_space(6.0);
+                        show_commit_output(ui, &self.state, repo_path.as_deref());
                         kit::disclosure(ui, "reset_last_commit", "Undo last commit", false, |ui| {
                             // ── Reset last commit ─────────────────────────────────────
                             ui.add_space(8.0);
@@ -562,15 +705,91 @@ impl StagingPanel {
                             }
                         });
                     });
-                ui.add_space(kit::space::SM);
-                let disabled_reason = commit_disabled_reason(
-                    &self.drafts.current.subject,
-                    staged.len(),
-                    self.drafts.current.is_amend,
-                    self.drafts.busy(),
-                    conflicted.len(),
+                ui.spacing_mut().scroll = scroll_style;
+                // Warnings about this commit stay pinned beside the Commit button
+                // instead of scrolling out of sight with the optional details.
+                let footer_start = ui.cursor().top();
+                let amend_notice = self
+                    .amend_published
+                    .as_ref()
+                    .filter(|_| self.drafts.current.is_amend)
+                    .map(|upstream| {
+                        format!(
+                            "This commit is already on {upstream}. After amending, pushing \
+                                    requires Force Push with Lease."
+                        )
+                    });
+                animated_notice(
+                    ui,
+                    "amend_notice",
+                    kit::Status::Warning,
+                    amend_notice.as_deref(),
                 );
-                let can_commit = disabled_reason.is_empty();
+                let protected_notice = (is_protected_branch(&head_branch, protected_branches)
+                    && !self.drafts.current.is_amend)
+                    .then(|| {
+                        format!(
+                            "Committing directly to {head_branch}. Make sure this is \
+                                    intentional."
+                        )
+                    });
+                animated_notice(
+                    ui,
+                    "protected_notice",
+                    kit::Status::Warning,
+                    protected_notice.as_deref(),
+                );
+                animated_notice(
+                    ui,
+                    "sequence_notice",
+                    kit::Status::Ok,
+                    (any_seq_in_progress && conflicted.is_empty()).then_some(
+                        "All conflicts resolved. Stage remaining changes, then click \
+                                    Continue in the banner above.",
+                    ),
+                );
+                let draft_errors = self
+                    .drafts
+                    .save_errors
+                    .iter()
+                    .map(|(path, error)| {
+                        format!("Draft is only in memory ({}): {error}", path.display())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                animated_notice(
+                    ui,
+                    "draft_errors",
+                    kit::Status::Error,
+                    (!draft_errors.is_empty()).then_some(draft_errors.as_str()),
+                );
+                ui.add_space(kit::space::SM);
+                let disabled_reason = if repository_busy {
+                    "A repository operation is queued or running."
+                } else {
+                    commit_disabled_reason(
+                        &self.drafts.current.subject,
+                        staged.len(),
+                        self.drafts.current.is_amend,
+                        self.drafts.busy(),
+                        conflicted.len(),
+                    )
+                };
+                let can_commit =
+                    disabled_reason.is_empty() && !repository_busy && !file_confirmation;
+                self.state.lock().unwrap().commit_composer_ready = if can_commit {
+                    repo_path.clone().map(|p| (p, repo_epoch))
+                } else {
+                    None
+                };
+                let composer_shortcut = can_commit
+                    && composer_input_focus
+                    && ui.is_enabled()
+                    && take_commit_shortcut(ui.ctx(), shortcuts);
+                // Say what is missing beside the disabled button, not only in its tooltip.
+                if !can_commit && !disabled_reason.is_empty() {
+                    kit::hint(ui, disabled_reason);
+                }
                 let compact_commit_label = ui.available_width() < 280.0;
                 let btn_label = if compact_commit_label && self.drafts.current.is_amend {
                     "Amend commit".to_string()
@@ -588,13 +807,18 @@ impl StagingPanel {
                             .truncate()
                             .min_size(Vec2::new(ui.available_width(), 38.0)),
                     );
-                    let btn = kit::explain_disabled(btn, disabled_reason)
-                        .on_hover_text("Save the staged changes as a commit in this repository.");
+                    let btn = kit::explain_disabled(btn, disabled_reason).on_hover_text(format!(
+                        "Save the staged changes as a commit in this repository.{}",
+                        shortcuts
+                            .get(crate::commands::Command::Commit)
+                            .map(|b| format!(" Shortcut: {}.", b.label()))
+                            .unwrap_or_default()
+                    ));
                     #[cfg(test)]
                     {
                         self.commit_button_rect = Some(btn.rect);
                     }
-                    if btn.clicked() {
+                    if btn.clicked() || (can_commit && (requested_commit || composer_shortcut)) {
                         if self.drafts.current.is_amend {
                             do_amend = true;
                         } else {
@@ -602,9 +826,9 @@ impl StagingPanel {
                         }
                     }
                 });
+                // Pinned notices, spacing and the Commit button, plus the bottom margin.
                 self.composer_footer_height = Some(
-                    footer.response.rect.height()
-                        + kit::space::SM
+                    footer.response.rect.bottom() - footer_start
                         + kit::space::MD
                         + ui.spacing().item_spacing.y,
                 );
@@ -640,6 +864,21 @@ impl StagingPanel {
             .min_scrolled_height(0.0)
             .auto_shrink([false; 2])
             .show(&mut list_ui, |ui| {
+                ui.label("Filter paths");
+                let filter=ui.add(crate::ui::kit::text_field(&mut path_filter).hint_text("Filename or directory").desired_width(ui.available_width()));
+                if filter.changed() {
+                    selection.clear();
+                    self.path_filters.insert(repo_path.clone().unwrap_or_default(),path_filter.clone());
+                }
+                if !path_filter.is_empty() {
+                    let visible=files.iter().filter(|f|matches_path_filter(&f.path,&path_filter)).count();
+                    kit::hint(ui,&format!("Showing {visible} of {} paths. Changing the filter clears batch selection.",files.len()));
+                    if selected_file.as_ref().is_some_and(|p|!matches_path_filter(p,&path_filter)) {kit::hint(ui,"The current diff is outside this filter.");}
+                }
+                if ui.add_enabled(stage_all_available,small_btn("Stage all changes")).on_hover_text("Stage all tracked changes and untracked files in the repository, including paths hidden by the filter.").clicked() { do_stage_all=true; }
+                staged.retain(|f|matches_path_filter(&f.path,&path_filter));
+                unstaged.retain(|f|matches_path_filter(&f.path,&path_filter));
+                untracked.retain(|f|matches_path_filter(&f.path,&path_filter));
                 batch = batch_bar(ui, selection);
                 if files.is_empty() && conflicted.is_empty() {
                     kit::empty_state(
@@ -651,11 +890,11 @@ impl StagingPanel {
                     );
                     return;
                 }
-                kit::hint(
-                    ui,
-                    "Click a file to inspect it. Check boxes to select several files.",
-                );
-                ui.add_space(8.0);
+                if staged.is_empty() && unstaged.is_empty() && untracked.is_empty() && conflicted.is_empty() {
+                    kit::empty_state(ui,crate::icons::SEARCH,"No matching paths","Clear or change the path filter to see your changes.",None);
+                    return;
+                }
+                ui.add_space(kit::space::XS);
 
                 // ── CONFLICTS ────────────────────────────────────────────
                 if !conflicted.is_empty() {
@@ -735,13 +974,7 @@ impl StagingPanel {
                 // ── UNSTAGED CHANGES ─────────────────────────────────────
                 let unstaged_expanded = &mut self.unstaged_expanded;
                 collapsible_section(ui, "Unstaged", unstaged.len(), unstaged_expanded, |ui| {
-                    if ui
-                        .add_enabled(!unstaged.is_empty(), small_btn("Stage all"))
-                        .on_hover_text("Include all changed and new files in your next commit.")
-                        .clicked()
-                    {
-                        do_stage_all = true;
-                    }
+                    let _=ui;
                 });
 
                 motion::reveal(
@@ -809,8 +1042,13 @@ impl StagingPanel {
                                             ui.close();
                                         }
                                         if ui.button("Open in external diff tool").clicked() {
-                                            launch_error =
-                                                open_diff_tool(&f.path, &repo_path, false).err();
+                                            launch_error = open_diff_tool(
+                                                &f.path,
+                                                &repo_path,
+                                                false,
+                                                self.state.clone(),
+                                            )
+                                            .err();
                                             ui.close();
                                         }
                                     },
@@ -818,6 +1056,7 @@ impl StagingPanel {
                                 if inline_clicked {
                                     do_stage_file = Some(f.path.clone());
                                 }
+                                visible_rows.push((false,f.path.clone(),resp.clone()));
                                 if resp.clicked() {
                                     view_file = Some((f.path.clone(), DiffContext::UnstagedFile));
                                 }
@@ -835,7 +1074,7 @@ impl StagingPanel {
                         .add_enabled(!staged.is_empty(), small_btn("Unstage all"))
                         .on_hover_text(
                             "Leave all files out of your next commit; \
-                             keep their changes in your working files.",
+                             keep their changes in your working files. Includes paths hidden by the filter.",
                         )
                         .clicked()
                     {
@@ -880,8 +1119,13 @@ impl StagingPanel {
                                             ui.close();
                                         }
                                         if ui.button("Open in external diff tool").clicked() {
-                                            launch_error =
-                                                open_diff_tool(&f.path, &repo_path, true).err();
+                                            launch_error = open_diff_tool(
+                                                &f.path,
+                                                &repo_path,
+                                                true,
+                                                self.state.clone(),
+                                            )
+                                            .err();
                                             ui.close();
                                         }
                                     },
@@ -889,6 +1133,7 @@ impl StagingPanel {
                                 if inline_clicked {
                                     do_unstage_file = Some(f.path.clone());
                                 }
+                                visible_rows.push((true,f.path.clone(),resp.clone()));
                                 if resp.clicked() {
                                     view_file = Some((f.path.clone(), DiffContext::StagedFile));
                                 }
@@ -927,6 +1172,7 @@ impl StagingPanel {
                                             do_ignore_file = Some(f.path.clone());
                                             ui.close();
                                         }
+                                        if ui.button(RichText::new("Delete file…").color(theme::accent_red())).clicked() {do_delete_untracked=Some(f.path.clone());ui.close();}
                                         if ui.button("Edit in Recorde").clicked() {
                                             self.state.lock().unwrap().pending_file_edit =
                                                 Some(f.path.clone());
@@ -937,14 +1183,11 @@ impl StagingPanel {
                                                 reveal_in_folder(&f.path, &repo_path).err();
                                             ui.close();
                                         }
-                                        if ui.button("Add to .gitignore").clicked() {
-                                            do_ignore_file = Some(f.path.clone());
-                                            ui.close();
-                                        }
                                     });
                                 if inline_clicked {
                                     do_stage_file = Some(f.path.clone());
                                 }
+                                visible_rows.push((false,f.path.clone(),resp.clone()));
                                 if resp.clicked() {
                                     view_file = Some((f.path.clone(), DiffContext::UnstagedFile));
                                 }
@@ -952,6 +1195,14 @@ impl StagingPanel {
                         });
                     },
                 );
+                if let Some(index)=visible_rows.iter().position(|(_,_,response)|response.has_focus()) {
+                    let direction=ui.input_mut(|input|if input.consume_key(egui::Modifiers::NONE,egui::Key::ArrowDown) {1} else if input.consume_key(egui::Modifiers::NONE,egui::Key::ArrowUp) {-1} else {0});
+                    if let Some(next)=row_neighbor(index,visible_rows.len(),direction) {
+                        let(staged,path,response)=&visible_rows[next];
+                        response.request_focus();response.scroll_to_me(Some(egui::Align::Center));
+                        view_file=Some((path.clone(),if *staged {DiffContext::StagedFile} else {DiffContext::UnstagedFile}));
+                    }
+                }
             });
         ui.advance_cursor_after_rect(panel_rect);
 
@@ -1013,7 +1264,10 @@ impl StagingPanel {
         }
 
         if let Some(path) = do_ignore_file {
-            staging::ignore_file(&path, self.state.clone());
+            self.prepare_file_action(path, false);
+        }
+        if let Some(path) = do_delete_untracked {
+            self.prepare_file_action(path, true);
         }
 
         if do_commit || do_amend {
@@ -1052,6 +1306,7 @@ impl StagingPanel {
             let staged = context == DiffContext::StagedFile;
             load_workdir_diff(&path, staged, self.state.clone());
         }
+        self.show_file_action(ui.ctx());
     }
 }
 
@@ -1145,6 +1400,7 @@ fn open_diff_tool(
     file_path: &str,
     repo_path: &Option<std::path::PathBuf>,
     staged: bool,
+    state: SharedState,
 ) -> Result<(), String> {
     let repo = repo_path
         .as_ref()
@@ -1154,7 +1410,7 @@ fn open_diff_tool(
     } else {
         crate::external::DiffToolArgs::Unstaged { path: file_path }
     };
-    crate::external::open_diff_tool(repo, request)
+    crate::external::open_diff_tool(repo, request, state)
 }
 
 fn reveal_in_folder(file_path: &str, repo_path: &Option<std::path::PathBuf>) -> Result<(), String> {
@@ -1420,7 +1676,7 @@ fn file_row(
     ui.push_id((staged, path), |ui| {
         let background = ui.painter().add(egui::Shape::Noop);
         let (row_rect, row) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width().max(0.0), 32.0),
+            Vec2::new(ui.available_width().max(0.0), 42.0),
             egui::Sense::hover(),
         );
         let menu_width = crate::ui::widgets::ROW_ACTIONS_WIDTH.min(row_rect.width());
@@ -1480,7 +1736,7 @@ fn file_row(
         let width = content_ui.available_width().max(0.0);
         let (rect, label) = content_ui
             .allocate_exact_size(Vec2::new(width, row_rect.height()), egui::Sense::click());
-        let label = label.on_hover_text(path);
+        let label = label.on_hover_text(format!("{path}\n{FILE_ROW_HELP}"));
         if label.has_focus() {
             ui.painter().rect_stroke(
                 rect.shrink(1.0),
@@ -1489,7 +1745,11 @@ fn file_row(
                 egui::StrokeKind::Inside,
             );
         }
-        let name = path.rsplit('/').next().unwrap_or(path);
+        // Root-level files have no folder line, so their name centres on the badge.
+        let (parent, name) = match path.rsplit_once('/') {
+            Some((parent, name)) => (Some(parent), name),
+            None => (None, path),
+        };
         let mut job = egui::text::LayoutJob::simple(
             name.into(),
             egui::FontId::proportional(theme::font_size::BODY),
@@ -1499,11 +1759,31 @@ fn file_row(
         job.wrap.max_rows = 1;
         job.wrap.break_anywhere = true;
         let galley = ui.painter().layout_job(job);
+        let name_top = if parent.is_some() {
+            rect.top() + 3.0
+        } else {
+            rect.center().y - galley.size().y / 2.0
+        };
         ui.painter().with_clip_rect(rect).galley(
-            egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0),
+            egui::pos2(rect.left(), name_top),
             galley,
             theme::text_primary(),
         );
+        if let Some(parent) = parent {
+            let mut parent_job = egui::text::LayoutJob::simple(
+                parent.into(),
+                egui::FontId::proportional(theme::font_size::SMALL),
+                theme::text_secondary(),
+                (width - kit::space::XS).max(0.0),
+            );
+            parent_job.wrap.max_rows = 1;
+            parent_job.wrap.break_anywhere = true;
+            ui.painter().with_clip_rect(rect).galley(
+                egui::pos2(rect.left(), rect.top() + 22.0),
+                ui.painter().layout_job(parent_job),
+                theme::text_secondary(),
+            );
+        }
         label.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), path)
         });
@@ -1523,13 +1803,16 @@ fn file_row(
         );
         action_ui.multiply_opacity(progress);
         let visible = egui::Rect::from_min_size(
-            slot.min + egui::vec2(action_width * (1.0 - progress), kit::space::XS),
+            egui::pos2(
+                slot.left() + action_width * (1.0 - progress),
+                slot.center().y - 12.0,
+            ),
             Vec2::new(action_width * progress, 24.0),
         );
         action_ui.set_clip_rect(ui.clip_rect().intersect(visible));
         let action = action_ui
             .put(
-                slot.shrink2(egui::vec2(0.0, kit::space::XS)),
+                egui::Rect::from_center_size(slot.center(), Vec2::new(action_width, 24.0)),
                 kit::small_button(if staged { "Unstage" } else { "Stage" }),
             )
             .on_hover_text(if staged {
@@ -1567,6 +1850,43 @@ fn file_row(
 
 fn small_btn(label: &str) -> Button<'_> {
     kit::small_button(label)
+}
+
+fn matches_path_filter(path: &str, filter: &str) -> bool {
+    path.to_lowercase()
+        .contains(&filter.trim().replace('\\', "/").to_lowercase())
+}
+
+fn row_neighbor(index: usize, len: usize, direction: i32) -> Option<usize> {
+    if len == 0 || direction == 0 {
+        return None;
+    }
+    Some(if direction > 0 {
+        (index + 1).min(len - 1)
+    } else {
+        index.saturating_sub(1)
+    })
+}
+
+fn take_commit_shortcut(ctx: &egui::Context, shortcuts: &crate::commands::Shortcuts) -> bool {
+    for event in ctx.input(|input| input.events.clone()) {
+        if let egui::Event::Key {
+            key,
+            pressed: true,
+            repeat: false,
+            modifiers,
+            ..
+        } = event
+        {
+            if shortcuts.command(key, modifiers) == Some(crate::commands::Command::Commit) {
+                ctx.input_mut(|input| {
+                    input.consume_key(modifiers, key);
+                });
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn small_btn_danger(label: &str) -> Button<'_> {
@@ -1727,9 +2047,141 @@ fn commit_disabled_reason(
     }
 }
 
+fn show_commit_output(ui: &mut Ui, state: &SharedState, repo: Option<&std::path::Path>) {
+    use crate::git::commit_output::CommitOutcome;
+    let Some(repo) = repo else { return };
+    let (report, cancel) = {
+        let state = state.lock().unwrap();
+        let Some(report) = state.commit_outputs.get(repo).cloned() else {
+            return;
+        };
+        let cancel = state
+            .local_jobs
+            .iter()
+            .find(|job| Some(job.id) == report.job_id && job.path == repo)
+            .map(|job| job.cancel.clone());
+        (report, cancel)
+    };
+    let active = matches!(
+        report.outcome,
+        CommitOutcome::Queued | CommitOutcome::Running
+    );
+    let label = match report.outcome {
+        CommitOutcome::Queued => "Commit queued",
+        CommitOutcome::Running => "Commit running",
+        CommitOutcome::Succeeded => "Commit completed",
+        CommitOutcome::Failed => "Commit failed",
+        CommitOutcome::Cancelled => "Commit cancelled",
+        CommitOutcome::StoppedWithHeadChange => "Commit stopped; HEAD changed",
+    };
+    let elapsed = report
+        .elapsed
+        .or_else(|| report.started.map(|time| time.elapsed()));
+    ui.label(elapsed.map_or_else(
+        || label.into(),
+        |elapsed| format!("{label} · Total Git command: {:.1}s", elapsed.as_secs_f32()),
+    ));
+    if active {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+        if let Some(cancel) = cancel {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                ui.label("Cancellation requested; stopping Git and child processes…");
+            } else if ui.small_button("Cancel commit").clicked() {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+    egui::CollapsingHeader::new("Commit output")
+        .id_salt(("commit_output", repo))
+        .default_open(!active && report.outcome != CommitOutcome::Succeeded)
+        .show(ui, |ui| {
+            ui.label("Git and hook output. Streams are separate; elapsed time covers the entire Git command.");
+            for (label, text, truncated) in [("Standard output", &report.stdout, report.stdout_truncated), ("Standard error", &report.stderr, report.stderr_truncated)] {
+                if !text.is_empty() || truncated {
+                    ui.label(if truncated { format!("{label} (earlier output omitted)") } else { label.into() });
+                    egui::ScrollArea::both().id_salt((report.id, label)).max_height(160.0).show(ui, |ui| { ui.monospace(text); });
+                }
+            }
+            if !report.detail.is_empty() { ui.label(&report.detail); }
+            if !active && report.outcome != CommitOutcome::Succeeded {
+                ui.label("Draft retained. Inspect history and staged changes before retrying Commit.");
+                if report.index_changed { ui.label("Staged content changed during this attempt. Hook changes were kept."); }
+            }
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn t11_commit_output_ui_labels_elapsed_streams_and_cancellation_feedback() {
+        use crate::git::commit_output::OutputHandle;
+        let state = crate::state::new_shared_state();
+        let path = std::path::Path::new("report-ui-repo");
+        let report = OutputHandle::begin(path, &state);
+        report.job(47);
+        report.started();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        state
+            .lock()
+            .unwrap()
+            .local_jobs
+            .push(crate::git::mutation::LocalJob {
+                id: 47,
+                path: path.into(),
+                label: "Commit".into(),
+                running: true,
+                cancel: cancel.clone(),
+            });
+        let draw = || {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::icons::font_definitions());
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            });
+            let mut ui = Ui::new(
+                ctx.clone(),
+                egui::Id::new("commit-output-ui"),
+                egui::UiBuilder::new().max_rect(rect),
+            );
+            show_commit_output(&mut ui, &state, Some(path));
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let text = draw();
+        assert!(text.contains("Commit running") && text.contains("Total Git command:"));
+        assert!(text.contains("Cancel commit"));
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(draw().contains("Cancellation requested; stopping Git and child processes"));
+        report.observed(crate::git::process::DiagnosticOutput {
+            stdout: b"hook stdout",
+            stderr: b"hook stderr",
+            stdout_truncated: true,
+            stderr_truncated: false,
+            elapsed: std::time::Duration::from_millis(1234),
+            success: Some(false),
+            cancelled: false,
+        });
+        report.finished(&Err("hook rejected".into()), false, true);
+        let text = draw();
+        assert!(text.contains("Commit failed") && text.contains("1.2s"));
+        assert!(text.contains("Standard output (earlier output omitted)"));
+        assert!(text.contains("Standard error") && text.contains("hook stderr"));
+        assert!(text.contains("Draft retained") && text.contains("Hook changes were kept"));
+    }
 
     #[test]
     fn selection_summary_uses_singular_for_one_file() {
@@ -1870,6 +2322,79 @@ mod tests {
             );
             assert!(button.bottom() >= visible.bottom() - kit::space::LG);
             assert!(button.width() >= width - 2.0 * kit::space::LG);
+        }
+    }
+
+    #[test]
+    fn composer_details_leave_room_for_the_file_list() {
+        // In very short panels the summary, pinned warning and Commit button take
+        // priority over the list reserve; ordinary heights keep both.
+        for (width, height, keeps_reserve) in [
+            (344.0, 600.0, true),
+            (344.0, 680.0, true),
+            (344.0, 900.0, true),
+            (300.0, 420.0, false),
+        ] {
+            let state = crate::state::new_shared_state();
+            state
+                .lock()
+                .unwrap()
+                .working_dir_files
+                .push(WorkingDirFile {
+                    path: "hello.txt".into(),
+                    staged_status: None,
+                    unstaged_status: Some('M'),
+                });
+            state.lock().unwrap().head_branch = Some("main".into());
+            let protected = ["main".to_string()];
+            let mut panel = StagingPanel::new(state);
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::icons::font_definitions());
+            let visible = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(width, height));
+            let mut output = None;
+            // Advance time so the warning's reveal animation completes.
+            for pass in 0..8 {
+                ctx.begin_pass(egui::RawInput {
+                    screen_rect: Some(visible),
+                    time: Some(f64::from(pass) * 0.5),
+                    ..Default::default()
+                });
+                let mut ui = Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("list_reserve_test"),
+                    egui::UiBuilder::new().max_rect(visible),
+                );
+                panel.show(&mut ui, "", &protected);
+                let mut pass_output = ctx.end_pass();
+                pass_output.textures_delta.clear();
+                output = Some(pass_output);
+            }
+            let output = output.expect("Rendered passes");
+            let warning = "Committing directly to main. Make sure this is intentional.";
+            let shown = output.shapes.iter().any(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == warning => {
+                    let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    clipped.clip_rect.contains_rect(rect.shrink(0.5))
+                }
+                _ => false,
+            });
+            assert!(shown, "{width}x{height}: protected-branch warning hidden");
+            let reason_shown = output.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::Shape::Text(text)
+                    if text.galley.text() == "Write a summary first")
+            });
+            assert!(reason_shown, "{width}x{height}: disabled reason not shown");
+            let composer = panel.composer_height.expect("Composer measured");
+            let reserve = LIST_RESERVE_HEIGHT.min(height * 0.5);
+            assert!(
+                !keeps_reserve || height - composer >= reserve - 2.0,
+                "{width}x{height}: composer {composer} leaves less than {reserve} for files"
+            );
+            let button = panel.commit_button_rect.expect("Commit button rendered");
+            assert!(
+                visible.contains_rect(button),
+                "{button:?} outside {visible:?}"
+            );
         }
     }
 

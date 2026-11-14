@@ -460,11 +460,128 @@ pub fn empty_state(ui: &mut Ui, icon: char, title: &str, body: &str, action: Opt
     clicked
 }
 
+// ── Text fields ──────────────────────────────────────────────────────────────
+
+/// Inner margin shared by every single-line field. egui's default (4 by 2) made
+/// fields about 22 pixels tall with text touching the border.
+pub const TEXT_FIELD_MARGIN: egui::Vec2 = egui::Vec2::new(8.0, 5.0);
+
+/// Height of a compact field in dense panels (sidebar filter, commit summary,
+/// history search), where neighbouring controls are icon buttons.
+pub const COMPACT_FIELD_HEIGHT: f32 = 28.0;
+
+/// A single-line text field as tall as a standard button (the theme's
+/// interaction height), with its text centred vertically, so fields beside Save
+/// or Browse buttons in Settings and dialogs line up with them. Callers may
+/// still override the margin, font, width or minimum size.
+pub fn text_field(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text)
+        .margin(TEXT_FIELD_MARGIN)
+        .min_size(Vec2::new(0.0, theme::CONTROL_HEIGHT))
+        .vertical_align(Align::Center)
+}
+
+/// A shorter single-line field for dense panels; see [`COMPACT_FIELD_HEIGHT`].
+pub fn compact_text_field(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
+    text_field(text).min_size(Vec2::new(0.0, COMPACT_FIELD_HEIGHT))
+}
+
+/// A checkbox for menus: no box, so unchecked rows show nothing and checked rows
+/// show only the tick. With the theme's rounded corners egui's box rendered as a
+/// filled dot beside unchecked items. Keeps the checkbox role for accessibility.
+pub fn menu_check(ui: &mut Ui, value: &mut bool, label: &str) -> Response {
+    ui.scope(|ui| {
+        let widgets = &mut ui.visuals_mut().widgets;
+        for state in [
+            &mut widgets.inactive,
+            &mut widgets.hovered,
+            &mut widgets.active,
+        ] {
+            state.bg_fill = Color32::TRANSPARENT;
+            state.bg_stroke = Stroke::NONE;
+        }
+        ui.checkbox(value, label)
+    })
+    .inner
+}
+
+/// Radius of the selected dot inside a [`radio`], as a fraction of the icon.
+const RADIO_DOT: f32 = 0.27;
+
+/// A radio button whose state is obvious: every option is a clear outlined ring
+/// and the selected one gets an accent ring and dot. egui's default fills each
+/// ring with the app background behind a faint border and marks the selected
+/// option with a dot of about 3 pixels, so options looked alike. Keeps egui's
+/// layout, keyboard handling and radio-button accessibility role.
+pub fn radio(ui: &mut Ui, selected: bool, label: impl Into<egui::WidgetText>) -> Response {
+    let response = ui
+        .scope(|ui| {
+            let widgets = &mut ui.visuals_mut().widgets;
+            for (state, ring) in [
+                (&mut widgets.inactive, theme::border_strong()),
+                (&mut widgets.hovered, theme::accent_blue()),
+                (&mut widgets.active, theme::accent_blue()),
+            ] {
+                state.bg_fill = Color32::TRANSPARENT;
+                state.bg_stroke = Stroke::new(1.5, ring);
+                state.expansion = 0.0;
+            }
+            ui.radio(selected, label)
+        })
+        .inner;
+    if selected && ui.is_rect_visible(response.rect) {
+        let icon = ui.spacing().icon_width;
+        let center = egui::pos2(response.rect.left() + icon / 2.0, response.rect.center().y);
+        let accent = if response.enabled() {
+            theme::accent_blue()
+        } else {
+            theme::accent_blue().gamma_multiply(0.45)
+        };
+        let painter = ui.painter();
+        painter.circle_stroke(center, icon / 2.0, Stroke::new(1.5, accent));
+        painter.circle_filled(center, icon * RADIO_DOT, accent);
+    }
+    response
+}
+
+/// [`radio`] bound to a value, like `Ui::radio_value`.
+pub fn radio_value<T: PartialEq>(
+    ui: &mut Ui,
+    current: &mut T,
+    value: T,
+    label: impl Into<egui::WidgetText>,
+) -> Response {
+    let mut response = radio(ui, *current == value, label);
+    if response.clicked() && *current != value {
+        *current = value;
+        response.mark_changed();
+    }
+    response
+}
+
+/// A slider whose rail stays visible on light cards (egui draws the rail in the
+/// inactive widget fill, which the palettes set to the app background) and whose
+/// travelled part uses the interactive accent.
+pub fn slider(ui: &mut Ui, slider: egui::Slider<'_>) -> Response {
+    ui.scope(|ui| {
+        let visuals = ui.visuals_mut();
+        visuals.widgets.inactive.bg_fill = theme::border_strong();
+        visuals.selection.bg_fill = theme::accent_blue();
+        ui.add(slider.trailing_fill(true))
+    })
+    .inner
+}
+
 // ── Buttons ──────────────────────────────────────────────────────────────────
 
 /// The one main action in a region (Commit, Save, Sign in).
 pub fn primary_button(label: &str) -> Button<'_> {
     Button::new(RichText::new(label).color(theme::on_primary()).size(14.0))
+        .disabled_text(
+            RichText::new(label)
+                .color(theme::text_secondary())
+                .size(14.0),
+        )
         .fill(theme::primary_fill())
         .corner_radius(7.0)
         .min_size(Vec2::new(96.0, 30.0))
@@ -529,6 +646,9 @@ pub fn explain_disabled(response: Response, reason: &str) -> Response {
 
 /// A menu entry with right-aligned shortcut text and a tooltip. A disabled
 /// entry stays visible and explains why it is unavailable.
+/// Minimum space between a menu label and its shortcut.
+const MENU_SHORTCUT_GAP: f32 = 28.0;
+
 pub fn menu_item(
     ui: &mut Ui,
     label: &str,
@@ -537,10 +657,27 @@ pub fn menu_item(
     tooltip: &str,
 ) -> Response {
     let mut button = egui::Button::new(label);
+    let has_shortcut = shortcut.is_some_and(|s| !s.is_empty());
     if let Some(shortcut) = shortcut.filter(|s| !s.is_empty()) {
         button = button.shortcut_text(RichText::new(shortcut).color(theme::text_muted()));
     }
-    let response = ui.add_enabled(enabled, button);
+    // egui separates the label and shortcut by twice the icon spacing, so in the
+    // widest row of a menu the shortcut ran into the label and the menu edge.
+    let response = ui
+        .scope(|ui| {
+            if has_shortcut {
+                ui.spacing_mut().icon_spacing = MENU_SHORTCUT_GAP / 2.0;
+            }
+            ui.add_enabled(enabled, button)
+        })
+        .inner;
+    if has_shortcut {
+        // egui joins the shortcut onto the accessible name ("Clone Repository…
+        // Ctrl+Shift+O"). Announce the command by its label alone, as native
+        // menus do, so assistive technology and automation find it by name.
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    }
     if tooltip.is_empty() {
         response
     } else if enabled {
@@ -582,6 +719,104 @@ mod tests {
         );
         add(&mut ui);
         ctx.end_pass().textures_delta.clear();
+    }
+
+    #[test]
+    fn text_fields_match_the_button_row_height() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_palette(&ctx, true, false, crate::theme::Palette::ALL[0]);
+        // Fonts and style apply from the next pass, so lay out twice.
+        for pass in 0..2 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(500.0, 200.0),
+                )),
+                ..Default::default()
+            });
+            let mut ui = egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new("field_height"),
+                egui::UiBuilder::new().max_rect(ctx.content_rect()),
+            );
+            ui.horizontal(|ui| {
+                let mut text = String::new();
+                let mut compact = String::new();
+                let field = ui.add(text_field(&mut text).hint_text("Editor"));
+                let save = ui.add(small_button("Save"));
+                let primary = ui.add(primary_button("Save identity"));
+                let dense = ui.add(compact_text_field(&mut compact));
+                if pass == 1 {
+                    for button in [save, primary] {
+                        assert!(
+                            (field.rect.height() - button.rect.height()).abs() <= 0.5,
+                            "Field {} must match button {}",
+                            field.rect.height(),
+                            button.rect.height()
+                        );
+                    }
+                    assert!((dense.rect.height() - COMPACT_FIELD_HEIGHT).abs() <= 0.5);
+                }
+            });
+            ctx.end_pass().textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn selected_radio_draws_an_accent_dot_on_the_native_ring() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_palette(&ctx, true, false, crate::theme::Palette::ALL[0]);
+        for pass in 0..2 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(400.0, 200.0),
+                )),
+                ..Default::default()
+            });
+            let mut ui = egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new("radio"),
+                egui::UiBuilder::new().max_rect(ctx.content_rect()),
+            );
+            let mut choice = 1;
+            radio_value(&mut ui, &mut choice, 1, "GitHub.com");
+            radio_value(&mut ui, &mut choice, 2, "GitLab.com");
+            let icon = ui.spacing().icon_width;
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            if pass == 0 {
+                continue;
+            }
+            let circles: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Circle(circle) => Some(*circle),
+                    _ => None,
+                })
+                .collect();
+            let rings: Vec<_> = circles
+                .iter()
+                .filter(|c| (c.radius - icon / 2.0).abs() < 0.01 && c.fill == Color32::TRANSPARENT)
+                .collect();
+            assert!(rings.len() >= 2, "Every option needs an outlined ring");
+            let dots: Vec<_> = circles
+                .iter()
+                .filter(|c| c.fill == theme::accent_blue() && c.radius > 3.0)
+                .collect();
+            assert_eq!(
+                dots.len(),
+                1,
+                "Only the selected option gets the accent dot"
+            );
+            assert!(
+                rings
+                    .iter()
+                    .any(|ring| ring.center.distance(dots[0].center) < 0.01),
+                "The accent dot must sit on the native ring"
+            );
+        }
     }
 
     #[test]

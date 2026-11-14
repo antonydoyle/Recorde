@@ -181,6 +181,7 @@ impl DetailPanel {
                                         path: &file.path,
                                         oid: &detail.oid,
                                     },
+                                    self.state.clone(),
                                 ) {
                                     self.state.lock().unwrap().error = Some(error);
                                 }

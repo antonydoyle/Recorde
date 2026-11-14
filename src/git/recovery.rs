@@ -28,6 +28,9 @@ pub struct Checkpoint {
     /// The checkpoint this one undid or redid; absent for ordinary operations.
     #[serde(default)]
     pub reverses: Option<String>,
+    /// Exact-byte deletion is replayable only under the reviewed checkout policy.
+    #[serde(default)]
+    checkout_guards: Vec<super::untracked::CheckoutGuard>,
 }
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -100,16 +103,16 @@ fn sequence_witness(repo: &git2::Repository) -> Result<Option<SequenceWitness>, 
     }))
 }
 
-#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TrackedState {
-    index: String,
+    pub(super) index: String,
     // Empty only for index-only checkpoints; an empty string cannot name a tree.
-    worktree: String,
+    pub(super) worktree: String,
     #[serde(default)]
     sparse: Option<SparseState>,
 }
 
-#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct SparseState {
     patterns: Vec<u8>,
     cone: bool,
@@ -319,7 +322,7 @@ fn checkpoint_state(
 
 // A separate index lets native Git apply attributes, modes and symlink rules
 // without changing the user's index or HEAD. Ignored files are never added.
-fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, String> {
+pub(super) fn complete_state(path: &Path, repo: &git2::Repository) -> Result<TrackedState, String> {
     let sparse = sparse_state(repo)?;
     let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
     let index_path = temporary.path().join("index");
@@ -407,6 +410,8 @@ fn capture_reversing(
     index_only: bool,
     reverses: Option<&str>,
 ) -> Result<Option<Checkpoint>, String> {
+    // Refuse unsupported CLI work before writing recovery objects or refs.
+    super::readiness::check().require_ready()?;
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
     let (before, branch) = head_state(&repo)?;
     let before = before.unwrap_or_default();
@@ -484,6 +489,7 @@ fn capture_reversing(
         index_only,
         pinned: false,
         reverses: reverses.map(str::to_owned),
+        checkout_guards: Vec::new(),
     };
     save(&repo, &checkpoint)?;
     Ok(Some(checkpoint))
@@ -498,7 +504,7 @@ pub fn protect<T>(
     if super::merge::squash_in_progress(&repo) {
         return Err("Finish or abort the squash merge before starting another operation.".into());
     }
-    protect_inner(path, label, false, false, None, operation)
+    protect_inner(path, label, false, false, None, &[], None, operation)
 }
 
 /// Protect an operation that changes only the index, without hashing working files.
@@ -511,7 +517,7 @@ pub fn protect_index_only<T>(
     if repo.state() != git2::RepositoryState::Clean || super::merge::squash_in_progress(&repo) {
         return Err("Finish the current operation first.".into());
     }
-    protect_inner(path, label, false, true, None, operation)
+    protect_inner(path, label, false, true, None, &[], None, operation)
 }
 
 pub fn protect_sequence<T>(
@@ -523,7 +529,26 @@ pub fn protect_sequence<T>(
     if repo.state() != git2::RepositoryState::Clean || super::merge::squash_in_progress(&repo) {
         return Err("Finish the current operation first.".into());
     }
-    protect_inner(path, label, true, false, None, operation)
+    protect_inner(path, label, true, false, None, &[], None, operation)
+}
+
+pub(crate) fn protect_deleted_file<T>(
+    path: &Path,
+    file: &str,
+    bytes: &[u8],
+    guard: super::untracked::CheckoutGuard,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    protect_inner(
+        path,
+        "Delete untracked file",
+        false,
+        false,
+        None,
+        &[guard],
+        Some((file, bytes)),
+        operation,
+    )
 }
 
 fn protect_inner<T>(
@@ -532,9 +557,50 @@ fn protect_inner<T>(
     sequence: bool,
     index_only: bool,
     reverses: Option<&str>,
+    guards: &[super::untracked::CheckoutGuard],
+    deleted_file: Option<(&str, &[u8])>,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    let checkpoint = capture_reversing(path, label, index_only, reverses)?;
+    let mut checkpoint = capture_reversing(path, label, index_only, reverses)?;
+    if !guards.is_empty() {
+        let saved = checkpoint
+            .as_mut()
+            .ok_or("Cannot create the recovery snapshot; no file was deleted.")?;
+        saved.checkout_guards = guards.to_vec();
+        for guard in guards {
+            guard.validate(path)?;
+        }
+        let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+        if let Some((file, bytes)) = deleted_file {
+            let tree = repo
+                .find_tree(
+                    git2::Oid::from_str(
+                        &saved
+                            .before_state
+                            .as_ref()
+                            .ok_or("Missing saved worktree.")?
+                            .worktree,
+                    )
+                    .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            let entry = tree.get_path(Path::new(file)).map_err(|_| {
+                "The selected file is absent from the protected snapshot; no file was deleted."
+            })?;
+            if !matches!(entry.filemode(), 0o100644 | 0o100755)
+                || repo
+                    .find_blob(entry.id())
+                    .map_err(|e| e.to_string())?
+                    .content()
+                    != bytes
+            {
+                return Err("The protected snapshot does not contain the exact reviewed file bytes; no file was deleted.".into());
+            }
+        }
+        // Persist guards before deletion or Undo/Redo writes. The inverse carries
+        // the same policy, including after restart.
+        save(&repo, saved)?;
+    }
     let result = operation();
     if let Some(mut checkpoint) = checkpoint {
         let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
@@ -682,6 +748,9 @@ fn validate_index_checkpoint(checkpoint: &Checkpoint) -> Result<(), String> {
 
 pub fn restore(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
     validate_index_checkpoint(checkpoint)?;
+    for guard in &checkpoint.checkout_guards {
+        guard.validate(path)?;
+    }
     if !checkpoint.before.is_empty() {
         git2::Oid::from_str(&checkpoint.before).map_err(|_| "Invalid recovery commit.")?;
     } else if checkpoint.before_state.is_none() {
@@ -765,6 +834,8 @@ pub fn restore(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
         false,
         checkpoint.index_only,
         Some(&checkpoint.id),
+        &checkpoint.checkout_guards,
+        None,
         || restore_contents(path, checkpoint),
     )
 }
@@ -881,6 +952,9 @@ pub fn restore_step(path: &Path, id: &str, redo: bool) -> Result<(), String> {
 
 fn verify_restore_state(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
     validate_index_checkpoint(checkpoint)?;
+    for guard in &checkpoint.checkout_guards {
+        guard.validate(path)?;
+    }
     // Taking the inverse checkpoint can run filters and take time. Recheck
     // user edits and ignored collisions after that capture, before writing.
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;

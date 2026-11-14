@@ -5,6 +5,120 @@ pub struct TestRepo {
     dir: tempfile::TempDir,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct RepoSnapshot {
+    head_ref: Option<String>,
+    head: Option<git2::Oid>,
+    head_tree: Option<git2::Oid>,
+    index: Vec<(Vec<u8>, git2::Oid, u32, u16)>,
+    index_tree: Option<git2::Oid>,
+    branches: std::collections::BTreeMap<String, git2::Oid>,
+    files: std::collections::BTreeMap<std::path::PathBuf, SnapshotEntry>,
+    status: Vec<(String, u32)>,
+    operation: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SnapshotEntry {
+    Directory,
+    File(Vec<u8>),
+    Link(std::path::PathBuf),
+}
+
+/// Compare user-visible state, excluding Git caches/reflogs and recovery bookkeeping.
+pub fn snapshot(path: &Path) -> RepoSnapshot {
+    let repo = git2::Repository::open(path).unwrap();
+    let head = repo.head().ok();
+    let mut index = repo.index().unwrap();
+    let entries = index
+        .iter()
+        .map(|e| (e.path, e.id, e.mode, e.flags & 0x3000))
+        .collect();
+    let index_tree = index.write_tree_to(&repo).ok();
+    let branches = repo
+        .references()
+        .unwrap()
+        .filter_map(|r| {
+            let r = r.unwrap();
+            let name = r.name().unwrap();
+            (name.starts_with("refs/heads/"))
+                .then(|| (name.to_string(), r.resolve().unwrap().target().unwrap()))
+        })
+        .collect();
+    let mut files = std::collections::BTreeMap::new();
+    fn collect_files(
+        root: &Path,
+        directory: &Path,
+        files: &mut std::collections::BTreeMap<std::path::PathBuf, SnapshotEntry>,
+    ) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            if relative == Path::new(".git") {
+                continue;
+            }
+            let kind = entry.file_type().unwrap();
+            let value = if kind.is_symlink() {
+                SnapshotEntry::Link(std::fs::read_link(&path).unwrap())
+            } else if kind.is_dir() {
+                SnapshotEntry::Directory
+            } else {
+                SnapshotEntry::File(std::fs::read(&path).unwrap())
+            };
+            files.insert(relative, value);
+            if kind.is_dir() {
+                collect_files(root, &path, files);
+            }
+        }
+    }
+    collect_files(path, path, &mut files);
+    let mut options = git2::StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(true)
+        .recurse_ignored_dirs(true);
+    let status = repo
+        .statuses(Some(&mut options))
+        .unwrap()
+        .iter()
+        .map(|s| (s.path().unwrap().to_string(), s.status().bits()))
+        .collect();
+    let head_ref = repo
+        .find_reference("HEAD")
+        .unwrap()
+        .symbolic_target()
+        .unwrap()
+        .map(str::to_string);
+    RepoSnapshot {
+        head_ref,
+        head: head.as_ref().and_then(|r| r.target()),
+        head_tree: head
+            .as_ref()
+            .and_then(|r| r.peel_to_tree().ok())
+            .map(|t| t.id()),
+        index: entries,
+        index_tree,
+        branches,
+        files,
+        status,
+        operation: format!("{:?}", repo.state()),
+    }
+}
+
+/// The destination tracks a file that is ignored and locally present on main.
+pub fn ignored_collision() -> (TestRepo, git2::Oid) {
+    let fixture = TestRepo::new();
+    fixture.commit(".gitignore", b"/ignored.env\n");
+    let target = fixture.commit("ignored.env", b"destination tracked bytes\n");
+    fixture.git_ok(&["branch", "destination"]);
+    fixture.git_ok(&["rm", "ignored.env"]);
+    fixture.git_ok(&["commit", "-m", "remove from main"]);
+    fixture.write("ignored.env", b"local ignored bytes\r\n\xff\x00");
+    (fixture, target)
+}
+
 impl TestRepo {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();

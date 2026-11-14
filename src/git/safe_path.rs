@@ -144,6 +144,17 @@ impl ScopedFile {
         self.replace_checked(expected, bytes, || {})
     }
 
+    /// Single leaf only; retain nofollow parent capabilities and optimistically
+    /// recheck raw bytes immediately before unlink, never recursively delete.
+    pub(crate) fn remove(&self, expected: &[u8]) -> Result<(), String> {
+        if self.read(expected.len() as u64)?.as_deref() != Some(expected) {
+            return Err("The file changed before deletion. Refresh and review again.".into());
+        }
+        self.parent
+            .remove_file(&self.name)
+            .map_err(|e| e.to_string())
+    }
+
     fn replace_checked(
         &self,
         expected: Option<&[u8]>,

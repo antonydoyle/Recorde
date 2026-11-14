@@ -8,7 +8,13 @@ navigation in [Nulis light](https://dribbble.com/shots/19726217-Nulis-Notes-Desk
 this [developer workspace](https://dribbble.com/shots/27177143-Developer-workspace-interface-of-the-desktop-app-for-B2C-coding).
 No artwork from these references is shipped.
 
-- Graphite dark and soft white light palettes, with independent accent colours.
+- Graphite dark and soft white light palettes, plus ten single-mode themes based
+  on popular VS Code themes (`src/theme/vscode.rs`, generated from published seed
+  colours by `scripts/generate_vscode_themes.py`, which adjusts shades to meet
+  WCAG AA). Each palette has one interactive accent (Classic blue, Siege21 orange,
+  Monokai cyan and so on) for focus, selection, active tabs and the current branch; branch identity colours come only from graph lanes, and the
+  sidebar's current-branch dot uses its lane colour. Disabled primary buttons use a
+  neutral surface so their label stays readable when faded.
 - Consistent controls, spacing, typography, focus states and restrained borders.
 - Graph navigation has a 10-pixel top inset. Custom-coloured and icon buttons
   retain visible hover, pressed and keyboard-focus states; disabled controls
@@ -19,6 +25,21 @@ No artwork from these references is shipped.
   monitor scale instead of replacing its pixel density; text retains pixel snapping.
 - Full-height navigation and Changes/Details panels; the graph and diff share the
   centre column. Panels remain resizable and their preferences are saved.
+- Two header bands, not three: repository tabs and Workspaces share the title bar
+  with the menus, and the Sidebar/Changes/Diff/Terminal toggles sit quietly at its
+  right edge (no border or accent; shown panels use primary text on a subtle fill).
+  The + menu after the tabs opens, clones, creates or reopens repositories, so the
+  toolbar no longer repeats the repository name. Tabs keep the same 12-pixel
+  padding whether idle, hovered or active, so hovering never shifts them.
+  Workspaces is a quiet text menu; favourites are toggled inside it or from a
+  tab's right-click menu rather than by a separate star button.
+- Single-line text fields use `kit::text_field`, which is 32 pixels tall like a
+  standard button (`theme::CONTROL_HEIGHT`) with its text centred, so fields
+  beside Save or Browse buttons line up. Dense panels (the branch filter, commit
+  summary and history search) use the 28 pixel `kit::compact_text_field`.
+  Sliders use `kit::slider` so the
+  rail stays visible on light cards. History and Integrations show text labels
+  when the toolbar has room and fall back to icons in narrower windows.
 - A separate scrolling change list keeps the commit form accessible. Additional
   authors, signing and reset controls are grouped under expandable headings.
 - Diff display options live in the sliders menu. Search remains directly available.

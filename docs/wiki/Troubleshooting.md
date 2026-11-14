@@ -1,5 +1,15 @@
 # Troubleshooting
 
+## Offline support report and local logs
+
+Open **Help > Offline support report** to generate and preview an offline report. Review the exact text before choosing Copy preview or Save preview. Nothing is uploaded. Network reachability is not checked. The report includes numeric Git/LFS versions, supported CLI capabilities, a safe representation of Git's location, bundled libgit2, compiled keyring backend, updater state and public update-key IDs. Custom Git paths are omitted. Keyring availability is explicitly **not probed**; diagnostics never read credential values.
+
+For a report without opening the app window, run `recorde --diagnostics` to print the preview, or `recorde --diagnostics <new-output-file>` to save it locally. The CLI reports the updater as not running; it does not start its controller or run update cleanup. Use a new filename: existing files are preserved.
+
+Local logs contain only fixed event codes and timestamps. Arbitrary application/dependency log messages, raw errors, Git output, private paths, remote addresses, credentials, file contents and panic payloads are excluded, including when `RUST_LOG` is set. Three event files are capped at 64 KiB each, plus an empty coordination file. Events may be dropped when the bounded queue or another writer is busy; the report includes the dropped count. An unwritable log folder does not prevent Recorde from running. Open local log folder in the report window to inspect these files.
+
+Rust panic events are best effort and omit the payload and source location. This is not native crash capture; immediate aborts may leave no panic event. Earlier `crash-*.txt` reports are not read, attached or automatically removed.
+
 ## The App Opens the Wrong Repository
 
 If no CLI path is provided, Recorde opens `active_repo`, falling back to the first entry in `recent_repos`.

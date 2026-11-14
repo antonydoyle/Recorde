@@ -84,8 +84,17 @@ pub(super) fn diff(
     base: Option<&str>,
     target: &str,
 ) -> Result<git2::Diff<'static>, git2::Error> {
+    diff_with_comparison(repo, base, target, Default::default())
+}
+
+pub(super) fn diff_with_comparison(
+    repo: &git2::Repository,
+    base: Option<&str>,
+    target: &str,
+    comparison: crate::config::DiffComparison,
+) -> Result<git2::Diff<'static>, git2::Error> {
     git2::Oid::from_str(target)?;
-    let args = if let Some(base) = base {
+    let mut args = if let Some(base) = base {
         git2::Oid::from_str(base)?;
         vec![
             "diff",
@@ -114,6 +123,13 @@ pub(super) fn diff(
             "--",
         ]
     };
+    args.pop();
+    let context = format!("-U{}", comparison.context_lines());
+    args.push(&context);
+    if comparison.ignore_whitespace {
+        args.push("--ignore-all-space");
+    }
+    args.push("--");
     let output = super::process::git(
         repo.path(),
         &args,

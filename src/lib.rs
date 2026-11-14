@@ -6,6 +6,7 @@ pub mod app_dirs;
 pub mod auth;
 pub mod config;
 pub mod crash;
+pub mod diagnostics;
 pub mod git;
 pub mod icons;
 pub mod profiles;

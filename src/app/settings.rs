@@ -5,6 +5,38 @@ use super::*;
 use crate::icons;
 use crate::ui::{kit, motion};
 
+fn git_readiness_status(ui: &mut egui::Ui, monitor: &mut crate::git::readiness::Monitor) {
+    if monitor.checking() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Checking system Git…");
+        });
+    }
+    if let Some(value) = &monitor.value {
+        let status = if value.problem.is_some() {
+            kit::Status::Error
+        } else {
+            kit::Status::Ok
+        };
+        kit::callout(ui, status, &value.summary());
+        if let Some(path) = &value.executable {
+            ui.label(format!("System Git executable: {}", path.display()));
+        }
+        ui.label(
+            value
+                .lfs_version
+                .as_deref()
+                .or(value.lfs_problem.as_deref())
+                .unwrap_or("Git LFS was not checked because Git could not run."),
+        );
+    }
+    let (major, minor, patch) = git2::Version::get().libgit2_version();
+    kit::hint(ui, &format!("Bundled libgit2 {major}.{minor}.{patch} reads repositories independently of system Git. Recorde does not bundle Git."));
+    if ui.add(kit::secondary_button("Retry Git check")).clicked() {
+        monitor.retry();
+    }
+}
+
 fn settings_categories() -> [(SettingsTab, char, &'static str, &'static str); 9] {
     [
         (
@@ -164,7 +196,8 @@ impl RecordeApp {
                     .show(ui, |ui| {
                         ui.strong("Action");
                         ui.strong("Shortcut");
-                        ui.strong("Change");
+                        // The buttons name themselves; no third header.
+                        ui.label("");
                         ui.end_row();
                         for &command in crate::commands::Command::ALL {
                             ui.label(command.label())
@@ -173,12 +206,19 @@ impl RecordeApp {
                                 .config
                                 .shortcuts
                                 .get(command)
-                                .map(|binding| binding.label())
-                                .unwrap_or_else(|| "Unassigned".into());
+                                .map(|binding| binding.label());
+                            let assigned = binding.is_some();
                             if self.shortcut_capture == Some(command) {
                                 kit::status_chip(ui, kit::Status::Info, "Recording");
-                            } else {
+                            } else if let Some(binding) = binding {
                                 ui.label(binding);
+                            } else {
+                                // Unassigned rows recede so assigned shortcuts scan.
+                                ui.label(
+                                    RichText::new("Not set")
+                                        .size(theme::font_size::SMALL)
+                                        .color(theme::text_muted()),
+                                );
                             }
                             ui.push_id(command.id(), |ui| {
                                 ui.horizontal(|ui| {
@@ -192,12 +232,14 @@ impl RecordeApp {
                                         self.shortcut_capture = Some(command);
                                         self.shortcut_error = None;
                                     }
-                                    if ui
-                                        .add(kit::small_button("Clear"))
-                                        .on_hover_text(
-                                            "Remove the keyboard shortcut for this action.",
-                                        )
-                                        .clicked()
+                                    // Clear only appears when there is something to clear.
+                                    if assigned
+                                        && ui
+                                            .add(kit::small_button("Clear"))
+                                            .on_hover_text(
+                                                "Remove the keyboard shortcut for this action.",
+                                            )
+                                            .clicked()
                                     {
                                         let _ = self.config.shortcuts.set(command, None);
                                         self.shortcut_capture = None;
@@ -215,14 +257,12 @@ impl RecordeApp {
     pub(super) fn render_settings(&mut self, ctx: &Context) {
         if let Some(pending) = &self.diagnostics_pending {
             match pending.try_recv() {
-                Ok((version, ssh)) => {
-                    self.git_version = version;
+                Ok(ssh) => {
                     self.ssh_diagnostics = Some(ssh);
                     self.diagnostics_pending = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.diagnostics_pending = None;
-                    self.git_version = "unavailable".into();
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     ctx.request_repaint_after(std::time::Duration::from_millis(100))
@@ -230,11 +270,16 @@ impl RecordeApp {
             }
         }
         let max_height = (ctx.content_rect().height() - 48.0).max(0.0);
+        // A fixed width keeps the side navigation still when a page (such as
+        // Add account) has wider content; only the height is resizable.
+        let width = settings_width(ctx.content_rect().width());
         egui::Window::new("Settings")
             .collapsible(false)
-            .resizable(true)
-            .default_size([920.0, 640.0])
-            .min_size(egui::vec2(640.0, 420.0))
+            .resizable([false, true])
+            .default_size([width, 640.0])
+            .min_width(width)
+            .max_width(width)
+            .min_height(420.0)
             .max_height(max_height)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(20)))
@@ -280,7 +325,7 @@ impl RecordeApp {
                                             ui.set_width(200.0);
                                             let changed = ui
                                                 .add(
-                                                    egui::TextEdit::singleline(&mut search)
+                                                    crate::ui::kit::text_field(&mut search)
                                                         .prefix(
                                                             icons::rich(icons::SEARCH, 18.0)
                                                                 .color(theme::text_muted()),
@@ -534,12 +579,30 @@ impl RecordeApp {
                     let response = egui::ComboBox::from_id_salt("settings_colour_palette")
                         .selected_text(previous.label())
                         .show_ui(ui, |ui| {
-                            for palette in theme::Palette::ALL {
-                                ui.selectable_value(
-                                    &mut self.config.theme_palette,
-                                    palette,
-                                    palette.label(),
+                            // Grouped by mode: Classic and Siege21 follow the Dark
+                            // theme setting; the others are always light or dark.
+                            for (heading, mode) in [
+                                ("Light and dark", None),
+                                ("Dark", Some(true)),
+                                ("Light", Some(false)),
+                            ] {
+                                if mode.is_some() {
+                                    ui.separator();
+                                }
+                                ui.label(
+                                    RichText::new(heading)
+                                        .size(theme::font_size::SMALL)
+                                        .color(theme::text_muted()),
                                 );
+                                for palette in theme::Palette::ALL {
+                                    if palette.fixed_dark() == mode {
+                                        ui.selectable_value(
+                                            &mut self.config.theme_palette,
+                                            palette,
+                                            palette.label(),
+                                        );
+                                    }
+                                }
                             }
                         })
                         .response;
@@ -564,11 +627,24 @@ impl RecordeApp {
                 },
             );
             kit::row_divider(ui);
-            kit::setting_row(
-                ui,
-                "Dark theme",
-                "Use darker surfaces throughout the app.",
-                |ui| {
+            let fixed_mode = self.config.theme_palette.fixed_dark();
+            let dark_help = match fixed_mode {
+                Some(dark) => format!(
+                    "{} is always {}. Classic and Siege21 can switch.",
+                    self.config.theme_palette.label(),
+                    if dark { "dark" } else { "light" }
+                ),
+                None => "Use darker surfaces throughout the app.".to_owned(),
+            };
+            kit::setting_row(ui, "Dark theme", &dark_help, |ui| {
+                if let Some(dark) = fixed_mode {
+                    // Show the theme's own mode; the preference is kept for
+                    // when a light-and-dark palette is chosen again.
+                    let mut shown = dark;
+                    ui.add_enabled_ui(false, |ui| settings_checkbox(ui, &mut shown, "Dark theme"));
+                    return;
+                }
+                {
                     if settings_checkbox(ui, &mut self.dark_theme, "Dark theme").changed() {
                         self.config.dark_theme = self.dark_theme;
                         self.save_config();
@@ -579,8 +655,8 @@ impl RecordeApp {
                             self.config.theme_palette,
                         );
                     }
-                },
-            );
+                }
+            });
             kit::row_divider(ui);
             kit::setting_row(
                 ui,
@@ -614,6 +690,7 @@ impl RecordeApp {
                     {
                         self.commit_graph_view
                             .set_colorblind(self.config.colorblind_graph);
+                        self.sidebar.set_colorblind(self.config.colorblind_graph);
                         self.save_config();
                     }
                 },
@@ -625,7 +702,8 @@ impl RecordeApp {
                 "1.0 is your display's native scale. Click Apply to use the new size.",
                 |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        let response = ui.add(
+                        let response = kit::slider(
+                            ui,
                             egui::Slider::new(&mut self.config.font_scale, 0.75..=2.0)
                                 .step_by(0.25),
                         );
@@ -681,6 +759,10 @@ impl RecordeApp {
         });
     }
 
+    fn render_git_readiness(&mut self, ui: &mut egui::Ui) {
+        git_readiness_status(ui, &mut self.git_readiness);
+    }
+
     fn render_git_settings(&mut self, ui: &mut egui::Ui) {
         kit::page_header(
             ui,
@@ -691,6 +773,26 @@ impl RecordeApp {
             kit::callout(ui, kit::Status::Error, error);
             ui.add_space(kit::space::MD);
         }
+        kit::section(
+            ui,
+            "Installed Git",
+            "System Git runs repository commands. Git LFS is an optional separate installation.",
+            |ui| {
+                self.render_git_readiness(ui);
+                ui.add_space(kit::space::SM);
+                ui.label("Git executable (absolute path; leave empty to use PATH)");
+                ui.text_edit_singleline(&mut self.git_executable_input);
+                if ui
+                    .add(kit::secondary_button("Apply Git executable"))
+                    .clicked()
+                {
+                    self.config.git_executable = self.git_executable_input.trim().to_owned();
+                    crate::git::readiness::configure(&self.config.git_executable);
+                    self.git_readiness.retry();
+                    self.save_config();
+                }
+            },
+        );
         kit::section(
             ui,
             "Pull",
@@ -723,10 +825,14 @@ impl RecordeApp {
                                 "Update only when histories have not diverged.",
                             ),
                         ] {
-                            if ui
-                                .radio_value(&mut self.config.pull_strategy, strategy, label)
-                                .on_hover_text(help)
-                                .changed()
+                            if crate::ui::kit::radio_value(
+                                ui,
+                                &mut self.config.pull_strategy,
+                                strategy,
+                                label,
+                            )
+                            .on_hover_text(help)
+                            .changed()
                             {
                                 self.save_config();
                             }
@@ -784,7 +890,7 @@ impl RecordeApp {
                             let mut value = self.config.auto_fetch_interval_secs.to_string();
                             if ui
                                 .add(
-                                    egui::TextEdit::singleline(&mut value)
+                                    crate::ui::kit::text_field(&mut value)
                                         .horizontal_align(egui::Align::Max)
                                         .suffix(
                                             RichText::new("seconds")
@@ -829,7 +935,7 @@ impl RecordeApp {
                     |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.default_editor_input)
+                                crate::ui::kit::text_field(&mut self.default_editor_input)
                                     .hint_text("code, codium, zed, vim, ...")
                                     .desired_width(200.0),
                             );
@@ -871,7 +977,7 @@ impl RecordeApp {
                     |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.terminal_input)
+                                crate::ui::kit::text_field(&mut self.terminal_input)
                                     .hint_text("xterm, gnome-terminal, konsole, ...")
                                     .desired_width(200.0),
                             );
@@ -900,7 +1006,7 @@ impl RecordeApp {
                     |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.diff_tool_input)
+                                crate::ui::kit::text_field(&mut self.diff_tool_input)
                                     .hint_text("meld, kdiff3, vimdiff, ...")
                                     .desired_width(200.0),
                             );
@@ -925,7 +1031,7 @@ impl RecordeApp {
                 kit::setting_row(ui, "Merge tool", "For example: meld or kdiff3.", |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.merge_tool_input)
+                            crate::ui::kit::text_field(&mut self.merge_tool_input)
                                 .hint_text("meld, kdiff3, ...")
                                 .desired_width(200.0),
                         );
@@ -1645,11 +1751,11 @@ impl RecordeApp {
                 kit::row_divider(ui);
                 kit::setting_row(
                     ui,
-                    "Working tree",
-                    "Files with uncommitted changes in this checkout.",
+                    "Uncommitted changes",
+                    "Files in this checkout that differ from the last commit.",
                     |ui| {
                         if dirty_count == 0 && conflict_count == 0 {
-                            kit::status_chip(ui, kit::Status::Ok, "clean");
+                            kit::status_chip(ui, kit::Status::Ok, "none");
                         } else {
                             ui.horizontal_wrapped(|ui| {
                                 if dirty_count > 0 {
@@ -1705,7 +1811,12 @@ impl RecordeApp {
                         "LFS",
                         "Git Large File Storage keeps large file contents outside regular commits.",
                         |ui| {
-                            if !caps.lfs_installed {
+                            if !self
+                                .git_readiness
+                                .value
+                                .as_ref()
+                                .map_or(caps.lfs_installed, |value| value.lfs_version.is_some())
+                            {
                                 kit::status_chip(ui, kit::Status::Neutral, "not installed");
                             } else if !caps.lfs_active {
                                 kit::status_chip(ui, kit::Status::Neutral, "installed, not used");
@@ -1782,7 +1893,13 @@ impl RecordeApp {
                 }
                 kit::row_divider(ui);
                 kit::setting_row(ui, "Git", "The Git version used by Recorde.", |ui| {
-                    ui.label(self.git_version.trim());
+                    ui.label(
+                        self.git_readiness
+                            .value
+                            .as_ref()
+                            .map(|value| value.summary())
+                            .unwrap_or_else(|| "Checking system Git…".into()),
+                    );
                 });
             },
         );
@@ -2164,6 +2281,11 @@ impl RecordeApp {
     }
 }
 
+/// Settings window width for a given screen width: 920 pixels, narrowing on
+/// small screens but never below 640.
+fn settings_width(screen_width: f32) -> f32 {
+    (screen_width - 48.0).clamp(640.0, 920.0)
+}
 #[cfg(test)]
 mod settings_tests {
     use super::category_matches;
@@ -2178,5 +2300,52 @@ mod settings_tests {
         ));
         assert!(!category_matches("Git", "pull fetch", "editor"));
         assert!(category_matches("Git", "pull fetch", "  "));
+    }
+
+    #[test]
+    fn git_retry_button_clears_failure_without_a_repository() {
+        let ctx = egui::Context::default();
+        let mut monitor = crate::git::readiness::Monitor::default();
+        monitor.value = Some(crate::git::readiness::Readiness {
+            problem: Some("System Git was not found. Retry Git check.".into()),
+            ..Default::default()
+        });
+        let mut frame = |events| {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            });
+            egui::CentralPanel::default().show(
+                &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("git_readiness_test_root"),
+                    egui::UiBuilder::new().max_rect(ctx.content_rect()),
+                ),
+                |ui| super::git_readiness_status(ui, &mut monitor),
+            );
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Retry Git check" => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+        };
+        let position = frame(vec![]).expect("Retry is available without a repository");
+        let button = |pressed| egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(vec![egui::Event::PointerMoved(position), button(true)]);
+        frame(vec![button(false)]);
+        assert!(monitor.value.is_none());
+        assert!(monitor.checking());
     }
 }

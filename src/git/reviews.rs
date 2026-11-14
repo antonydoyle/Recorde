@@ -12,6 +12,7 @@ pub(crate) fn verify_remote(path: &Path, remote: &str, expected_url: &str) -> Re
     Ok(())
 }
 
+#[cfg(test)]
 pub fn checkout(
     path: &Path,
     remote: &str,
@@ -19,6 +20,24 @@ pub fn checkout(
     number: u32,
     expected: &str,
 ) -> Result<(), String> {
+    let target = prepare(path, remote, provider, number, expected)?;
+    let super::switch::Target::Review { branch, oid, .. } = target else {
+        unreachable!()
+    };
+    checkout_fetched(
+        path,
+        &branch,
+        git2::Oid::from_str(&oid).map_err(|e| e.to_string())?,
+    )
+}
+
+pub fn prepare(
+    path: &Path,
+    remote: &str,
+    provider: &ProviderType,
+    number: u32,
+    expected: &str,
+) -> Result<super::switch::Target, String> {
     if expected.len() != 40 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Review has no full head commit; refresh its details.".into());
     }
@@ -51,10 +70,41 @@ pub fn checkout(
         }
         Ok(())
     };
-    checkout_verified(path, remote, &source, number, expected, verify_head)
+    fetch_verified(path, remote, &source, number, expected, verify_head)?;
+    let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+    let url = repo
+        .find_remote(remote)
+        .map_err(|e| e.to_string())?
+        .url()
+        .map_err(|e| e.to_string())?
+        .to_string();
+    Ok(super::switch::Target::Review {
+        branch: format!("review/{number}-{}", &expected.to_string()[..8]),
+        oid: expected.to_string(),
+        remote: remote.into(),
+        remote_url_digest: super::switch::url_digest(&url),
+        reference: format!("refs/recorde/reviews/{number}"),
+    })
 }
 
+#[cfg(test)]
 fn checkout_verified(
+    path: &Path,
+    remote: &str,
+    source: &str,
+    number: u32,
+    expected: git2::Oid,
+    verify_head: impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    fetch_verified(path, remote, source, number, expected, verify_head)?;
+    checkout_fetched(
+        path,
+        &format!("review/{number}-{}", &expected.to_string()[..8]),
+        expected,
+    )
+}
+
+fn fetch_verified(
     path: &Path,
     remote: &str,
     source: &str,
@@ -68,7 +118,6 @@ fn checkout_verified(
     if repo.state() != git2::RepositoryState::Clean {
         return Err("Finish the current Git operation before checking out a review.".into());
     }
-    let branch = format!("review/{number}-{}", &expected.to_string()[..8]);
     let reference = format!("refs/recorde/reviews/{number}");
     super::process::git(
         path,
@@ -89,15 +138,32 @@ fn checkout_verified(
         );
     }
     verify_head()?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn checkout_fetched(path: &Path, branch: &str, expected: git2::Oid) -> Result<(), String> {
+    let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
     let result = if let Ok(existing) = repo.find_branch(&branch, git2::BranchType::Local) {
         if existing.get().target() != Some(expected) {
             return Err(format!("Branch {branch} contains local commits. Rename it before checking out this review again."));
         }
-        super::process::git(path, &["checkout", &branch, "--"], &AtomicBool::new(false))
+        super::process::git(
+            path,
+            &["checkout", "--no-overwrite-ignore", &branch, "--"],
+            &AtomicBool::new(false),
+        )
     } else {
         super::process::git(
             path,
-            &["checkout", "-b", &branch, &expected.to_string(), "--"],
+            &[
+                "checkout",
+                "--no-overwrite-ignore",
+                "-b",
+                &branch,
+                &expected.to_string(),
+                "--",
+            ],
             &AtomicBool::new(false),
         )
     };
@@ -108,6 +174,37 @@ fn checkout_verified(
 mod tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn t15_review_checkout_refuses_ignored_collision_for_new_and_existing_branches() {
+        use crate::git::test_support::{ignored_collision, snapshot};
+        for existing in [false, true] {
+            let (repo, target) = ignored_collision();
+            let remote = tempfile::tempdir().unwrap();
+            git2::Repository::init_bare(remote.path()).unwrap();
+            repo.git_ok(&["remote", "add", "origin", remote.path().to_str().unwrap()]);
+            repo.git_ok(&["push", "origin", "destination:refs/pull/42/head"]);
+            if existing {
+                repo.git_ok(&[
+                    "branch",
+                    &format!("review/42-{}", &target.to_string()[..8]),
+                    &target.to_string(),
+                ]);
+            }
+            let before = snapshot(repo.path());
+            let error = checkout_verified(
+                repo.path(),
+                "origin",
+                "refs/pull/42/head",
+                42,
+                target,
+                || Ok(()),
+            )
+            .unwrap_err();
+            assert!(error.contains("overwritten"), "{error}");
+            assert_eq!(snapshot(repo.path()), before);
+        }
+    }
 
     #[test]
     fn exact_commit_checkout_checks_cloud_head_again_after_fetch() {

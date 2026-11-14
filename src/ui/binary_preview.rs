@@ -38,14 +38,17 @@ pub fn show(
     if images.iter().any(Option::is_some) {
         ui.horizontal(|ui| {
             ui.checkbox(&mut fit, "Fit");
-            ui.add(egui::Slider::new(&mut zoom, 0.25..=4.0).text("Zoom"));
+            crate::ui::kit::slider(ui, egui::Slider::new(&mut zoom, 0.25..=4.0).text("Zoom"));
             ui.add_enabled(can_overlay, egui::Checkbox::new(&mut overlay, "Overlay"))
                 .on_hover_text("Overlay requires images with matching pixel dimensions.");
         });
         ui.small("Previews are limited to 1024 pixels per side; GIF displays its first frame.");
     }
     if overlay && can_overlay {
-        ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0).text(format!("{} opacity", labels[1])));
+        crate::ui::kit::slider(
+            ui,
+            egui::Slider::new(&mut opacity, 0.0..=1.0).text(format!("{} opacity", labels[1])),
+        );
         let a = textures[0].as_ref().unwrap();
         let b = textures[1].as_ref().unwrap();
         let factor = if fit {

@@ -190,6 +190,9 @@ pub(crate) struct JobProgressHandle {
 }
 
 impl JobProgressHandle {
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
     pub(crate) fn update(&self, message: &str, pct: Option<u8>) {
         if let Some(state) = self.state.upgrade() {
             let mut state = state.lock().unwrap();

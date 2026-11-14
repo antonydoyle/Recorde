@@ -805,7 +805,7 @@ impl TerminalPanel {
             // Typing stays possible while a command runs; Enter waits for it.
             let response = ui
                 .add(
-                    egui::TextEdit::singleline(&mut tab.input)
+                    crate::ui::kit::text_field(&mut tab.input)
                         .id(egui::Id::new(("terminal_input", tab.id)))
                         .font(FontId::monospace(13.0))
                         .char_limit(16000)

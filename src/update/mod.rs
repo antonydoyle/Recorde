@@ -108,6 +108,21 @@ impl Default for Controller {
     }
 }
 impl Controller {
+    /// In-memory, allowlisted support metadata; no account/error/path data or IO.
+    pub fn diagnostics_state(&self) -> crate::diagnostics::UpdaterState {
+        use crate::diagnostics::UpdaterState as S;
+        if self.applying || self.ready_to_close {
+            S::Applying
+        } else if self.error.is_some() {
+            S::NeedsAttention
+        } else if self.task.is_some() {
+            S::CheckingOrDownloading
+        } else if self.staged.is_some() || self.offer.is_some() {
+            S::Ready
+        } else {
+            S::Idle
+        }
+    }
     pub fn poll(&mut self, ctx: &egui::Context) {
         if let Some(task) = &self.task {
             match task.try_recv() {

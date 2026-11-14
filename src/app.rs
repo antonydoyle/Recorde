@@ -29,6 +29,7 @@ mod history_plan;
 mod lifecycle_guards;
 mod menus;
 mod settings;
+mod switch;
 mod workflows;
 
 #[derive(PartialEq, Clone, Copy)]
@@ -330,6 +331,7 @@ pub struct RecordeApp {
     status_bar: StatusBar,
     config: Config,
     help: crate::ui::help::HelpBrowser,
+    support: crate::diagnostics::SupportWindow,
     repository_browser: crate::ui::repository_browser::RepositoryBrowser,
     /// Pre-loaded texture of the app icon for rendering in the title bar.
     app_icon_texture: egui::TextureHandle,
@@ -361,10 +363,10 @@ pub struct RecordeApp {
     instance_guard: Option<crate::update::InstanceGuard>,
     git_name_input: String,
     git_email_input: String,
-    git_version: String,
+    git_readiness: crate::git::readiness::Monitor,
+    git_executable_input: String,
     ssh_diagnostics: Option<crate::auth::ssh::SshDiagnostics>,
-    diagnostics_pending:
-        Option<std::sync::mpsc::Receiver<(String, crate::auth::ssh::SshDiagnostics)>>,
+    diagnostics_pending: Option<std::sync::mpsc::Receiver<crate::auth::ssh::SshDiagnostics>>,
     default_editor_input: String,
     // Interactive rebase
     // Lifecycle modals
@@ -409,6 +411,8 @@ impl RecordeApp {
 
     pub fn new(cc: &eframe::CreationContext<'_>, initial_repo: Option<std::path::PathBuf>) -> Self {
         let config = Config::load();
+        crate::git::readiness::configure(&config.git_executable);
+        let git_executable_input = config.git_executable.clone();
         let dark_theme = config.dark_theme;
         let high_contrast = config.high_contrast;
         let colorblind_graph = config.colorblind_graph;
@@ -472,7 +476,11 @@ impl RecordeApp {
             repo_sessions: Default::default(),
             runner,
             toolbar: Toolbar::new(state.clone()),
-            sidebar: Sidebar::new(state.clone()),
+            sidebar: {
+                let mut sidebar = Sidebar::new(state.clone());
+                sidebar.set_colorblind(colorblind_graph);
+                sidebar
+            },
             commit_graph_view: {
                 let mut cgv = CommitGraphView::new(state.clone());
                 if let Some(rc) = initial_repo_config {
@@ -497,6 +505,7 @@ impl RecordeApp {
             observed_provider: None,
             config,
             help: Default::default(),
+            support: Default::default(),
             repository_browser: Default::default(),
             dark_theme,
             high_contrast,
@@ -516,7 +525,8 @@ impl RecordeApp {
             instance_guard: None,
             git_name_input: String::new(),
             git_email_input: String::new(),
-            git_version: "Checking...".into(),
+            git_readiness: Default::default(),
+            git_executable_input,
             ssh_diagnostics: None,
             diagnostics_pending: None,
             default_editor_input: default_editor,
@@ -777,18 +787,7 @@ impl RecordeApp {
             let (tx, rx) = std::sync::mpsc::channel();
             self.diagnostics_pending = Some(rx);
             std::thread::spawn(move || {
-                let mut command = crate::git::process::background_command("git");
-                command.arg("--version");
-                let version = crate::git::process::run(
-                    &mut command,
-                    &std::sync::atomic::AtomicBool::new(false),
-                    std::time::Duration::from_secs(10),
-                )
-                .ok()
-                .filter(|out| out.status.success())
-                .and_then(|out| String::from_utf8(out.stdout).ok())
-                .unwrap_or_else(|| "unavailable".into());
-                let _ = tx.send((version, crate::auth::ssh::diagnose()));
+                let _ = tx.send(crate::auth::ssh::diagnose());
             });
         }
     }
@@ -835,7 +834,7 @@ impl RecordeApp {
                 ui.label(styled_label("Branch name"));
                 ui.add_space(4.0);
                 let r = ui.add(
-                    egui::TextEdit::singleline(&mut self.repo_ui.create_branch_name)
+                    crate::ui::kit::text_field(&mut self.repo_ui.create_branch_name)
                         .desired_width(f32::INFINITY)
                         .margin(egui::Vec2::new(8.0, 5.0))
                         .hint_text("e.g. feat/my-feature"),
@@ -904,7 +903,7 @@ impl RecordeApp {
                 ui.label(styled_label("Tag name"));
                 ui.add_space(4.0);
                 let r = ui.add(
-                    egui::TextEdit::singleline(&mut self.repo_ui.create_tag_name)
+                    crate::ui::kit::text_field(&mut self.repo_ui.create_tag_name)
                         .desired_width(f32::INFINITY)
                         .margin(egui::Vec2::new(8.0, 5.0))
                         .hint_text("e.g. v1.0.0"),
@@ -1218,6 +1217,11 @@ impl RecordeApp {
                 self.focus_pane(3);
                 None
             }
+            C::Commit => {
+                self.repo_ui.right_tab = RightTab::Changes;
+                self.staging_panel.request_commit();
+                None
+            }
             C::Diff => {
                 self.focus_pane(4);
                 None
@@ -1280,7 +1284,7 @@ impl RecordeApp {
             .show(ctx, |ui| {
                 ui.set_min_width(500.0);
                 let input = ui.add(
-                    egui::TextEdit::singleline(&mut self.command_palette_query)
+                    crate::ui::kit::text_field(&mut self.command_palette_query)
                         .hint_text("Search commands")
                         .desired_width(f32::INFINITY),
                 );
@@ -1423,7 +1427,7 @@ impl RecordeApp {
                 );
                 ui.add_space(10.0);
                 let r = ui.add(
-                    egui::TextEdit::singleline(&mut self.branch_switcher_query)
+                    crate::ui::kit::text_field(&mut self.branch_switcher_query)
                         .desired_width(f32::INFINITY)
                         .margin(egui::Vec2::new(8.0, 5.0))
                         .hint_text("Filter branches…"),
@@ -1721,14 +1725,24 @@ impl RecordeApp {
             }
         }
         if let Some((number, oid)) = checkout_review {
-            let (path, source) = {
+            let (path, source, epoch) = {
                 let s = self.state.lock().unwrap();
-                (s.repo_path.clone(), s.pr_source.clone())
+                (s.repo_path.clone(), s.pr_source.clone(), s.repo_epoch)
             };
             if let (Some(path), Some((remote, provider, remote_url))) = (path, source) {
+                let switch_state = self.state.clone();
                 crate::git::mutation::spawn_operation(path, self.state.clone(), move |path| {
+                    {
+                        let s = switch_state.lock().unwrap();
+                        if s.repo_path.as_deref() != Some(path) || s.repo_epoch != epoch {
+                            return Ok(());
+                        }
+                    }
                     crate::git::reviews::verify_remote(path, &remote, &remote_url)?;
-                    crate::git::reviews::checkout(path, &remote, &provider, number, &oid)
+                    let target =
+                        crate::git::reviews::prepare(path, &remote, &provider, number, &oid)?;
+                    crate::git::switch::request_for(path, epoch, target, switch_state.clone());
+                    Ok(())
                 });
             }
         }
@@ -1777,6 +1791,7 @@ impl eframe::App for RecordeApp {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = root_ui.ctx().clone();
         let ctx = &context;
+        self.git_readiness.poll(ctx);
         self.updater.poll(ctx);
         if self.updater.ready_to_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1900,6 +1915,7 @@ impl eframe::App for RecordeApp {
 
         let shortcuts = !crate::commands::text_input_has_focus(ctx)
             && !self.help.open
+            && !self.support.open
             && !self.repository_browser.open
             && !self.settings_open
             && !self.quit_waiting
@@ -1925,6 +1941,7 @@ impl eframe::App for RecordeApp {
                 && self.pending_navigation.is_none()
                 && self.history_plan.is_none()
                 && !self.help.open
+                && !self.support.open
                 && !self.repository_browser.open
                 && !self.command_palette_open
                 && !self.branch_switcher_open
@@ -1941,7 +1958,10 @@ impl eframe::App for RecordeApp {
                         && s.repo_load_path.is_none()
                 },
         );
-        if let Some(command) = self.config.shortcuts.take_command(ctx, !shortcuts) {
+        if let Some(command) = self.config.shortcuts.take_command(
+            ctx,
+            !shortcuts || self.staging_panel.has_file_confirmation(),
+        ) {
             self.dispatch_command(ctx, command);
         }
 
@@ -1991,6 +2011,7 @@ impl eframe::App for RecordeApp {
         }
         self.show_file_editor(ctx);
         self.help.show(ctx);
+        self.support.show(ctx, self.updater.diagnostics_state());
         if let Some(url) = self.repository_browser.show(ctx, &self.config.accounts) {
             self.clone_url = url;
             self.state.lock().unwrap().modal = ModalKind::CloneRepo;
@@ -1998,6 +2019,7 @@ impl eframe::App for RecordeApp {
 
         // ── Modals ────────────────────────────────────────────────────────
         self.render_modals(ctx);
+        self.render_switch_work(ctx);
         if self.updater.applying || self.updater.ready_to_close {
             return;
         }
@@ -2064,7 +2086,26 @@ impl eframe::App for RecordeApp {
                         |ui| self.show_menu_contents(ctx, ui),
                     );
 
-                    ui.add_space(14.0);
+                    // Repository tabs share the title bar instead of taking a band of
+                    // their own; the panel toggles keep the right edge. Their width is
+                    // measured on the previous frame so the tabs can scroll before them.
+                    let toggles_id = egui::Id::new("panel_toggles_width");
+                    let toggles_width = ui
+                        .data(|data| data.get_temp::<f32>(toggles_id))
+                        .unwrap_or(260.0);
+                    ui.add_space(crate::ui::kit::space::SM);
+                    let tabs_width =
+                        (ui.available_width() - toggles_width - crate::ui::kit::space::MD).max(0.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(tabs_width, 32.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_width(tabs_width);
+                            self.show_repo_tabs(ui);
+                        },
+                    );
+                    ui.add_space(crate::ui::kit::space::MD);
+                    let toggles_start = ui.cursor().left();
                     let mut layout_changed = false;
                     layout_changed |= panel_toggle(
                         ui,
@@ -2098,13 +2139,16 @@ impl eframe::App for RecordeApp {
                     if layout_changed {
                         self.save_config();
                     }
+                    let measured = ui.min_rect().right() - toggles_start;
+                    if (measured - toggles_width).abs() > 0.5 {
+                        ui.data_mut(|data| data.insert_temp(toggles_id, measured));
+                        ui.ctx().request_repaint();
+                    }
 
                     // Icon is rendered inside menu::bar (see show_menu_contents),
                     // because menu::bar expands to fill all available width.
                 });
             });
-
-        self.render_repo_tabs(root_ui);
 
         let has_workspace = {
             let state = self.state.lock().unwrap();
@@ -2135,8 +2179,6 @@ impl eframe::App for RecordeApp {
         };
         let toolbar_action = self.toolbar.show(
             root_ui,
-            &self.config.recent_repos,
-            self.dark_theme,
             search_active,
             show_all_branches,
             !self.commit_graph_view.has_pending_action(),
@@ -2292,10 +2334,11 @@ impl eframe::App for RecordeApp {
                     );
                     content.set_clip_rect(content_rect);
                     match self.repo_ui.right_tab {
-                        RightTab::Changes => self.staging_panel.show(
+                        RightTab::Changes => self.staging_panel.show_with_shortcuts(
                             &mut content,
                             &self.config.default_editor,
                             &self.config.protected_branches,
+                            &self.config.shortcuts,
                         ),
                         RightTab::Details => self.detail_panel.show(&mut content),
                     }
@@ -2413,7 +2456,7 @@ impl RecordeApp {
             ui.label(styled_label("New name"));
             ui.add_space(4.0);
             let r = ui.add(
-                egui::TextEdit::singleline(&mut self.repo_ui.rename_branch_input)
+                crate::ui::kit::text_field(&mut self.repo_ui.rename_branch_input)
                     .desired_width(f32::INFINITY)
                     .margin(egui::Vec2::new(8.0, 5.0)),
             );
@@ -2533,7 +2576,8 @@ impl RecordeApp {
             );
             for mode in branches::ResetMode::ALL {
                 let destructive = mode == branches::ResetMode::Hard;
-                ui.radio_value(
+                crate::ui::kit::radio_value(
+                    ui,
                     &mut self.repo_ui.reset_mode,
                     mode,
                     RichText::new(mode.label()).color(if destructive {
@@ -2644,7 +2688,7 @@ impl RecordeApp {
             ui.label(styled_label("Stash message"));
             ui.add_space(4.0);
             let r = ui.add(
-                egui::TextEdit::singleline(&mut self.repo_ui.stash_message_input)
+                crate::ui::kit::text_field(&mut self.repo_ui.stash_message_input)
                     .desired_width(f32::INFINITY)
                     .margin(egui::Vec2::new(8.0, 5.0))
                     .hint_text("WIP"),
@@ -2700,7 +2744,7 @@ impl RecordeApp {
             ui.label(styled_label("Branch name"));
             ui.add_space(4.0);
             let r = ui.add(
-                egui::TextEdit::singleline(&mut self.repo_ui.stash_branch_input)
+                crate::ui::kit::text_field(&mut self.repo_ui.stash_branch_input)
                     .desired_width(f32::INFINITY)
                     .margin(egui::Vec2::new(8.0, 5.0))
                     .hint_text("e.g. feat/my-feature"),
@@ -2748,7 +2792,7 @@ impl RecordeApp {
             ui.label(styled_label("Repository URL"));
             ui.add_space(4.0);
             let r = ui.add(
-                egui::TextEdit::singleline(&mut self.clone_url)
+                crate::ui::kit::text_field(&mut self.clone_url)
                     .desired_width(f32::INFINITY)
                     .margin(egui::Vec2::new(8.0, 5.0))
                     .hint_text("https://github.com/owner/repo.git"),
@@ -2780,17 +2824,18 @@ impl RecordeApp {
                 close = true;
             }
             crate::ui::kit::disclosure(ui, "clone_advanced", "Advanced options", false, |ui| {
-                ui.radio_value(
+                crate::ui::kit::radio_value(
+                    ui,
                     &mut self.clone_depth,
                     0,
                     "Download full history (recommended)",
                 );
-                if ui
-                    .radio(
-                        self.clone_depth > 0,
-                        "Only the latest N commits (faster for big repositories)",
-                    )
-                    .clicked()
+                if crate::ui::kit::radio(
+                    ui,
+                    self.clone_depth > 0,
+                    "Only the latest N commits (faster for big repositories)",
+                )
+                .clicked()
                 {
                     self.clone_depth = self.clone_depth.max(1);
                 }
@@ -3051,7 +3096,7 @@ impl RecordeApp {
                                         format!("recover-{}", &entry.short_oid);
                                 }
                             });
-                            ui.add_space(kit::space::SM);
+                            ui.add_space(crate::ui::kit::space::SM);
                         }
                         if entries.is_empty() {
                             ui.label(
@@ -3067,7 +3112,7 @@ impl RecordeApp {
                 motion::reveal(ui, recovery_id, recovering, |ui| {
                     ui.add_enabled_ui(recovering, |ui| {
                         ui.separator();
-                        ui.add_space(kit::space::SM);
+                        ui.add_space(crate::ui::kit::space::SM);
                         let label = ui.label(
                             RichText::new("Branch name for recovery:")
                                 .color(theme::text_secondary())
@@ -3075,12 +3120,12 @@ impl RecordeApp {
                         );
                         ui.add_space(kit::space::XS);
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.repo_ui.reflog_recover_input)
+                            crate::ui::kit::text_field(&mut self.repo_ui.reflog_recover_input)
                                 .desired_width(f32::INFINITY)
                                 .margin(egui::Vec2::new(8.0, 5.0)),
                         )
                         .labelled_by(label.id);
-                        ui.add_space(kit::space::SM);
+                        ui.add_space(crate::ui::kit::space::SM);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let can = !self.repo_ui.reflog_recover_input.trim().is_empty();
                             if kit::explain_disabled(
@@ -3895,7 +3940,11 @@ impl RecordeApp {
         }
     }
 
-    fn render_repo_tabs(&mut self, root_ui: &mut egui::Ui) {
+    /// Draws the favourite toggle, Workspaces menu and repository tabs into the
+    /// title bar region it is given; the tabs scroll sideways when crowded.
+    fn show_repo_tabs(&mut self, ui: &mut egui::Ui) {
+        let mut tab_action: Option<ToolbarAction> = None;
+        let mut favorite_toggle: Option<std::path::PathBuf> = None;
         let active = self.state.lock().unwrap().repo_path.clone();
         // A failed replacement load keeps the old repository usable and visible.
         if let Some(path) = &active {
@@ -3909,41 +3958,82 @@ impl RecordeApp {
         let mut open = None;
         let mut close = None;
         let mut workspace = None;
-        egui::Panel::top("repository_tabs")
-            .exact_size(44.0)
-            .frame(
-                egui::Frame::NONE
-                    .fill(theme::bg_titlebar())
-                    .inner_margin(egui::Margin::symmetric(16, 6)),
-            )
-            .show(root_ui, |ui| {
-                if self.commit_graph_view.has_pending_action() {
-                    ui.disable();
-                }
-                egui::ScrollArea::horizontal().show(ui, |ui| {
+        ui.scope(|ui| {
+            if self.commit_graph_view.has_pending_action() {
+                ui.disable();
+            }
+            egui::ScrollArea::horizontal()
+                .id_salt("repository_tabs")
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        if let Some(path) = &active {
-                            let favorite = self.config.favorites.contains(path);
-                            if ui
-                                .small_button(if favorite { "★" } else { "☆" })
-                                .on_hover_text("Toggle repository favorite")
-                                .clicked()
-                            {
-                                if favorite {
-                                    self.config.favorites.retain(|p| p != path);
-                                } else {
-                                    self.config.favorites.push(path.clone());
+                        // Workspaces is a quiet text menu like the panel toggles; the
+                        // favourite star moved into it and into each tab's context menu.
+                        let mut title = egui::text::LayoutJob::default();
+                        title.append(
+                            "Workspaces",
+                            0.0,
+                            egui::TextFormat {
+                                font_id: egui::FontId::proportional(13.0),
+                                color: theme::text_secondary(),
+                                valign: egui::Align::Center,
+                                ..Default::default()
+                            },
+                        );
+                        title.append(
+                            &crate::icons::EXPAND_MORE.to_string(),
+                            4.0,
+                            egui::TextFormat {
+                                font_id: crate::icons::font(16.0),
+                                color: theme::text_muted(),
+                                valign: egui::Align::Center,
+                                ..Default::default()
+                            },
+                        );
+                        let picker = ui
+                            .scope(|ui| {
+                                ui.spacing_mut().button_padding = egui::vec2(10.0, 4.0);
+                                ui.add(
+                                    Button::new(title)
+                                        .fill(Color32::TRANSPARENT)
+                                        .stroke(Stroke::NONE)
+                                        .corner_radius(6.0)
+                                        .min_size(egui::vec2(0.0, 26.0)),
+                                )
+                            })
+                            .inner
+                            .on_hover_text("Favourite repositories and saved sets of tabs");
+                        // Keep the picker's accessible role and value for assistive
+                        // technology and the native acceptance inspector.
+                        picker.widget_info(|| {
+                            let mut info = egui::WidgetInfo::new(egui::WidgetType::ComboBox);
+                            info.enabled = ui.is_enabled();
+                            info.current_text_value = Some("Workspaces".into());
+                            info
+                        });
+                        egui::Popup::menu(&picker)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                ui.set_min_width(240.0);
+                                if let Some(path) = &active {
+                                    let favorite = self.config.favorites.contains(path);
+                                    if ui.button(favorite_label(path, favorite)).clicked() {
+                                        favorite_toggle = Some(path.clone());
+                                        ui.close();
+                                    }
+                                    ui.separator();
                                 }
-                                self.save_config();
-                            }
-                        }
-                        egui::ComboBox::from_id_salt("repo_workspaces")
-                            .selected_text("Workspaces")
-                            .show_ui(ui, |ui| {
                                 ui.strong("Favorites");
+                                if self.config.favorites.is_empty() {
+                                    ui.label(
+                                        RichText::new("No favourites yet.")
+                                            .size(crate::theme::font_size::SMALL)
+                                            .color(theme::text_muted()),
+                                    );
+                                }
                                 for path in &self.config.favorites {
                                     if ui.button(crate::ui::kit::display_path(path)).clicked() {
                                         open = Some(path.clone());
+                                        ui.close();
                                     }
                                 }
                                 ui.separator();
@@ -3951,11 +4041,12 @@ impl RecordeApp {
                                 for (name, paths) in &self.config.workspaces {
                                     if ui.button(name).clicked() {
                                         workspace = Some(paths.clone());
+                                        ui.close();
                                     }
                                 }
                                 ui.separator();
                                 ui.add(
-                                    egui::TextEdit::singleline(&mut self.workspace_name)
+                                    crate::ui::kit::text_field(&mut self.workspace_name)
                                         .hint_text("Workspace name"),
                                 );
                                 if ui
@@ -3987,13 +4078,18 @@ impl RecordeApp {
                                 .file_name()
                                 .unwrap_or(path.as_os_str())
                                 .to_string_lossy();
-                            if ui
-                                .selectable_label(active.as_ref() == Some(path), label.as_ref())
-                                .on_hover_text(crate::ui::kit::display_path(path))
-                                .clicked()
-                            {
+                            let tab = repo_tab(ui, label.as_ref(), active.as_ref() == Some(path))
+                                .on_hover_text(crate::ui::kit::display_path(path));
+                            if tab.clicked() {
                                 open = Some(path.clone());
                             }
+                            let favorite = self.config.favorites.contains(path);
+                            tab.context_menu(|ui| {
+                                if ui.button(favorite_label(path, favorite)).clicked() {
+                                    favorite_toggle = Some(path.clone());
+                                    ui.close();
+                                }
+                            });
                             if self.config.open_repos.len() > 1 {
                                 let response =
                                     ui.small_button("×").on_hover_text("Close repository tab");
@@ -4010,16 +4106,50 @@ impl RecordeApp {
                             }
                             ui.separator();
                         }
-                        if ui
-                            .small_button("+")
-                            .on_hover_text("Open repository")
-                            .clicked()
-                        {
-                            open = rfd::FileDialog::new().pick_folder();
-                        }
+                        // One place to open, clone, create or reopen a repository;
+                        // the toolbar no longer repeats the name in a second picker.
+                        ui.menu_button("+", |ui| {
+                            ui.set_min_width(220.0);
+                            if ui.button("Open Repository…").clicked() {
+                                open = rfd::FileDialog::new().pick_folder();
+                                ui.close();
+                            }
+                            if ui.button("Clone Repository…").clicked() {
+                                tab_action = Some(ToolbarAction::CloneRepo);
+                                ui.close();
+                            }
+                            if ui.button("Initialize Repository…").clicked() {
+                                tab_action = Some(ToolbarAction::InitRepo);
+                                ui.close();
+                            }
+                            ui.separator();
+                            if let Some(selected) = crate::ui::toolbar::recent_repositories_menu(
+                                ui,
+                                &self.config.recent_repos,
+                                active.as_deref(),
+                            ) {
+                                tab_action = Some(selected);
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Open, clone or create a repository, or reopen a recent one",
+                        );
                     });
                 });
-            });
+        });
+        if let Some(path) = favorite_toggle {
+            if self.config.favorites.contains(&path) {
+                self.config.favorites.retain(|p| p != &path);
+            } else {
+                self.config.favorites.push(path);
+            }
+            self.save_config();
+        }
+        if let Some(action) = tab_action {
+            let ctx = ui.ctx().clone();
+            self.handle_toolbar(&ctx, action);
+        }
         if let Some(paths) = workspace {
             if !paths.is_empty() {
                 self.request_navigation(lifecycle_guards::Navigation::Workspace(paths));
@@ -4195,7 +4325,10 @@ impl RecordeApp {
             state.errors.clone()
         };
         let mut errors = queued_errors.clone();
-        crate::ui::error_notice::show(ctx, &mut errors);
+        if crate::ui::error_notice::show(ctx, &mut errors) {
+            self.git_readiness.retry();
+            self.open_settings(SettingsTab::Git);
+        }
         let dismissed = queued_errors.len() - errors.len();
         if dismissed > 0 {
             let mut state = self.state.lock().unwrap();
@@ -4327,7 +4460,7 @@ impl RecordeApp {
                                             action = Some(ToolbarAction::OpenRepo(path));
                                         }
                                     }
-                                    ui.add_space(kit::space::SM);
+                                    ui.add_space(crate::ui::kit::space::SM);
                                     if card(
                                         ui,
                                         "welcome_clone",
@@ -4339,7 +4472,7 @@ impl RecordeApp {
                                     {
                                         action = Some(ToolbarAction::CloneRepo);
                                     }
-                                    ui.add_space(kit::space::SM);
+                                    ui.add_space(crate::ui::kit::space::SM);
                                     if card(
                                         ui,
                                         "welcome_create",
@@ -4354,7 +4487,7 @@ impl RecordeApp {
                                     if !self.config.recent_repos.is_empty() {
                                         ui.add_space(kit::space::XL);
                                         kit::group_label(ui, "Pick up where you left off");
-                                        ui.add_space(kit::space::SM);
+                                        ui.add_space(crate::ui::kit::space::SM);
                                         for path in self.config.recent_repos.iter().take(8) {
                                             let name = path
                                                 .file_name()
@@ -4375,7 +4508,7 @@ impl RecordeApp {
                                     if ui.link("New to Git? Read the User Guide").clicked() {
                                         self.help.open_page("User-Guide");
                                     }
-                                    ui.add_space(kit::space::SM);
+                                    ui.add_space(crate::ui::kit::space::SM);
                                     kit::hint(
                                         ui,
                                         "Ctrl/Cmd+K  Command palette     Ctrl/Cmd+B  Switch branch",
@@ -4394,14 +4527,63 @@ impl RecordeApp {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Draw a subtle teal focus ring around the panel to indicate keyboard focus.
+/// Mark the pane that receives keyboard shortcuts with an accent line along its
+/// top edge. A full outline drew a frame around the whole panel after every click.
 fn focus_ring(ui: &egui::Ui) {
-    ui.painter().rect_stroke(
-        ui.max_rect().shrink(1.0),
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(
+        egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 2.0)),
         0.0,
-        egui::Stroke::new(1.5, theme::accent_teal().gamma_multiply(0.5)),
-        egui::StrokeKind::Middle,
+        theme::accent_teal(),
     );
+}
+
+/// Menu label that adds or removes a repository from favourites.
+fn favorite_label(path: &std::path::Path, favorite: bool) -> String {
+    let name = path
+        .file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy();
+    if favorite {
+        format!("Remove {name} from favourites")
+    } else {
+        format!("Add {name} to favourites")
+    }
+}
+
+/// A repository tab with the same padding whether idle, hovered or active, so
+/// hovering never shifts its neighbours. egui's selectable label only adds its
+/// frame margin once highlighted.
+fn repo_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
+            ui.add(
+                Button::new(RichText::new(label).size(13.0).color(if active {
+                    theme::text_primary()
+                } else {
+                    theme::text_secondary()
+                }))
+                .fill(if active {
+                    theme::bg_selected()
+                } else {
+                    Color32::TRANSPARENT
+                })
+                .stroke(Stroke::NONE)
+                .corner_radius(6.0)
+                .min_size(egui::vec2(0.0, 26.0)),
+            )
+        })
+        .inner;
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            active,
+            label,
+        )
+    });
+    response
 }
 
 fn panel_toggle(ui: &mut egui::Ui, visible: &mut bool, label: &str, tip: &str) -> bool {
@@ -4413,23 +4595,28 @@ fn panel_toggle(ui: &mut egui::Ui, visible: &mut bool, label: &str, tip: &str) -
         *visible,
         motion::FAST,
     );
-    let color = motion::mix(theme::text_muted(), theme::accent_teal(), t);
+    // Quiet chrome: shown panels read as primary text on a subtle fill, hidden
+    // ones recede; no border or accent competes with the toolbar's actions.
+    let color = motion::mix(theme::text_muted(), theme::text_primary(), t);
     let fill = motion::mix(Color32::TRANSPARENT, theme::bg_panel_alt(), t);
-    let stroke = motion::mix(
-        theme::border(),
-        theme::accent_teal().gamma_multiply(0.45),
-        t,
-    );
     let state = if *visible { "shown" } else { "hidden" };
     let resp = ui
         .add(
             Button::new(RichText::new(label).color(color).size(12.0))
                 .fill(fill)
-                .stroke(Stroke::new(1.0, stroke))
+                .stroke(Stroke::NONE)
                 .corner_radius(5.0)
                 .min_size(egui::Vec2::new(0.0, 24.0)),
         )
         .on_hover_text(format!("{tip} (currently {state})"));
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            *visible,
+            label,
+        )
+    });
     if resp.clicked() {
         *visible = !*visible;
         true
@@ -5014,7 +5201,7 @@ impl RecordeApp {
                 ui.label(styled_label("Branch name"));
                 ui.add_space(4.0);
                 let r = ui.add(
-                    egui::TextEdit::singleline(&mut self.repo_ui.branch_from_issue_input)
+                    crate::ui::kit::text_field(&mut self.repo_ui.branch_from_issue_input)
                         .desired_width(f32::INFINITY)
                         .margin(egui::Vec2::new(8.0, 5.0)),
                 );
@@ -5110,7 +5297,7 @@ fn settings_text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
         ui.add_space(8.0);
         ui.add_sized(
             [340.0, 28.0],
-            egui::TextEdit::singleline(value).margin(egui::Vec2::new(8.0, 5.0)),
+            crate::ui::kit::text_field(value).margin(egui::Vec2::new(8.0, 5.0)),
         );
     });
 }
@@ -5233,5 +5420,55 @@ mod repo_settings_tests {
             .unwrap()
             .branch
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod repo_tab_tests {
+    use super::repo_tab;
+
+    /// Hovering a repository tab must change only its fill, never its size, so
+    /// neighbouring tabs do not shift.
+    #[test]
+    fn repository_tabs_keep_their_size_when_hovered() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::icons::font_definitions());
+        let draw = |events: Vec<egui::Event>| {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 100.0),
+                )),
+                events,
+                ..Default::default()
+            });
+            let mut ui = egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new("repo_tab_test"),
+                egui::UiBuilder::new().max_rect(ctx.content_rect()),
+            );
+            let rects = ui
+                .horizontal(|ui| {
+                    [
+                        repo_tab(ui, "repo", false).rect,
+                        repo_tab(ui, "workspace-repo", true).rect,
+                    ]
+                })
+                .inner;
+            ctx.end_pass().textures_delta.clear();
+            rects
+        };
+        // Fonts set on the context apply from the next frame, so warm up first.
+        draw(vec![]);
+        let idle = draw(vec![egui::Event::PointerGone]);
+        // A second hovered frame lets hover state settle.
+        draw(vec![egui::Event::PointerMoved(idle[0].center())]);
+        let hovered = draw(vec![egui::Event::PointerMoved(idle[0].center())]);
+        assert_eq!(
+            idle, hovered,
+            "Hover must not resize or move repository tabs"
+        );
+        // 12 pixels of padding each side keeps the label clear of the pill edge.
+        assert!(idle[0].width() >= 24.0 + 28.0);
     }
 }

@@ -2,6 +2,55 @@ use super::*;
 use crate::git::test_support::TestRepo;
 
 #[test]
+fn t15_ignored_collision_refuses_local_new_remote_and_detached_checkout_without_changes() {
+    use crate::git::test_support::{ignored_collision, snapshot};
+    for kind in 0..5 {
+        let (repo, target) = ignored_collision();
+        if kind == 2 || kind == 3 {
+            repo.open()
+                .remote("origin", "https://example.invalid/fixture")
+                .unwrap();
+            repo.open()
+                .reference("refs/remotes/origin/topic", target, false, "fixture")
+                .unwrap();
+            if kind == 3 {
+                let git = repo.open();
+                git.branch("topic", &git.find_commit(target).unwrap(), false)
+                    .unwrap();
+                repo.git_ok(&["branch", "--set-upstream-to=origin/topic", "topic"]);
+            }
+        }
+        let before = snapshot(repo.path());
+        let result = match kind {
+            0 => do_checkout(repo.path(), "destination").map_err(|e| e.to_string()),
+            1 => do_create(repo.path(), "new-branch", Some(&target.to_string()), true)
+                .map_err(|e| e.to_string()),
+            2 | 3 => do_checkout_remote(repo.path(), "origin/topic").map(|_| ()),
+            _ => do_checkout_detached(repo.path(), &target.to_string()).map_err(|e| e.to_string()),
+        };
+        assert!(
+            result.is_err(),
+            "Ignored collision was overwritten by checkout kind {kind}"
+        );
+        assert_eq!(snapshot(repo.path()), before, "checkout kind {kind}");
+        std::fs::remove_file(repo.path().join("ignored.env")).unwrap();
+        match kind {
+            0 => do_checkout(repo.path(), "destination").map_err(|e| e.to_string()),
+            1 => do_create(repo.path(), "new-branch", Some(&target.to_string()), true)
+                .map_err(|e| e.to_string()),
+            2 | 3 => do_checkout_remote(repo.path(), "origin/topic").map(|_| ()),
+            _ => do_checkout_detached(repo.path(), &target.to_string()).map_err(|e| e.to_string()),
+        }
+        .unwrap();
+        assert_eq!(repo.head(), target);
+        assert_eq!(
+            std::fs::read(repo.path().join("ignored.env")).unwrap(),
+            b"destination tracked bytes\n"
+        );
+    }
+}
+
+#[test]
 fn deleted_branch_survives_reload_and_gc_without_overwriting_a_new_branch() {
     let repo = TestRepo::new();
     let tip = repo.commit("file", b"base\n");
@@ -742,6 +791,56 @@ fn branch_from_stash_applies_exact_object_and_retains_removed_stash() {
             .to_string(),
         target.oid
     );
+}
+
+#[test]
+fn t5_conflicted_pop_keeps_the_reviewed_and_unrelated_stash_objects() {
+    let repo = TestRepo::new();
+    repo.commit("file.txt", b"base\n");
+    repo.write("file.txt", b"stashed change\n");
+    repo.git_ok(&["stash", "push", "-m", "reviewed stash"]);
+    repo.write("unrelated.txt", b"unrelated saved bytes\n");
+    repo.git_ok(&[
+        "stash",
+        "push",
+        "--include-untracked",
+        "-m",
+        "unrelated stash",
+    ]);
+    repo.commit("file.txt", b"divergent committed change\n");
+    let target = stash_target(&repo, 1);
+    let before = collect_stashes(&mut repo.open());
+    assert!(do_stash_apply(repo.path(), &target, true).is_err());
+    let after = collect_stashes(&mut repo.open());
+    assert_eq!(
+        after.iter().map(|s| &s.oid).collect::<Vec<_>>(),
+        before.iter().map(|s| &s.oid).collect::<Vec<_>>()
+    );
+    assert_eq!(after[1].oid, target.oid);
+    assert!(repo.open().index().unwrap().has_conflicts());
+    assert!(read(&repo, "file.txt").windows(7).any(|p| p == b"<<<<<<<"));
+    assert!(!repo.path().join("unrelated.txt").exists());
+}
+
+#[test]
+fn t15_stash_branch_refuses_ignored_base_collision_and_keeps_stash() {
+    use crate::git::test_support::{ignored_collision, snapshot};
+    let (repo, _) = ignored_collision();
+    let ignored = std::fs::read(repo.path().join("ignored.env")).unwrap();
+    std::fs::remove_file(repo.path().join("ignored.env")).unwrap();
+    repo.git_ok(&["checkout", "destination"]);
+    repo.write(".gitignore", b"/ignored.env\n/another\n");
+    repo.git_ok(&["stash", "push", "-m", "stash on tracked collision base"]);
+    repo.git_ok(&["checkout", "main"]);
+    repo.write("ignored.env", &ignored);
+    let target = stash_target(&repo, 0);
+    let before = snapshot(repo.path());
+    assert!(
+        do_stash_branch(repo.path(), "from-stash", &target).is_err(),
+        "Ignored base collision was overwritten by stash branch"
+    );
+    assert_eq!(snapshot(repo.path()), before);
+    assert_eq!(collect_stashes(&mut repo.open())[0].oid, target.oid);
 }
 
 #[test]

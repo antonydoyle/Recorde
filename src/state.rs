@@ -57,6 +57,8 @@ pub struct DiffHunk {
 
 #[derive(Debug, Clone)]
 pub struct FileDiff {
+    /// Display hunks may differ from these exact mutation hunks.
+    pub canonical_hunks: Option<Vec<DiffHunk>>,
     pub binary_preview: Option<crate::git::binary_preview::BinaryPreview>,
     pub raw_patch: Vec<u8>,
     pub old_path: Option<String>,
@@ -261,6 +263,14 @@ pub enum ModalKind {
 
 #[derive(Default)]
 pub struct AppState {
+    pub switch_request_id: u64,
+    pub pending_switch: Option<crate::git::switch::Preview>,
+    pub pending_restore: Option<crate::git::switch::RestorePreview>,
+    pub saved_work: Vec<crate::git::switch::SavedWork>,
+    pub saved_work_warnings: Vec<String>,
+    pub show_saved_work: bool,
+    pub commit_outputs:
+        std::collections::HashMap<std::path::PathBuf, crate::git::commit_output::CommitOutput>,
     pub history_limit: usize,
     pub repo_views: std::collections::HashMap<std::path::PathBuf, RepoView>,
     pub repo_path: Option<std::path::PathBuf>,
@@ -270,6 +280,7 @@ pub struct AppState {
     /// Changes when the active repository changes, including A -> B -> A.
     pub repo_epoch: u64,
     pub diff_load_id: u64,
+    pub diff_comparison: crate::config::DiffComparison,
     pub commit_graph: Option<std::sync::Arc<CommitGraph>>,
     pub error: Option<String>,
     pub errors: VecDeque<UserError>,
@@ -322,6 +333,8 @@ pub struct AppState {
     pub graph_filter: crate::git::graph::GraphFilter,
     /// 1=sidebar, 2=graph, 3=changes, 4=diff. 0=none.
     pub focused_pane: u8,
+    /// Composer eligibility is ephemeral and bound to its repository session.
+    pub commit_composer_ready: Option<(std::path::PathBuf, u64)>,
     /// Set by the graph context menu to trigger opening the rebase modal.
     pub pending_open_rebase: Option<String>,
     /// Selected commits to combine with an interactive rebase.
@@ -403,6 +416,7 @@ impl AppState {
             message,
         };
         if self.errors.back() != Some(&error) {
+            crate::diagnostics::record(crate::diagnostics::Event::OperationFailed(error.kind));
             self.errors.push_back(error);
         }
         while self.errors.len() > 5 {

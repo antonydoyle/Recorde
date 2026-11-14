@@ -202,26 +202,47 @@ fn submit_commit(
     let (tx, rx) = std::sync::mpsc::channel();
     let epoch = state.lock().unwrap().repo_epoch;
     let work_path = rp.clone();
-    crate::git::mutation::spawn_job(
+    let report = super::commit_output::OutputHandle::begin(&rp, &state);
+    let completed_report = report.clone();
+    crate::git::mutation::spawn_job_with_progress(
         rp.clone(),
         if amend { "Amend commit" } else { "Commit" },
         state,
-        move || {
+        move |progress| {
             let rp = work_path;
-            if git2::Repository::open(&rp).is_ok_and(|repo| super::merge::squash_in_progress(&repo))
+            report.job(progress.id());
+            let before_head = super::commit_output::head(&rp);
+            let before_index = super::commit_output::index(&rp);
+            let mut result = if git2::Repository::open(&rp)
+                .is_ok_and(|repo| super::merge::squash_in_progress(&repo))
             {
-                return Err("Resolve and stage squash conflicts, then use Continue in the squash merge banner. Commit and Amend are unavailable during a squash merge.".into());
-            }
-            if git2::Repository::open(&rp).is_ok_and(|r| r.state() == git2::RepositoryState::Clean)
+                Err("Resolve and stage squash conflicts, then use Continue in the squash merge banner. Commit and Amend are unavailable during a squash merge.".into())
+            } else if git2::Repository::open(&rp)
+                .is_ok_and(|r| r.state() == git2::RepositoryState::Clean)
             {
                 super::recovery::protect(&rp, if amend { "Amend commit" } else { "Commit" }, || {
-                    git_commit(&rp, &msg, amend, signoff)
+                    git_commit_inner(&rp, &msg, amend, signoff, Some(&report))
                 })
             } else {
-                super::recovery::continue_sequence(&rp, || git_commit(&rp, &msg, amend, signoff))
+                super::recovery::continue_sequence(&rp, || {
+                    git_commit_inner(&rp, &msg, amend, signoff, Some(&report))
+                })
+            };
+            let head_changed = before_head != super::commit_output::head(&rp);
+            let index_changed = before_index != super::commit_output::index(&rp);
+            if head_changed {
+                if let Err(error) = &mut result {
+                    error.push_str("\nHEAD changed while the command stopped. A commit may already exist; inspect history before retrying. The draft is retained.");
+                }
             }
+            report.finished(&result, head_changed, index_changed);
+            result
         },
         move |result, state| {
+            let result = result
+                .map(|output| crate::auth::redact::text(&output))
+                .map_err(|error| super::commit_output::display_stream(error.as_bytes(), false).0);
+            completed_report.finish_if_pending(&result);
             let success = result.is_ok();
             let current = {
                 let mut s = state.lock().unwrap();
@@ -546,11 +567,22 @@ fn do_unstage_all(repo_path: &Path) -> Result<(), git2::Error> {
 
 /// Shell out to `git commit -m <msg>` so hooks (pre-commit, commit-msg, post-commit) run.
 /// Returns combined stdout+stderr on success, Err(combined) on failure.
+#[cfg(test)]
 pub(super) fn git_commit(
     repo_path: &Path,
     message: &str,
     amend: bool,
     signoff: bool,
+) -> Result<String, String> {
+    git_commit_inner(repo_path, message, amend, signoff, None)
+}
+
+fn git_commit_inner(
+    repo_path: &Path,
+    message: &str,
+    amend: bool,
+    signoff: bool,
+    report: Option<&super::commit_output::OutputHandle>,
 ) -> Result<String, String> {
     super::commit_settings::check_identity(repo_path, amend)?;
     let mut cmd = super::process::command(repo_path);
@@ -593,16 +625,35 @@ pub(super) fn git_commit(
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
 
-    let out = super::process::run_with_deadline(
-        &mut cmd,
-        &std::sync::atomic::AtomicBool::new(false),
-        super::process::Deadline::None,
-    )
+    if let Some(report) = report {
+        report.started();
+    }
+    let mut truncated = (false, false);
+    let out = {
+        let mut observe = |output: super::process::DiagnosticOutput<'_>| {
+            truncated = (output.stdout_truncated, output.stderr_truncated);
+            if let Some(report) = report {
+                report.observed(output);
+            }
+        };
+        super::process::run_diagnostic(
+            &mut cmd,
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut observe,
+        )
+    }
     .map_err(|e| e.user_message())?;
+    let (stdout, stdout_truncated) = super::commit_output::display_stream(&out.stdout, truncated.0);
+    let (stderr, stderr_truncated) = super::commit_output::display_stream(&out.stderr, truncated.1);
     let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
+        "{}{}{}",
+        stdout,
+        stderr,
+        if stdout_truncated || stderr_truncated {
+            "\n[Earlier command output omitted.]"
+        } else {
+            ""
+        },
     );
     let combined = crate::auth::redact::text(&combined);
     if out.status.success() {
@@ -635,6 +686,196 @@ fn do_discard_file(repo_path: &Path, file_path: &str) -> Result<(), git2::Error>
 mod tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    fn output_hook(repo: &TestRepo, kind: &str, body: &str) {
+        let path = repo.path().join("empty-hooks").join(kind);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn output_state(repo: &TestRepo) -> SharedState {
+        let state = crate::state::new_shared_state();
+        state.lock().unwrap().repo_path = Some(repo.path().into());
+        state
+    }
+
+    #[test]
+    fn t11_commit_output_success_rejection_redaction_and_staging_retention() {
+        use super::super::commit_output::CommitOutcome;
+        for fail in [true, false] {
+            let repo = TestRepo::new();
+            let head = repo.commit("file", b"original\n");
+            repo.write("file", b"staged\n");
+            repo.git_ok(&["add", "file"]);
+            crate::auth::redact::remember("t11-hook-secret");
+            output_hook(&repo, "pre-commit", &format!("echo hook-stdout\necho 'hook-stderr https://alice:password@example.invalid/repo?token=query-secret t11-hook-secret' >&2\nexit {}", u8::from(fail)));
+            if !fail {
+                output_hook(&repo, "post-commit", "echo post-commit-warning >&2\nexit 1");
+            }
+            let state = output_state(&repo);
+            let result = create_commit("retain this message", false, state.clone())
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .unwrap();
+            assert_eq!(result, !fail);
+            let state = state.lock().unwrap();
+            let report = &state.commit_outputs[repo.path()];
+            assert_eq!(
+                report.outcome,
+                if fail {
+                    CommitOutcome::Failed
+                } else {
+                    CommitOutcome::Succeeded
+                }
+            );
+            // Git routes hook stdout into its own stderr. Report the actual Git streams.
+            assert!(report.stderr.contains("hook-stdout"));
+            assert!(report.stderr.contains("hook-stderr"));
+            assert!(report.elapsed.is_some());
+            for secret in ["password", "query-secret", "t11-hook-secret"] {
+                assert!(!report.stderr.contains(secret));
+                assert!(!state.console_log.join("\n").contains(secret));
+            }
+            assert_eq!(repo.index_bytes("file"), b"staged\n");
+            if fail {
+                assert_eq!(repo.head(), head);
+                assert!(!report.index_changed);
+            } else {
+                assert_ne!(repo.head(), head);
+                assert!(report.stderr.contains("post-commit-warning"));
+            }
+        }
+    }
+
+    #[test]
+    fn t11_commit_output_large_hook_output_is_bounded_without_failing_successful_commit() {
+        let repo = TestRepo::new();
+        repo.commit("file", b"original\n");
+        repo.write("file", b"staged\n");
+        repo.git_ok(&["add", "file"]);
+        output_hook(&repo, "pre-commit", &format!("i=0\nwhile [ $i -lt 1200 ]; do\n printf '%s\\n' '{}'\n printf '%s\\n' '{}' >&2\n i=$((i + 1))\ndone\necho bounded-tail\necho bounded-error-tail >&2", "x".repeat(1024), "y".repeat(1024)));
+        let state = output_state(&repo);
+        assert!(create_commit("large output", false, state.clone())
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap());
+        let state = state.lock().unwrap();
+        let report = &state.commit_outputs[repo.path()];
+        assert_eq!(
+            report.outcome,
+            super::super::commit_output::CommitOutcome::Succeeded
+        );
+        assert!(!report.stdout_truncated && report.stderr_truncated);
+        assert!(report.stdout.len() <= 16 * 1024 && report.stderr.len() <= 16 * 1024);
+        assert!(
+            report.stderr.contains("bounded-tail") && report.stderr.contains("bounded-error-tail")
+        );
+    }
+
+    #[test]
+    fn t11_commit_output_cancel_slow_pre_and_post_commit_checks_head_before_retry() {
+        use super::super::commit_output::CommitOutcome;
+        for post in [false, true] {
+            let repo = TestRepo::new();
+            let head = repo.commit("file", b"original\n");
+            repo.write("file", b"staged\n");
+            repo.git_ok(&["add", "file"]);
+            output_hook(
+                &repo,
+                if post { "post-commit" } else { "pre-commit" },
+                "echo slow-hook-output\necho started > hook-started\nsleep 20",
+            );
+            let state = output_state(&repo);
+            let rx = create_commit("slow hook", false, state.clone()).unwrap();
+            let start = std::time::Instant::now();
+            while !repo.path().join("hook-started").exists()
+                && start.elapsed() < std::time::Duration::from_secs(10)
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let started = repo.path().join("hook-started").exists();
+            {
+                let state = state.lock().unwrap();
+                for job in &state.local_jobs {
+                    job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            assert!(!rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap());
+            assert!(started, "Slow hook did not start");
+            let state = state.lock().unwrap();
+            let report = &state.commit_outputs[repo.path()];
+            assert!(report.stderr.contains("slow-hook-output"));
+            assert_eq!(
+                report.outcome,
+                if post {
+                    CommitOutcome::StoppedWithHeadChange
+                } else {
+                    CommitOutcome::Cancelled
+                }
+            );
+            assert_eq!(repo.head() != head, post);
+            if post {
+                assert!(report.detail.contains("inspect history before retrying"));
+            }
+            assert_eq!(repo.index_bytes("file"), b"staged\n");
+        }
+    }
+
+    #[test]
+    fn t11_commit_output_keeps_and_reports_hook_changes_to_staged_content() {
+        let repo = TestRepo::new();
+        let head = repo.commit("file", b"original\n");
+        repo.write("file", b"staged\n");
+        repo.git_ok(&["add", "file"]);
+        output_hook(
+            &repo,
+            "pre-commit",
+            "echo changed-by-hook > file\ngit add file\necho rejected-after-change >&2\nexit 1",
+        );
+        let state = output_state(&repo);
+        assert!(!create_commit("keep draft", false, state.clone())
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .unwrap());
+        assert_eq!(repo.head(), head);
+        assert_eq!(repo.index_bytes("file"), b"changed-by-hook\n");
+        assert!(state.lock().unwrap().commit_outputs[repo.path()].index_changed);
+    }
+
+    #[test]
+    fn t11_commit_output_preflight_identity_failure_finishes_report_without_running_hook() {
+        let repo = TestRepo::new();
+        let head = repo.commit("file", b"original\n");
+        repo.write("file", b"staged\n");
+        repo.git_ok(&["add", "file"]);
+        repo.open()
+            .config()
+            .unwrap()
+            .set_str("user.name", "")
+            .unwrap();
+        output_hook(&repo, "pre-commit", "echo unexpected > hook-ran");
+        let state = output_state(&repo);
+        assert!(
+            !create_commit("retain identity draft", false, state.clone())
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .unwrap()
+        );
+        assert!(!repo.path().join("hook-ran").exists());
+        assert_eq!(repo.head(), head);
+        assert_eq!(repo.index_bytes("file"), b"staged\n");
+        let report = state.lock().unwrap().commit_outputs[repo.path()].clone();
+        assert_eq!(
+            report.outcome,
+            super::super::commit_output::CommitOutcome::Failed
+        );
+        assert!(!report.detail.is_empty());
+        assert!(report.elapsed.is_none());
+    }
 
     #[test]
     fn batch_stage_uses_literal_paths_and_unstages_unborn_and_renamed_files() {

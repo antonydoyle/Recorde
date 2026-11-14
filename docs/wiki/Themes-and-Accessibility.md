@@ -2,7 +2,15 @@
 
 ## Choose a colour theme
 
-Open Settings > Appearance and select Classic or Siege21 in Colour palette. Dark theme switches the selected palette between light and dark. Choose Siege21 with Dark theme off for warm beige and orange; turn Dark theme on for orange and white on dark surfaces. The orange is based on siege21.com's published brand colour, with readable foreground variations for small text.
+Open Settings > Appearance and choose a theme in Colour palette. The list has three groups:
+
+- **Light and dark:** Classic and Siege21. Dark theme switches these between light and dark. Choose Siege21 with Dark theme off for warm beige and orange; turn Dark theme on for orange and white on dark surfaces. The orange is based on siege21.com's published brand colour, with readable foreground variations for small text.
+- **Dark:** Monokai, Tokyo Night, Dracula, One Dark Pro, Nord, Gruvbox Dark and SynthWave '84.
+- **Light:** GitHub Light, Solarized Light and Catppuccin Latte.
+
+The dark and light themes take their colours from the popular VS Code themes of the same names and are always dark or always light, so Dark theme is unavailable while one is selected (your preference is kept for when you return to Classic or Siege21). Each is built like Siege21: one accent colour for focus and selection, quiet layered surfaces, and graph lanes from the theme's own palette. Where an original colour is too faint to read as small text, Recorde uses a lighter or darker shade of the same hue so text meets WCAG AA contrast.
+
+To switch between light and dark quickly with Classic or Siege21, choose View > Toggle Theme or run Toggle theme from the command palette (Ctrl+K). You can bind a shortcut to it in Settings > Keyboard.
 
 Theme changes update the workspace immediately and are saved for the next launch. High contrast is a separate preference and can be combined with the selected theme. Diff additions, deletions, errors and warnings retain distinct semantic colours.
 

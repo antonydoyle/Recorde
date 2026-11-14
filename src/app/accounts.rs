@@ -16,21 +16,16 @@ impl RecordeApp {
             "Accounts & SSH",
             "Connect to GitHub, GitLab and other hosts, and choose who your commits are from.",
         );
-        kit::callout(
-            ui,
-            Status::Info,
-            "Connect with a hosting account (HTTPS) or an SSH key. Accounts use a securely \
-             stored token and enable provider features such as pull requests. SSH keys let Git \
-             connect without a password: keep the private key here and add the public key to \
-             your hosting account. Repository browsing is available for GitHub and GitLab.",
-        );
+        // The section descriptions below explain accounts and SSH keys; a summary
+        // callout above them only repeated that copy.
         ui.add_space(kit::space::MD);
         let accounts = self.config.accounts.clone();
         let repo_path = self.state.lock().unwrap().repo_path.clone();
         kit::section(
             ui,
             "Hosting accounts",
-            "Use accounts to push and pull over HTTPS and access your host's features. Tokens \
+            "Use accounts to push and pull over HTTPS and see pull requests and other host \
+             features; GitHub and GitLab accounts can also browse your repositories. Tokens \
              are saved in the system credential store; Recorde does not fall back to plain text.",
             |ui| {
                 for acc in &accounts {
@@ -203,13 +198,13 @@ impl RecordeApp {
                         (ProviderKind::BitbucketCloud, "Bitbucket Cloud"),
                         (ProviderKind::AzureDevOps, "Azure DevOps"),
                     ] {
-                        if ui
-                            .radio_value(
-                                &mut self.add_account_provider,
-                                provider.clone(),
-                                description,
-                            )
-                            .changed()
+                        if crate::ui::kit::radio_value(
+                            ui,
+                            &mut self.add_account_provider,
+                            provider.clone(),
+                            description,
+                        )
+                        .changed()
                         {
                             self.add_account_host = provider.default_host().to_string();
                         }
@@ -223,7 +218,7 @@ impl RecordeApp {
                              An HTTPS port is optional.",
                             |ui| {
                                 ui.add(
-                                    egui::TextEdit::singleline(&mut self.add_account_host)
+                                    crate::ui::kit::text_field(&mut self.add_account_host)
                                         .desired_width(ui.available_width()),
                                 );
                             },
@@ -413,7 +408,7 @@ impl RecordeApp {
                     "Default for all repositories.",
                     |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.git_name_input)
+                            crate::ui::kit::text_field(&mut self.git_name_input)
                                 .desired_width(ui.available_width()),
                         );
                     },
@@ -424,7 +419,7 @@ impl RecordeApp {
                     "Use an email linked to your hosting account.",
                     |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.git_email_input)
+                            crate::ui::kit::text_field(&mut self.git_email_input)
                                 .desired_width(ui.available_width()),
                         );
                     },
@@ -498,7 +493,7 @@ impl RecordeApp {
             "Use your Atlassian email for Bitbucket Cloud.",
             |ui| {
                 ui.add(
-                    egui::TextEdit::singleline(&mut self.add_account_username)
+                    crate::ui::kit::text_field(&mut self.add_account_username)
                         .desired_width(ui.available_width()),
                 );
             },
@@ -509,7 +504,7 @@ impl RecordeApp {
             "Used instead of your password. Keep it private.",
             |ui| {
                 ui.add(
-                    egui::TextEdit::singleline(&mut self.add_account_token)
+                    crate::ui::kit::text_field(&mut self.add_account_token)
                         .password(true)
                         .desired_width(ui.available_width()),
                 );

@@ -37,6 +37,7 @@ pub enum Command {
     Sidebar,
     Graph,
     Changes,
+    Commit,
     Diff,
     NewTag,
     CopyCommit,
@@ -84,6 +85,7 @@ impl Command {
         Self::Sidebar,
         Self::Graph,
         Self::Changes,
+        Self::Commit,
         Self::Diff,
         Self::NewTag,
         Self::CopyCommit,
@@ -131,6 +133,7 @@ impl Command {
             Self::Sidebar => "Sidebar",
             Self::Graph => "Graph",
             Self::Changes => "Changes",
+            Self::Commit => "Commit",
             Self::Diff => "Diff",
             Self::NewTag => "NewTag",
             Self::CopyCommit => "CopyCommit",
@@ -179,6 +182,7 @@ impl Command {
             Self::Sidebar => "Focus sidebar",
             Self::Graph => "Focus commit graph",
             Self::Changes => "Focus changes",
+            Self::Commit => "Commit staged changes",
             Self::Diff => "Focus diff",
             Self::NewTag => "Create tag at selected commit",
             Self::CopyCommit => "Copy selected commit SHA",
@@ -228,6 +232,7 @@ impl Command {
             Self::Sidebar => "Move keyboard focus to the repository list.",
             Self::Graph => "Move keyboard focus to the commit history.",
             Self::Changes => "Move keyboard focus to changed files.",
+            Self::Commit => "Submit the reviewed commit composer, including its Amend option.",
             Self::Diff => "Move keyboard focus to the selected file changes.",
             Self::NewTag => "Mark the selected commit with a named version.",
             Self::CopyCommit => "Copy the selected commit's identifier.",
@@ -308,6 +313,7 @@ impl Command {
                 | Self::Undo
                 | Self::Redo
                 | Self::GitFlow
+                | Self::Commit
         );
         if mutating && (!s.local_jobs.is_empty() || !s.active_ops.is_empty()) {
             return Some("Repository operation is queued or running");
@@ -343,6 +349,19 @@ impl Command {
         if self == Self::Stash && s.dirty_count == 0 {
             return Some("No changes to stash");
         }
+        if self == Self::Commit
+            && !s
+                .commit_composer_ready
+                .as_ref()
+                .is_some_and(|(path, epoch)| {
+                    s.repo_path.as_ref() == Some(path) && *epoch == s.repo_epoch
+                })
+        {
+            return Some("Enter a commit summary and stage changes in the Changes panel first");
+        }
+        if self == Self::Theme && crate::theme::mode_is_fixed() {
+            return Some("This theme is always light or always dark. Choose Classic or Siege21 in Settings > Appearance to switch");
+        }
         if self == Self::Undo && s.undo_step.is_none() {
             return Some("Nothing to undo");
         }
@@ -357,6 +376,10 @@ impl Command {
     pub fn default_shortcut(self) -> Option<Shortcut> {
         let (key, shift) = match self {
             Self::Palette => ("K", false),
+            // Conventional desktop bindings for opening a project and settings.
+            Self::Open => ("O", false),
+            Self::Clone => ("O", true),
+            Self::Settings => ("Comma", false),
             Self::Fetch => ("F", true),
             Self::Pull => ("P", true),
             Self::Push => ("U", true),
@@ -365,6 +388,7 @@ impl Command {
             Self::Sidebar => ("1", false),
             Self::Graph => ("2", false),
             Self::Changes => ("3", false),
+            Self::Commit => ("C", true),
             Self::Diff => ("4", false),
             Self::Undo => ("Z", false),
             Self::Redo => ("Z", true),
@@ -450,7 +474,11 @@ impl Shortcut {
             },
             if self.shift { "Shift+" } else { "" },
             if self.alt { "Alt+" } else { "" },
-            self.key
+            // Show punctuation keys as the character printed on the key (Ctrl+`),
+            // not egui's key name (Ctrl+Backtick); stored bindings keep the name.
+            egui::Key::from_name(&self.key)
+                .map(|key| key.symbol_or_name())
+                .unwrap_or(&self.key)
         )
     }
 }
@@ -538,6 +566,36 @@ mod tests {
             assert_ne!(command.description(), command.label());
         }
     }
+    #[test]
+    fn default_bindings_are_unique_and_cover_open_and_settings() {
+        let defaults: Vec<_> = Command::ALL
+            .iter()
+            .filter_map(|command| command.default_shortcut().map(|s| (*command, s)))
+            .collect();
+        for (i, (command, shortcut)) in defaults.iter().enumerate() {
+            assert!(
+                shortcut.valid_key().is_some(),
+                "{command:?} default is invalid"
+            );
+            for (other, other_shortcut) in &defaults[i + 1..] {
+                assert_ne!(
+                    shortcut, other_shortcut,
+                    "{command:?} and {other:?} share a default"
+                );
+            }
+        }
+        let s = Shortcuts::default();
+        assert_eq!(s.command(Key::O, Modifiers::COMMAND), Some(Command::Open));
+        assert_eq!(
+            s.command(Key::O, Modifiers::COMMAND | Modifiers::SHIFT),
+            Some(Command::Clone)
+        );
+        assert_eq!(
+            s.command(Key::Comma, Modifiers::COMMAND),
+            Some(Command::Settings)
+        );
+    }
+
     #[test]
     fn preferences_persist_disable_conflict_and_reset() {
         let mut shortcuts = Shortcuts::default();

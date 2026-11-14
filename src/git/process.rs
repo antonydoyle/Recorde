@@ -38,8 +38,29 @@ fn cancelled(explicit: &AtomicBool) -> bool {
         })
 }
 
+pub(super) fn check_local_cancellation() -> Result<(), String> {
+    if cancelled(&AtomicBool::new(false)) {
+        Err("Operation cancelled.".into())
+    } else {
+        Ok(())
+    }
+}
+
 /// All unattended programs must start here, including probes and test fixtures.
 pub(crate) fn background_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    if program.as_ref() == std::ffi::OsStr::new("git") {
+        let path = super::readiness::executable().unwrap_or_else(|| "git".into());
+        let mut command = raw_background_command(&path);
+        command
+            .env(super::readiness::COMMAND_MARKER, "1")
+            .env("RECORDE_GIT_EXECUTABLE", &path);
+        return command;
+    }
+    raw_background_command(program)
+}
+
+/// Readiness probes bypass the readiness gate, but retain the same supervision.
+pub(crate) fn raw_background_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let command = Command::new(program);
     #[cfg(windows)]
     let command = {
@@ -140,6 +161,7 @@ pub(crate) fn run_network(
         None,
         None,
         Some(on_progress),
+        None,
     )
 }
 
@@ -177,6 +199,20 @@ fn parse_progress(input: &str) -> Vec<(String, Option<u8>)> {
 }
 
 type Progress = (String, Option<u8>);
+
+/// Captured after the owned process group has stopped. Streams are separate;
+/// elapsed time covers the command, not individual hooks.
+pub(crate) struct DiagnosticOutput<'a> {
+    pub stdout: &'a [u8],
+    pub stderr: &'a [u8],
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub elapsed: Duration,
+    pub success: Option<bool>,
+    pub cancelled: bool,
+}
+
+type DiagnosticObserver<'a> = &'a mut dyn FnMut(DiagnosticOutput<'_>);
 
 fn send_progress(tx: &mpsc::SyncSender<Progress>, line: &[u8]) {
     let line = crate::auth::redact::text(&String::from_utf8_lossy(line));
@@ -262,6 +298,7 @@ pub(crate) fn run_with_stdin(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -280,6 +317,7 @@ pub(crate) fn run_to_file(
         None,
         Some(output),
         None,
+        None,
     )
 }
 
@@ -296,15 +334,65 @@ pub(crate) fn run_with_input(
         Some(input.to_vec()),
         None,
         None,
+        None,
     )
 }
 
+#[cfg(test)]
 pub(crate) fn run_with_deadline(
     command: &mut Command,
     cancel: &AtomicBool,
     deadline: Deadline,
 ) -> Result<Output, GitError> {
-    run_inner(command, cancel, deadline, Stdio::null(), None, None, None)
+    run_inner(
+        command,
+        cancel,
+        deadline,
+        Stdio::null(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Human-readable command output may be truncated while its actual exit status
+/// remains authoritative. Machine-readable callers keep the strict runner.
+pub(crate) fn run_diagnostic(
+    command: &mut Command,
+    cancel: &AtomicBool,
+    observer: DiagnosticObserver<'_>,
+) -> Result<Output, GitError> {
+    let start = Instant::now();
+    let mut delivered = false;
+    let result = {
+        let mut capture = |output: DiagnosticOutput<'_>| {
+            delivered = true;
+            observer(output);
+        };
+        run_inner(
+            command,
+            cancel,
+            Deadline::None,
+            Stdio::null(),
+            None,
+            None,
+            None,
+            Some(&mut capture),
+        )
+    };
+    if !delivered {
+        observer(DiagnosticOutput {
+            stdout: &[],
+            stderr: &[],
+            stdout_truncated: false,
+            stderr_truncated: false,
+            elapsed: start.elapsed(),
+            success: None,
+            cancelled: matches!(result, Err(GitError::Cancelled)),
+        });
+    }
+    result
 }
 
 fn run_inner(
@@ -315,13 +403,43 @@ fn run_inner(
     input: Option<Vec<u8>>,
     output_file: Option<std::fs::File>,
     mut on_progress: Option<&mut dyn FnMut(&str, Option<u8>)>,
+    mut observer: Option<DiagnosticObserver<'_>>,
 ) -> Result<Output, GitError> {
     if cancelled(cancel) {
         return Err(GitError::Cancelled);
     }
+    let system_git = command
+        .get_envs()
+        .any(|(name, value)| name == super::readiness::COMMAND_MARKER && value.is_some());
+    if system_git {
+        let readiness = super::readiness::check();
+        readiness
+            .require_ready()
+            .map_err(|stderr| GitError::Command {
+                cmd: "System Git readiness".into(),
+                stderr,
+            })?;
+        if readiness.executable.as_deref().map(Path::as_os_str) != Some(command.get_program()) {
+            return Err(GitError::Command {
+                cmd: "System Git readiness".into(),
+                stderr: "The selected Git executable changed. Retry the operation using the current Git check in Settings > Git.".into(),
+            });
+        }
+    }
+    let program = command.get_program().to_string_lossy().into_owned();
     let failure = |e: std::io::Error| GitError::Command {
-        cmd: "Git process".into(),
-        stderr: e.to_string(),
+        cmd: if system_git {
+            "System Git readiness"
+        } else {
+            "Background process"
+        }
+        .into(),
+        stderr: if system_git {
+            super::readiness::invalidate();
+            format!("Git at {program} stopped: {e}. Check this executable, then choose Retry Git check in Settings > Git.")
+        } else {
+            e.to_string()
+        },
     };
     command
         .stdin(stdin)
@@ -450,17 +568,28 @@ fn run_inner(
             .map_err(failure)?,
         None => (Vec::new(), false),
     };
-    let (stderr, _) = err_reader
+    let (stderr, stderr_truncated) = err_reader
         .join()
         .map_err(|_| failure(std::io::Error::other("stderr reader stopped")))?
         .map_err(failure)?;
+    if let Some(observer) = observer.as_mut() {
+        observer(DiagnosticOutput {
+            stdout: &stdout,
+            stderr: &stderr,
+            stdout_truncated,
+            stderr_truncated,
+            elapsed: start.elapsed(),
+            success: status.map(|s| s.success()),
+            cancelled: matches!(interrupted, Some(GitError::Cancelled)),
+        });
+    }
     if let Some(error) = interrupted {
         return Err(error);
     }
     if let Some(result) = input_result {
         result.map_err(failure)?;
     }
-    if stdout_truncated {
+    if stdout_truncated && observer.is_none() {
         return Err(failure(std::io::Error::other(
             "Command output exceeded 1 MiB; refusing an incomplete response.",
         )));
@@ -475,6 +604,52 @@ fn run_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn t11_diagnostic_observer_runs_once_for_spawn_failure_and_early_cancellation() {
+        for cancel in [false, true] {
+            let mut command = background_command("recorde-does-not-exist-output-fixture");
+            let mut observations = 0;
+            let result = run_diagnostic(&mut command, &AtomicBool::new(cancel), &mut |output| {
+                observations += 1;
+                assert!(output.stdout.is_empty() && output.stderr.is_empty());
+                assert_eq!(output.cancelled, cancel);
+                assert_eq!(output.success, None);
+            });
+            assert!(result.is_err());
+            assert_eq!(observations, 1);
+        }
+    }
+
+    #[test]
+    fn t11_diagnostic_output_bounds_both_streams_without_overriding_success() {
+        const TEST: &str = "git::process::tests::t11_diagnostic_output_bounds_both_streams_without_overriding_success";
+        if std::env::var_os("RECORDE_T11_DIAGNOSTIC_CHILD").is_some() {
+            for _ in 0..1200 {
+                println!("{}", "x".repeat(1024));
+                eprintln!("{}", "y".repeat(1024));
+            }
+            println!("stdout-tail");
+            eprintln!("stderr-tail");
+            return;
+        }
+        let mut command = background_command(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", TEST, "--nocapture"])
+            .env("RECORDE_T11_DIAGNOSTIC_CHILD", "1");
+        let mut observations = 0;
+        let result = run_diagnostic(&mut command, &AtomicBool::new(false), &mut |output| {
+            observations += 1;
+            assert!(output.stdout_truncated && output.stderr_truncated);
+            assert!(output.stdout.len() <= 1024 * 1024 && output.stderr.len() <= 1024 * 1024);
+            assert!(String::from_utf8_lossy(output.stdout).contains("stdout-tail"));
+            assert!(String::from_utf8_lossy(output.stderr).contains("stderr-tail"));
+            assert_eq!(output.success, Some(true));
+        })
+        .unwrap();
+        assert!(result.status.success());
+        assert_eq!(observations, 1);
+    }
 
     fn deadline_fixture() -> bool {
         let Ok(mode) = std::env::var("RECORDE_IDLE_FIXTURE") else {

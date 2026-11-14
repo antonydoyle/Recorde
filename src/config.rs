@@ -28,11 +28,44 @@ pub struct RepoConfig {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffPreferences {
+    #[serde(flatten)]
+    pub comparison: DiffComparison,
     #[serde(default)]
     pub whitespace: bool,
     pub split: bool,
     pub search_open: bool,
     pub search_query: String,
+}
+
+/// Presentation settings; canonical mutation patches always use the defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiffComparison {
+    pub diff_context_lines: u32,
+    pub ignore_whitespace: bool,
+    pub full_file: bool,
+}
+
+impl Default for DiffComparison {
+    fn default() -> Self {
+        Self {
+            diff_context_lines: 3,
+            ignore_whitespace: false,
+            full_file: false,
+        }
+    }
+}
+
+impl DiffComparison {
+    pub fn context_lines(self) -> u32 {
+        if self.full_file {
+            10_000
+        } else if [1, 3, 5, 10].contains(&self.diff_context_lines) {
+            self.diff_context_lines
+        } else {
+            3
+        }
+    }
 }
 
 /// Navigation only: no cached content, credentials or pending mutations are restored.
@@ -162,6 +195,9 @@ impl PullStrategy {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// Absolute installed Git CLI; empty keeps PATH discovery. Git is not bundled.
+    #[serde(default)]
+    pub git_executable: String,
     /// A failed load must never turn into an overwrite with default settings.
     #[serde(skip)]
     pub load_error: Option<String>,
@@ -490,5 +526,30 @@ mod session_tests {
         assert!(view.current_diff.is_none() && view.selected_commit_detail.is_none());
         assert!(decoded.diff_preferences.split);
         assert_eq!(repo.head().to_string(), oid);
+    }
+    #[test]
+    fn diff_comparison_preferences_round_trip_and_old_settings_default() {
+        let old: DiffPreferences =
+            toml::from_str("split = false\nsearch_open = false\nsearch_query = ''\n").unwrap();
+        assert_eq!(old.comparison, DiffComparison::default());
+        let preferences = DiffPreferences {
+            comparison: DiffComparison {
+                diff_context_lines: 10,
+                ignore_whitespace: true,
+                full_file: true,
+            },
+            ..Default::default()
+        };
+        let restored: DiffPreferences =
+            toml::from_str(&toml::to_string(&preferences).unwrap()).unwrap();
+        assert_eq!(restored, preferences);
+        assert_eq!(
+            DiffComparison {
+                diff_context_lines: u32::MAX,
+                ..Default::default()
+            }
+            .context_lines(),
+            3
+        );
     }
 }

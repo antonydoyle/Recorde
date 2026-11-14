@@ -18,26 +18,14 @@ pub fn reload_repo(state: SharedState) {
 // ── Checkout ─────────────────────────────────────────────────────────────────
 
 pub fn checkout_branch(branch_name: &str, state: SharedState) {
-    let name = branch_name.to_string();
-    let path = state.lock().unwrap().repo_path.clone();
-    let Some(path) = path else { return };
-    {
-        let mut s = state.lock().unwrap();
-        s.remote_op = Some(format!("Switching to {}...", name));
-        s.console_log.push(format!("$ checkout {}", name));
-    }
-
-    crate::git::mutation::spawn_operation(path, state, move |path| {
-        super::recovery::protect(path, "Switch branch", || {
-            do_checkout(path, &name).map_err(|e| e.message().to_string())
-        })
-    });
+    super::switch::request(super::switch::Target::Local(branch_name.into()), state);
 }
 
+#[cfg(test)]
 fn do_checkout(path: &Path, name: &str) -> Result<(), git2::Error> {
     let repo = git2::Repository::open(path)?;
     repo.find_branch(name, git2::BranchType::Local)?;
-    run_git_seq(path, &["checkout", name, "--"])
+    run_git_seq(path, &["checkout", "--no-overwrite-ignore", name, "--"])
         .map_err(|e| git2::Error::from_str(&e.user_message()))
 }
 
@@ -45,6 +33,16 @@ fn do_checkout(path: &Path, name: &str) -> Result<(), git2::Error> {
 
 /// Create a new branch. `from_oid` = commit to branch from (None = HEAD).
 pub fn create_branch(name: &str, from_oid: Option<&str>, checkout: bool, state: SharedState) {
+    if checkout {
+        super::switch::request(
+            super::switch::Target::New {
+                name: name.into(),
+                oid: from_oid.map(str::to_owned),
+            },
+            state,
+        );
+        return;
+    }
     let name = name.to_string();
     let from_oid = from_oid.map(str::to_owned);
     let path = state.lock().unwrap().repo_path.clone();
@@ -75,7 +73,7 @@ fn do_create(
     }
     let oid = commit.id().to_string();
     let args = if checkout {
-        vec!["checkout", "-b", name, &oid, "--"]
+        vec!["checkout", "--no-overwrite-ignore", "-b", name, &oid, "--"]
     } else {
         vec!["branch", "--", name, &oid]
     };
@@ -287,24 +285,13 @@ pub(crate) fn split_remote_branch(
 
 /// Check out a remote-tracking branch as a local branch that tracks it.
 pub fn checkout_remote_branch(shorthand: &str, state: SharedState) {
-    let name = shorthand.to_string();
-    let path = state.lock().unwrap().repo_path.clone();
-    let Some(path) = path else { return };
-    {
-        let mut s = state.lock().unwrap();
-        s.remote_op = Some(format!("Checking out {name}..."));
-        s.console_log.push(format!("$ checkout --track {name}"));
-    }
-    crate::git::mutation::spawn_operation(path, state, move |path| {
-        super::recovery::protect(path, "Switch branch", || {
-            do_checkout_remote(path, &name).map(|_| ())
-        })
-    });
+    super::switch::request(super::switch::Target::Remote(shorthand.into()), state);
 }
 
 /// Returns the local branch that was checked out. An existing local branch of
 /// the same name is reused only when it already tracks this remote branch; it
 /// is never moved or reset.
+#[cfg(test)]
 pub(crate) fn do_checkout_remote(path: &Path, shorthand: &str) -> Result<String, String> {
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
     let (_, branch) = split_remote_branch(&repo, shorthand)?;
@@ -322,7 +309,8 @@ pub(crate) fn do_checkout_remote(path: &Path, shorthand: &str) -> Result<String,
                  Check it out from Local branches, or create a branch from {shorthand} with another name."
             ));
         }
-        run_git_seq(path, &["checkout", &branch, "--"]).map_err(|e| e.user_message())?;
+        run_git_seq(path, &["checkout", "--no-overwrite-ignore", &branch, "--"])
+            .map_err(|e| e.user_message())?;
         return Ok(branch);
     }
     if !git2::Branch::name_is_valid(&branch).map_err(|e| e.to_string())? {
@@ -330,7 +318,15 @@ pub(crate) fn do_checkout_remote(path: &Path, shorthand: &str) -> Result<String,
     }
     run_git_seq(
         path,
-        &["checkout", "--track", "-b", &branch, &remote_ref, "--"],
+        &[
+            "checkout",
+            "--no-overwrite-ignore",
+            "--track",
+            "-b",
+            &branch,
+            &remote_ref,
+            "--",
+        ],
     )
     .map_err(|e| e.user_message())?;
     Ok(branch)
@@ -625,26 +621,25 @@ fn confirmed_repository(state: &crate::state::AppState, path: &Path, epoch: u64)
 // ── Checkout detached HEAD ────────────────────────────────────────────────────
 
 pub fn checkout_detached(oid_str: &str, state: SharedState) {
-    let oid_s = oid_str.to_string();
-    let path = state.lock().unwrap().repo_path.clone();
-    let Some(path) = path else { return };
-    {
-        let mut s = state.lock().unwrap();
-        s.remote_op = Some("Checking out…".into());
-    }
-    crate::git::mutation::spawn_operation(path, state, move |path| {
-        super::recovery::protect(path, "Detached checkout", || {
-            do_checkout_detached(path, &oid_s).map_err(|e| e.message().to_string())
-        })
-    });
+    super::switch::request(super::switch::Target::Detached(oid_str.into()), state);
 }
 
+#[cfg(test)]
 fn do_checkout_detached(path: &Path, oid_str: &str) -> Result<(), git2::Error> {
     // Validate the revision before passing it to Git. Let Git perform the safe
     // checkout and HEAD update together, including its dirty-worktree checks.
     let oid = git2::Oid::from_str(oid_str)?;
-    run_git_seq(path, &["checkout", "--detach", &oid.to_string()])
-        .map_err(|e| git2::Error::from_str(&e.user_message()))
+    run_git_seq(
+        path,
+        &[
+            "checkout",
+            "--no-overwrite-ignore",
+            "--detach",
+            &oid.to_string(),
+            "--",
+        ],
+    )
+    .map_err(|e| git2::Error::from_str(&e.user_message()))
 }
 
 // ── Delete branch ─────────────────────────────────────────────────────────────
@@ -807,10 +802,26 @@ pub fn stash_branch(branch_name: &str, target: StashTarget, state: SharedState) 
 
 fn do_stash_branch(path: &Path, name: &str, target: &StashTarget) -> Result<(), String> {
     target.validate(path)?;
-    // A raw object ID makes Git apply the reviewed stash even if an external
-    // client changes refs/stash; unlike stash@{n}, it does not auto-drop it.
-    run_git_seq(path, &["stash", "branch", "--", name, &target.oid])
-        .map_err(|e| e.user_message())?;
+    let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+    if !git2::Branch::name_is_valid(name).map_err(|e| e.to_string())? {
+        return Err("Invalid branch name.".into());
+    }
+    let stash = repo
+        .find_commit(git2::Oid::from_str(&target.oid).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let base = stash.parent_id(0).map_err(|e| e.to_string())?.to_string();
+    retain_stash(path, target)?;
+    // `git stash branch` performs an internal checkout without the ignored-file
+    // guard. Split the operation, keeping the exact stash on any partial failure.
+    run_git_seq(
+        path,
+        &["checkout", "--no-overwrite-ignore", "-b", name, &base, "--"],
+    )
+    .map_err(|e| e.user_message())?;
+    target
+        .validate(path)
+        .map_err(|e| format!("Checked out {name}; saved work was retained and not applied: {e}"))?;
+    run_git_seq(path, &["stash", "apply", "--index", &target.oid]).map_err(|e|format!("Checked out {name}; restore stopped and the stash was retained. Inspect files before retrying: {}",e.user_message()))?;
     do_stash_drop(path, target)
 }
 
@@ -841,7 +852,16 @@ pub fn stash_drop(target: StashTarget, state: SharedState) {
 
 fn do_stash_drop(path: &Path, target: &StashTarget) -> Result<(), String> {
     target.validate(path)?;
+    retain_stash(path, target)?;
+    // Recheck after saving the recovery ref and before touching the reflog.
+    target.validate(path)?;
     let mut repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
+    repo.stash_drop(target.index).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn retain_stash(path: &Path, target: &StashTarget) -> Result<(), String> {
+    let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
     let oid = git2::Oid::from_str(&target.oid).map_err(|e| e.to_string())?;
     let reference = target.recovery_ref();
     match repo.find_reference(&reference) {
@@ -855,9 +875,6 @@ fn do_stash_drop(path: &Path, target: &StashTarget) -> Result<(), String> {
         }
         Err(error) => return Err(error.to_string()),
     }
-    // Recheck after saving the recovery ref and before touching the reflog.
-    target.validate(path)?;
-    repo.stash_drop(target.index).map_err(|e| e.to_string())?;
     Ok(())
 }
 

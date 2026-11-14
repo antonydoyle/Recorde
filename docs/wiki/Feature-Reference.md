@@ -16,6 +16,9 @@
 - Hide and reorder graph columns, choose relative/ISO date/UTC date-time, and save choices per repository.
 - Select commits and inspect changed files.
 - Load commit diffs and working tree diffs.
+- Save diff context (1, 3, 5 or 10 lines), ignore-whitespace comparison and full-file viewing per repository from the diff display menu. Full-file viewing is bounded to 1 MiB and 10,000 diff lines; larger files need an external viewer.
+- Display a notice when whitespace-only changes are hidden. Partial staging, unstaging and discarding use the canonical patch and affect only selected visible changed lines; whole-file operations still include every change. Binary and renamed files require whole-file operations.
+- Text files above 1 MiB use a bounded binary preview. Patch export preserves canonical binary payloads within the 4 MiB patch limit; an oversized patch is refused with guidance to use an external viewer.
 - Compare two commits.
 - View file history and blame data.
 - Open reflog and recover commits to a branch.
@@ -36,6 +39,7 @@
 - Stage selected lines.
 - Export and import patch files.
 - Create and amend commits.
+- Expand **Commit output** below the composer to inspect bounded, redacted Git/hook diagnostics after completion or cancellation. The status shows total Git-command time and offers **Cancel commit** while running. Streams reflect Git's stdout/stderr routing (Git may redirect hook stdout to stderr), rather than individual hook timing or chronological interleaving. Failed/cancelled attempts retain the draft; if HEAD or staged content changed, inspect the reported state before retrying.
 - Reset `HEAD` with soft, mixed, or hard mode.
 - Stash all changes, optionally including untracked files, or a single file.
 - Edit UTF-8 working-tree text files in the built-in editor, with external-change checks before saving.
@@ -45,6 +49,10 @@
 ## Branches and Tags
 
 - Checkout branch (double-click in the sidebar).
+- Review a witnessed switch from local/remote branches, new branches, detached commits and fetched reviews: Bring changes, Stash and switch, or Cancel. Changed repository sessions, branch targets or working files require a fresh review. Save or discard an open editor draft before confirming.
+- Stash and switch saves staged, unstaged and untracked files, then leaves them saved until an explicit **Saved work → Review restore → Restore saved work**. Restore preserves the staging split with `stash apply --index`; it never pops or automatically drops the stash. Ignored files and empty untracked directories are not stashed. A checkout that would overwrite ignored files is refused.
+- Saved-work records survive restart and retain the exact stash object through reordering, removal from the stash list and garbage collection. An interrupted stash creation can use **Recover saved-work record** only when its unique marker and original HEAD/index/files identify the saved object. This repairs the record without repeating checkout or applying files. Interrupted or failed restores require inspection and cannot be applied again through the same record.
+- Conflicted, failed or cancelled switches/restores keep saved work and explain the observed state. Existing Git Flow transactions and branch-from-stash actions retain their own workflows with ignored-file collision refusal. New branch/tracking configuration changes are not promised automatic Undo; dirty submodules and unborn repositories require preparation first.
 - Check out a remote branch as a local tracking branch.
 - Create branch from `HEAD`, a selected commit, a remote branch, or stash.
 - Rename branch.

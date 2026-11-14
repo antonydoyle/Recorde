@@ -246,13 +246,19 @@ pub(crate) fn configured_git_tool(
 }
 
 /// Start a user-owned Git tool without a supervised deadline or mutation lock.
-/// `background_command` only hides Git's console; it adds no job or kill-on-drop.
+/// `raw_background_command` only hides Git's console; it adds no job or kill-on-drop.
 pub(crate) fn spawn_git_tool(
     repo: &std::path::Path,
     args: &[String],
 ) -> Result<std::process::Child, String> {
-    let mut command = crate::git::process::background_command("git");
+    let readiness = crate::git::readiness::check();
+    readiness.require_ready()?;
+    let executable = readiness
+        .executable
+        .ok_or("System Git executable is unavailable. Retry Git check in Settings > Git.")?;
+    let mut command = crate::git::process::raw_background_command(&executable);
     command
+        .env("RECORDE_GIT_EXECUTABLE", &executable)
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -264,6 +270,86 @@ pub(crate) fn spawn_git_tool(
     command
         .spawn()
         .map_err(|e| format!("Could not launch Git tool: {e}"))
+}
+
+type ToolLaunch = Box<dyn FnOnce() + Send>;
+
+/// A click only enqueues work. Readiness may be waiting for another bounded probe;
+/// neither that wait nor repository/configuration reads belong on the UI thread.
+fn queue_tool_launch(work: ToolLaunch) -> Result<(), String> {
+    use std::sync::{mpsc, OnceLock};
+    static QUEUE: OnceLock<Result<mpsc::SyncSender<ToolLaunch>, String>> = OnceLock::new();
+    let sender = QUEUE
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::sync_channel::<ToolLaunch>(8);
+            std::thread::Builder::new()
+                .name("git-tool-launcher".into())
+                .spawn(move || {
+                    for launch in rx {
+                        launch();
+                    }
+                })
+                .map_err(|error| format!("Could not prepare the Git tool launcher: {error}"))?;
+            Ok(tx)
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
+    sender.try_send(work).map_err(|error| match error {
+        mpsc::TrySendError::Full(_) => {
+            "External tool launch queue is full. Wait for the pending Git checks, then retry."
+                .into()
+        }
+        mpsc::TrySendError::Disconnected(_) => {
+            "External tool launcher stopped. Restart Recorde and retry.".into()
+        }
+    })
+}
+
+/// Bound preparation work; intentionally opened tools remain user-owned. Waiting
+/// for a tool to close never occupies the launch queue or a repository lock.
+pub(crate) fn launch_git_tool(
+    repo: std::path::PathBuf,
+    state: crate::state::SharedState,
+    label: &'static str,
+    refresh: bool,
+    prepare: impl FnOnce() -> Result<std::process::Child, String> + Send + 'static,
+) -> Result<(), String> {
+    let epoch = state.lock().unwrap().repo_epoch;
+    queue_tool_launch(Box::new(move || {
+        let report_state = state.clone();
+        let report_repo = repo.clone();
+        let report = move |error: String| {
+            let mut state = report_state.lock().unwrap();
+            if state.repo_path.as_ref() == Some(&report_repo) && state.repo_epoch == epoch {
+                state.error = Some(error);
+            }
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(prepare))
+            .unwrap_or_else(|_| {
+                Err("Git tool preparation stopped unexpectedly. Retry the launch.".into())
+            });
+        match result {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    match child.wait() {
+                        Err(error) => report(format!("{label} tool failed: {error}")),
+                        Ok(status) if !status.success() => {
+                            report(format!("{label} tool exited with {status}."))
+                        }
+                        Ok(_) => {}
+                    }
+                    let current = {
+                        let state = state.lock().unwrap();
+                        state.repo_path.as_ref() == Some(&repo) && state.repo_epoch == epoch
+                    };
+                    if refresh && current {
+                        crate::git::operations::refresh_worktree(state);
+                    }
+                });
+            }
+            Err(error) => report(error),
+        }
+    }))
 }
 
 fn diff_tool_args(tool: Option<&str>, extra: &[String], path: &str) -> Vec<String> {
@@ -280,7 +366,32 @@ fn commit_diff_range(oid: &str, parent: Option<&str>) -> Vec<String> {
 }
 
 /// Launch a diff tool for a worktree, staged, or commit file.
-pub fn open_diff_tool(repo: &std::path::Path, request: DiffToolArgs<'_>) -> Result<(), String> {
+pub fn open_diff_tool(
+    repo: &std::path::Path,
+    request: DiffToolArgs<'_>,
+    state: crate::state::SharedState,
+) -> Result<(), String> {
+    let (path, oid, staged) = match request {
+        DiffToolArgs::Unstaged { path } => (path.to_owned(), None, false),
+        DiffToolArgs::Staged { path } => (path.to_owned(), None, true),
+        DiffToolArgs::Commit { path, oid } => (path.to_owned(), Some(oid.to_owned()), false),
+    };
+    let repo = repo.to_path_buf();
+    let work_repo = repo.clone();
+    launch_git_tool(repo, state, "Diff", false, move || {
+        let request = match oid.as_deref() {
+            Some(oid) => DiffToolArgs::Commit { path: &path, oid },
+            None if staged => DiffToolArgs::Staged { path: &path },
+            None => DiffToolArgs::Unstaged { path: &path },
+        };
+        prepare_diff_tool(&work_repo, request)
+    })
+}
+
+fn prepare_diff_tool(
+    repo: &std::path::Path,
+    request: DiffToolArgs<'_>,
+) -> Result<std::process::Child, String> {
     let path = match &request {
         DiffToolArgs::Unstaged { path }
         | DiffToolArgs::Staged { path }
@@ -320,11 +431,7 @@ pub fn open_diff_tool(repo: &std::path::Path, request: DiffToolArgs<'_>) -> Resu
     } else {
         None
     };
-    let mut child = spawn_git_tool(repo, &diff_tool_args(explicit, &extra, path))?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    spawn_git_tool(repo, &diff_tool_args(explicit, &extra, path))
 }
 
 pub(crate) fn merge_tool_args(tool: Option<&str>, path: &str) -> Vec<String> {

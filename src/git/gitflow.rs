@@ -172,7 +172,18 @@ pub fn start(path: &Path, kind: Kind, name: &str) -> Result<String, String> {
     }
     repo.find_branch(base, git2::BranchType::Local)
         .map_err(|_| format!("Branch {base} does not exist."))?;
-    run_git_seq(path, &["checkout", "-b", &branch, base, "--"]).map_err(|e| e.user_message())?;
+    run_git_seq(
+        path,
+        &[
+            "checkout",
+            "--no-overwrite-ignore",
+            "-b",
+            &branch,
+            base,
+            "--",
+        ],
+    )
+    .map_err(|e| e.user_message())?;
     Ok(branch)
 }
 
@@ -214,14 +225,40 @@ fn merge_into(path: &Path, target: &str, source: &str) -> Result<(), String> {
     {
         return Ok(());
     }
-    run_git_seq(path, &["checkout", target, "--"]).map_err(|e| e.user_message())?;
-    run_git_seq(path, &["merge", "--no-ff", "--no-edit", "--", source]).map_err(|e| {
+    let check = || {
+        super::ignored::Guard::prepare(path, &[target, source])
+            .and_then(|g| g.validate())
+            .map_err(flow_phase_error)
+    };
+    check()?;
+    run_git_seq(path, &["checkout", "--no-overwrite-ignore", target, "--"])
+        .map_err(|e| e.user_message())?;
+    let ignored =
+        super::ignored::Guard::prepare(path, &[target, source]).map_err(flow_phase_error)?;
+    ignored.validate().map_err(flow_phase_error)?;
+    let source = ignored.operand(1);
+    run_git_seq(
+        path,
+        &[
+            "merge",
+            "--no-overwrite-ignore",
+            "--no-ff",
+            "--no-edit",
+            "--",
+            &source,
+        ],
+    )
+    .map_err(|e| {
         format!(
             "Merging {source} into {target} stopped: {}. Resolve and commit the merge, \
              then choose Finish again.",
             e.user_message()
         )
     })
+}
+
+fn flow_phase_error(error: String) -> String {
+    format!("Git Flow stopped at a safety check. Earlier checkout, merge or tag phases may already have completed; inspect repository state before retrying. {error}")
 }
 
 /// Merge the branch back, tag releases and hotfixes, then delete the branch.
@@ -239,6 +276,11 @@ pub fn finish(path: &Path, kind: Kind, name: &str) -> Result<String, String> {
     }
     let repo = git2::Repository::open(path).map_err(|e| e.to_string())?;
     let finished_tip = tip(&repo, &branch)?;
+    let mut inputs = vec![branch.as_str(), flow.develop.as_str()];
+    if kind != Kind::Feature {
+        inputs.push(flow.main.as_str());
+    }
+    super::ignored::Guard::prepare(path, &inputs)?.validate()?;
     // Validate every destination before checkout or merge changes repository state.
     tip(&repo, &flow.develop)?;
     let release_tag = if kind == Kind::Feature {
@@ -286,7 +328,14 @@ pub fn finish(path: &Path, kind: Kind, name: &str) -> Result<String, String> {
         }
         merge_into(path, &flow.develop, &branch)?;
     }
-    run_git_seq(path, &["checkout", &flow.develop, "--"]).map_err(|e| e.user_message())?;
+    super::ignored::Guard::prepare(path, &[&flow.develop])
+        .and_then(|g| g.validate())
+        .map_err(flow_phase_error)?;
+    run_git_seq(
+        path,
+        &["checkout", "--no-overwrite-ignore", &flow.develop, "--"],
+    )
+    .map_err(|e| e.user_message())?;
     // `branch -d` consults the branch's upstream, which may lag behind a
     // correctly finished local feature. Verify our actual destinations and
     // delete only the exact tip reviewed above instead.
@@ -328,6 +377,34 @@ pub fn finish(path: &Path, kind: Kind, name: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn t15_flow_switches_refuse_ignored_collisions_without_changes() {
+        use crate::git::test_support::{ignored_collision, snapshot};
+        for kind in 0..3 {
+            let (repo, target) = ignored_collision();
+            let flow = FlowConfig {
+                develop: "destination".into(),
+                ..FlowConfig::default()
+            };
+            init(repo.path(), &flow).unwrap();
+            if kind == 2 {
+                repo.git_ok(&["branch", "feature/work", &target.to_string()]);
+            }
+            let before = snapshot(repo.path());
+            let result = match kind {
+                0 => start(repo.path(), Kind::Feature, "work").map(|_| ()),
+                1 => merge_into(repo.path(), "destination", "main"),
+                _ => finish(repo.path(), Kind::Feature, "work").map(|_| ()),
+            };
+            let error = result.unwrap_err();
+            assert!(
+                error.contains("overwritten") || error.contains("cannot prove"),
+                "flow checkout kind {kind}: {error}"
+            );
+            assert_eq!(snapshot(repo.path()), before, "flow checkout kind {kind}");
+        }
+    }
 
     fn initialized() -> TestRepo {
         let repo = TestRepo::new();

@@ -27,24 +27,30 @@ pub fn rebase_onto(branch_name: &str, state: SharedState) {
         s.console_log.push(format!("$ git rebase {}", name));
     }
 
-    crate::git::mutation::spawn_operation(path, state, move |path| {
-        super::recovery::protect_sequence(path, "Rebase", || {
-            verify_merge_resolutions(path, &name)?;
-            run_git_seq(
-                path,
-                &[
-                    "-c",
-                    "rebase.updateRefs=false",
-                    "rebase",
-                    "--rebase-merges",
-                    "--no-autostash",
-                    "--",
-                    &name,
-                ],
-            )
-            .map_err(|e| e.user_message())
-        })
-    });
+    crate::git::mutation::spawn_operation(path, state, move |path| do_rebase_onto(path, &name));
+}
+
+pub(crate) fn do_rebase_onto(path: &Path, name: &str) -> Result<(), String> {
+    let ignored = super::ignored::Guard::prepare(path, &[name])?;
+    let target = ignored.operand(0);
+    super::recovery::protect_sequence(path, "Rebase", || {
+        ignored.validate()?;
+        verify_merge_resolutions(path, &target)?;
+        ignored.validate()?;
+        run_git_seq(
+            path,
+            &[
+                "-c",
+                "rebase.updateRefs=false",
+                "rebase",
+                "--rebase-merges",
+                "--no-autostash",
+                "--",
+                &target,
+            ],
+        )
+        .map_err(|e| e.user_message())
+    })
 }
 
 pub fn continue_rebase(state: SharedState) {
@@ -637,7 +643,7 @@ impl PlanTarget {
         Ok(())
     }
 
-    fn execute_guarded(
+    pub(crate) fn execute_guarded(
         &self,
         upstream: &str,
         entries: &[RebaseEntry],
@@ -645,9 +651,11 @@ impl PlanTarget {
     ) -> Result<(), String> {
         check_session()?;
         self.validate()?;
+        let ignored = super::ignored::Guard::prepare(&self.path, &[upstream])?;
         super::recovery::protect_sequence(&self.path, "Interactive rebase", || {
             check_session()?;
             self.validate()?;
+            ignored.validate()?;
             execute(&self.path, upstream, entries)
         })
     }
@@ -749,6 +757,7 @@ fn execute(repo_path: &Path, upstream_oid: &str, entries: &[RebaseEntry]) -> Res
             .is_ok_and(|c| c.parent_count() > 1)
     });
     verify_merge_entries(repo_path, &repo, entries)?;
+    let ignored = super::ignored::Guard::prepare(repo_path, &[upstream_oid])?;
     let directory = repo.path().join("recorde/rebases");
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let tmp = tempfile::Builder::new()
@@ -794,7 +803,8 @@ fn execute(repo_path: &Path, upstream_oid: &str, entries: &[RebaseEntry]) -> Res
         "--reapply-cherry-picks",
         "--empty=keep",
         "--reschedule-failed-exec",
-        "--no-update-refs",
+        // The config override above disables updateRefs on every supported Git;
+        // --no-update-refs itself was only added in Git 2.38.
         "--no-autosquash",
     ]);
     if preserve_merges {
@@ -804,6 +814,7 @@ fn execute(repo_path: &Path, upstream_oid: &str, entries: &[RebaseEntry]) -> Res
         "GIT_SEQUENCE_EDITOR",
         format!("sh {}", quote_shell(&git_path(&editor.to_string_lossy()))),
     );
+    ignored.validate()?;
     let result = super::process::run(
         &mut command,
         &std::sync::atomic::AtomicBool::new(false),
@@ -1084,6 +1095,25 @@ mod squash_tests {
 mod tests {
     use super::*;
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn command_config_keeps_other_branches_when_user_enables_update_refs() {
+        let repo = TestRepo::new();
+        let base = repo.commit("base", b"base\n");
+        let first = repo.commit("one", b"one\n");
+        repo.git_ok(&["branch", "keep-tip", &first.to_string()]);
+        repo.commit("two", b"two\n");
+        repo.git_ok(&["config", "rebase.updateRefs", "true"]);
+        let mut entries = load_rebase_entries(repo.path(), &base.to_string()).unwrap();
+        entries[0].action = RebaseAction::Reword;
+        entries[0].message = "rewritten first commit".into();
+        execute(repo.path(), &base.to_string(), &entries).unwrap();
+        assert_eq!(
+            repo.open().refname_to_id("refs/heads/keep-tip").unwrap(),
+            first
+        );
+        assert_ne!(repo.head(), first);
+    }
 
     #[test]
     fn streamed_history_listing_accepts_more_than_the_diagnostic_pipe_limit() {

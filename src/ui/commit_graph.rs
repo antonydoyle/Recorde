@@ -23,6 +23,7 @@ const HASH_W_MIN: f32 = 54.0;
 const LANE_W: f32 = 18.0;
 const DOT_R: f32 = 6.0;
 const DOT_R_SEL: f32 = 8.0;
+const AVATAR_R: f32 = 11.0;
 const GRAPH_LEFT: f32 = 10.0;
 const HEADER_H: f32 = 34.0;
 const NAVIGATION_H: f32 = 52.0;
@@ -378,7 +379,7 @@ impl CommitGraphView {
                 ui.label(format!("Destination: {}", preview.destination.label()));
                 ui.horizontal(|ui| {
                     for action in [Action::Merge, Action::Rebase, Action::CherryPick, Action::Revert] {
-                        ui.add_enabled_ui(preview.allows(action), |ui| { ui.radio_value(&mut preview.action, action, action.label()); });
+                        ui.add_enabled_ui(preview.allows(action), |ui| { crate::ui::kit::radio_value(ui, &mut preview.action, action, action.label()); });
                     }
                 });
                 ui.strong(preview.description());
@@ -535,7 +536,7 @@ impl CommitGraphView {
                     ui.label(egui::RichText::new("⌕").size(14.0).color(theme::text_muted()));
                     ui.add_space(6.0);
                     let r = ui.add(
-                        egui::TextEdit::singleline(&mut new_query)
+                        crate::ui::kit::compact_text_field(&mut new_query)
                             .id(egui::Id::new("graph_search"))
                             .desired_width(300.0)
                             .margin(egui::Vec2::new(8.0, 5.0))
@@ -627,16 +628,18 @@ impl CommitGraphView {
                 ui.add_space(10.0);
                 let (dirty, loading) = { let s = self.state.lock().unwrap(); (s.dirty_count, s.repo_load_path.is_some()) };
                 if ui
-                    .button(format!("Working changes ({dirty})"))
-                    .on_hover_text("Review uncommitted changes and create a commit.")
+                    .button(format!("Changes ({dirty})"))
+                    .on_hover_text("Go to your uncommitted changes and the commit form.")
                     .clicked()
                 {
                     let mut s = self.state.lock().unwrap();
                     s.selected_commit = None; s.selected_commit_detail = None; s.current_diff = None; s.focused_pane = 3;
                 }
                 if ui
-                    .button("Jump to HEAD")
-                    .on_hover_text("Show the current commit in history.")
+                    .button("Current commit")
+                    .on_hover_text(
+                        "Scroll history to the commit you have checked out (Git calls it HEAD).",
+                    )
                     .clicked()
                 {
                     if let Some(oid) = &graph.head_oid {
@@ -647,7 +650,18 @@ impl CommitGraphView {
                 ui.menu_button("Columns", |ui| self.preferences_menu(ui))
                     .response
                     .on_hover_text("Choose which history columns to show.");
-                ui.label(format!("{} commits", graph.nodes.len()));
+                // A muted count, not a button-row peer: it reports, it does nothing.
+                let count = graph.nodes.len();
+                ui.add_space(crate::ui::kit::space::XS);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{count} {}{}",
+                        if count == 1 { "commit" } else { "commits" },
+                        if graph.has_more { " loaded" } else { "" }
+                    ))
+                    .size(theme::font_size::SMALL)
+                    .color(theme::text_muted()),
+                );
                 if graph.order_may_refine && graph.has_more { ui.label("Progressive history").on_hover_text("History loads without writing an index. As more commits load, rows may move to keep children before parents when commit clocks differ. Optimize History builds Git's index for stable ordering."); }
                 if graph.replacement_refs { ui.colored_label(theme::accent_yellow(), "Replacement history").on_hover_text("This graph and commit detail honor Git replacement objects. Original commit IDs are retained; replacement metadata and ancestry are shown."); }
                 if graph.has_more && ui.add_enabled(!loading, Button::new("More...")).clicked() {
@@ -841,7 +855,9 @@ impl CommitGraphView {
                             .on_hover_text(
                                 "Your uncommitted work. Select to review changes and commit.",
                             );
-                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), selected.is_none(), "Working tree: uncommitted changes"));
+                        let dirty = self.state.lock().unwrap().dirty_count;
+                        let wip_label = format!("Uncommitted changes ({dirty})");
+                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), selected.is_none(), &wip_label));
                         ui.ctx().accesskit_node_builder(response.id, |node| {
                             node.set_role(egui::accesskit::Role::ListBoxOption);
                             node.set_selected(selected.is_none());
@@ -885,24 +901,15 @@ impl CommitGraphView {
                             DOT_R,
                             Stroke::new(2.0, theme::accent_yellow()),
                         );
-                        let dirty = self.state.lock().unwrap().dirty_count;
-                        painter.with_clip_rect(Rect::from_min_max(
-                            Pos2::new(origin.x + refs_offset, rect.top()),
-                            Pos2::new(origin.x + refs_offset + refs_w, rect.bottom()),
-                        ).intersect(painter.clip_rect())).text(
-                            Pos2::new(origin.x + refs_offset + 10.0, rect.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            "Working tree",
-                            FontId::proportional(13.0),
-                            theme::accent_yellow(),
-                        );
+                        // The hollow node already marks this row, so the refs
+                        // column stays empty instead of naming it a second time.
                         painter.with_clip_rect(Rect::from_min_max(
                             Pos2::new(origin.x + commit_offset, rect.top()),
                             Pos2::new(origin.x + commit_offset + commit_w, rect.bottom()),
                         ).intersect(painter.clip_rect())).text(
                             Pos2::new(origin.x + commit_offset + 4.0, rect.center().y),
                             egui::Align2::LEFT_CENTER,
-                            format!("Uncommitted changes ({dirty})"),
+                            wip_label,
                             FontId::proportional(13.0),
                             theme::text_primary(),
                         );
@@ -1127,11 +1134,12 @@ impl CommitGraphView {
                         )
                         .on_hover_text(format!("{} UTC", format_graph_date(node.time, GraphDateFormat::DateTime)));
                         // Author indicator attached to the graph, icon-only.
-                        let author_x = (dot_x + 18.0).min(origin.x + graph_offset + graph_w - 14.0);
+                        // Radius 11 keeps two initials legible (about 9 px text).
+                        let author_x = (dot_x + 22.0).min(origin.x + graph_offset + graph_w - 16.0);
                         let author_pos = Pos2::new(author_x, cy);
-                        widgets::avatar_for(&graph_painter, author_pos, 8.5, &node.author, &node.author_email);
+                        widgets::avatar_for(&graph_painter, author_pos, AVATAR_R, &node.author, &node.author_email);
                         if graph_w > 0.0 { ui.interact(
-                            Rect::from_center_size(author_pos, Vec2::splat(22.0)).intersect(graph_painter.clip_rect()),
+                            Rect::from_center_size(author_pos, Vec2::splat(AVATAR_R * 2.0 + 4.0)).intersect(graph_painter.clip_rect()),
                             egui::Id::new(("author_avatar", &node.oid)),
                             Sense::hover(),
                         )
@@ -1414,7 +1422,7 @@ impl CommitGraphView {
             if ui.button("Clear graph filters").clicked() {
                 filter = Default::default();
             }
-            ui.add(egui::TextEdit::singleline(&mut self.ref_query).hint_text("Find branch or tag"));
+            ui.add(crate::ui::kit::text_field(&mut self.ref_query).hint_text("Find branch or tag"));
             egui::ScrollArea::vertical()
                 .id_salt("graph_ref_filters")
                 .max_height(200.0)
@@ -1447,9 +1455,9 @@ impl CommitGraphView {
                 "Commit range: commits reachable from End, excluding Start and its ancestors.",
             );
             ui.add(
-                egui::TextEdit::singleline(&mut self.range_start).hint_text("Start ref or commit"),
+                crate::ui::kit::text_field(&mut self.range_start).hint_text("Start ref or commit"),
             );
-            ui.add(egui::TextEdit::singleline(&mut self.range_end).hint_text("End ref or commit"));
+            ui.add(crate::ui::kit::text_field(&mut self.range_end).hint_text("End ref or commit"));
             if ui
                 .add_enabled(
                     !self.range_start.trim().is_empty() && !self.range_end.trim().is_empty(),
@@ -1512,17 +1520,20 @@ impl CommitGraphView {
         }
         ui.separator();
         ui.label("Date format");
-        ui.radio_value(
+        crate::ui::kit::radio_value(
+            ui,
             &mut self.preferences.date_format,
             GraphDateFormat::Relative,
             "Relative (2h ago)",
         );
-        ui.radio_value(
+        crate::ui::kit::radio_value(
+            ui,
             &mut self.preferences.date_format,
             GraphDateFormat::Date,
             "Date (YYYY-MM-DD, UTC)",
         );
-        ui.radio_value(
+        crate::ui::kit::radio_value(
+            ui,
             &mut self.preferences.date_format,
             GraphDateFormat::DateTime,
             "Date and time (UTC)",

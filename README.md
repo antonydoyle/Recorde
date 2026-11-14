@@ -17,6 +17,15 @@ Start with:
 - [Packaging](docs/wiki/Packaging.md) for platform prerequisites, including the
   Microsoft Visual C++ x64 runtime required by Windows MSVC builds.
 
+## Roadmap
+
+Planned work is tracked on the Recorde Product Roadmap
+board. The `T1`–`T13` cards in its Backlog list are ordered by run sequence and
+derive from the [gap analysis](docs/wiki/GitKraken-Gap-Analysis.md) and the
+[parity review](docs/reviews/2026-10-27-parity-review.md). Each card states its
+evidence, target files, and the local command that verifies it, since hosted CI is
+currently paused.
+
 ## Local test builds
 
 Windows and Linux validation uses bounded task runners, isolated test repositories,
@@ -26,3 +35,7 @@ generated executables, process logs and smoke-test repositories are not committe
 
 The [gap analysis](docs/wiki/GitKraken-Gap-Analysis.md) records completed acceptance
 checks and remaining limits. macOS acceptance and executable signing are parked.
+
+## Roadmap analysis
+
+The preserved GitKraken analysis and review provenance are indexed in [docs/analysis/gitkraken-2026-11-04/README.md](docs/analysis/gitkraken-2026-11-04/README.md). Read the limitations before using historical findings.

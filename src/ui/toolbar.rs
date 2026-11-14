@@ -74,13 +74,20 @@ impl OverflowKind {
 }
 
 // Approximate rendered widths of each left-section group (buttons + spacers)
-const REPO_PILL_MIN_W: f32 = 110.0; // repo name capped at this
+
 const SYNC_GROUP_W: f32 = 280.0; // Fetch + Pull + Push
 const BRANCH_OPS_W: f32 = 260.0; // New Branch + Stash
 const FILTER_W: f32 = 148.0; // All Branches toggle
 const OVERFLOW_BTN_W: f32 = 46.0; // the ⋯ button
                                   // Minimum width we keep on the right before overflow kicks in
-const RIGHT_MIN_W: f32 = 580.0;
+                                  // (one 32-pixel icon and its 4-pixel gap fewer since the theme toggle moved to View).
+const RIGHT_MIN_W: f32 = 544.0;
+// Text labels on the History and Integrations buttons add this much width. They
+// appear only when the left section still fits Fetch/Pull/Push and New Branch/
+// Stash beside them; narrower windows keep the icon-only buttons.
+const RIGHT_LABELS_EXTRA_W: f32 = 152.0;
+const LABELLED_TOOLBAR_MIN_W: f32 =
+    RIGHT_MIN_W + RIGHT_LABELS_EXTRA_W + SYNC_GROUP_W + BRANCH_OPS_W + OVERFLOW_BTN_W;
 
 pub struct Toolbar {
     state: SharedState,
@@ -94,8 +101,6 @@ impl Toolbar {
     pub fn show(
         &mut self,
         root_ui: &mut egui::Ui,
-        recent_repos: &[PathBuf],
-        dark_theme: bool,
         search_active: bool,
         show_all_branches: bool,
         enabled: bool,
@@ -124,7 +129,9 @@ impl Toolbar {
                 let total_w = r.width() - 24.0;
 
                 // Left section gets everything minus the guaranteed right section
-                let left_w = (total_w - RIGHT_MIN_W).max(REPO_PILL_MIN_W + OVERFLOW_BTN_W + 20.0);
+                let labelled = total_w >= LABELLED_TOOLBAR_MIN_W;
+                let right_w = RIGHT_MIN_W + if labelled { RIGHT_LABELS_EXTRA_W } else { 0.0 };
+                let left_w = (total_w - right_w).max(OVERFLOW_BTN_W + 20.0);
 
                 ui.horizontal_centered(|ui| {
                     let (has_repo, dirty, op_label) = {
@@ -144,83 +151,8 @@ impl Toolbar {
                         egui::Vec2::new(left_w, 62.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                            // ── Repo pill (always visible) ────────────────
-                            {
-                                let (repo_path, name) = {
-                                    let s = self.state.lock().unwrap();
-                                    let rp = s.repo_path.clone();
-                                    let n = rp
-                                        .as_ref()
-                                        .and_then(|p| p.file_name())
-                                        .map(|n| n.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| "No repo".into());
-                                    (rp, n)
-                                };
-                                // Truncate long repo names so the pill doesn't consume the budget
-                                let display = if name.len() > 18 {
-                                    format!("{}…", name.chars().take(17).collect::<String>())
-                                } else {
-                                    name
-                                };
-
-                                let btn = widgets::toolbar_btn_icon(
-                                    ui,
-                                    icons::FOLDER_OPEN,
-                                    &display,
-                                    true,
-                                )
-                                .on_hover_text("Open repository");
-                                if btn.clicked() {
-                                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                                        action = Some(ToolbarAction::OpenRepo(path));
-                                    }
-                                }
-                                btn.context_menu(|ui| {
-                                    ui.set_min_width(200.0);
-                                    if repo_path.is_some() {
-                                        if ui.button("Copy Path").clicked() {
-                                            action = Some(ToolbarAction::CopyRepoPath);
-                                            ui.close();
-                                        }
-                                        if ui.button("Open External Terminal").clicked() {
-                                            action = Some(ToolbarAction::OpenTerminal);
-                                            ui.close();
-                                        }
-                                        if ui.button("Reveal in File Manager").clicked() {
-                                            action = Some(ToolbarAction::RevealInFolder);
-                                            ui.close();
-                                        }
-                                        ui.separator();
-                                    }
-                                    if ui.button("Clone Repository…").clicked() {
-                                        action = Some(ToolbarAction::CloneRepo);
-                                        ui.close();
-                                    }
-                                    if ui.button("Initialize Repository…").clicked() {
-                                        action = Some(ToolbarAction::InitRepo);
-                                        ui.close();
-                                    }
-                                });
-
-                                let recent = ui.menu_button(
-                                    icons::rich(icons::EXPAND_MORE, 18.0)
-                                        .color(theme::text_secondary()),
-                                    |ui| {
-                                        if let Some(selected) = recent_repositories_menu(
-                                            ui,
-                                            recent_repos,
-                                            repo_path.as_deref(),
-                                        ) {
-                                            action = Some(selected);
-                                        }
-                                    },
-                                );
-                                recent.response.on_hover_text("Recent repositories");
-                            }
-
-                            ui.add_space(6.0);
-                            vsep(ui);
-                            ui.add_space(6.0);
+                            // The repository picker moved to the title bar's + menu beside
+                            // the tabs, so the toolbar starts with Fetch, Pull and Push.
 
                             // ── Sync group: Fetch / Pull / Push ───────────
                             //    Hide into overflow if it won't fit alongside the overflow btn
@@ -595,7 +527,13 @@ impl Toolbar {
                         vsep(ui);
                         ui.add_space(8.0);
 
-                        if widgets::icon_btn_mat(ui, icons::HISTORY, 18.0, "Recovery history")
+                        // The two least familiar icons carry text when there is room.
+                        let history = if labelled {
+                            widgets::toolbar_btn_icon(ui, icons::HISTORY, "History", true)
+                        } else {
+                            widgets::icon_btn_mat(ui, icons::HISTORY, 18.0, "Recovery history")
+                        };
+                        if history
                             .on_hover_text("Review recent repository changes to recover an earlier state.")
                             .clicked() {
                             action = Some(ToolbarAction::OpenReflog);
@@ -603,34 +541,26 @@ impl Toolbar {
 
                         ui.add_space(4.0);
 
-                        if widgets::icon_btn_mat(
-                            ui,
-                            icons::BUG_REPORT,
-                            18.0,
-                            "Integrations: issues, CI and releases",
+                        // A cloud reads as "your hosting provider"; a bug icon read as
+                        // "report a problem". The theme toggle lives in View instead.
+                        let integrations = if labelled {
+                            widgets::toolbar_btn_icon(ui, icons::CLOUD, "Integrations", true)
+                        } else {
+                            widgets::icon_btn_mat(
+                                ui,
+                                icons::CLOUD,
+                                18.0,
+                                "Provider integrations: issues, CI checks and releases",
+                            )
+                        };
+                        if integrations
+                        .on_hover_text(
+                            "Open this repository's issues, CI checks and releases from your \
+                             hosting provider.",
                         )
-                        .on_hover_text("View issues, CI checks and releases for this repository.")
                         .clicked()
                         {
                             action = Some(ToolbarAction::OpenProvider);
-                        }
-
-                        ui.add_space(4.0);
-
-                        let theme_icon = if dark_theme {
-                            icons::LIGHT_MODE
-                        } else {
-                            icons::DARK_MODE
-                        };
-                        let theme_tip = if dark_theme {
-                            "Switch to light theme"
-                        } else {
-                            "Switch to dark theme"
-                        };
-                        if widgets::icon_btn_mat(ui, theme_icon, 18.0, theme_tip)
-                            .on_hover_text(theme_tip)
-                            .clicked() {
-                            action = Some(ToolbarAction::ToggleTheme);
                         }
 
                         ui.add_space(4.0);

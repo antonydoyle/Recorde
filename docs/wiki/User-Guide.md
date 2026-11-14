@@ -2,7 +2,7 @@
 
 ## Your first commit
 
-1. Open an existing repository, clone a remote URL, or initialize a new folder from File or the toolbar.
+1. Open an existing repository, clone a remote URL, or initialize a new folder from File or the + menu beside the repository tabs.
 2. Check Settings > Accounts & SSH for your commit name and email. Add a provider account if you need authenticated remote operations.
 3. Make an edit, then select its file in Changes to review the diff.
 4. Stage the file, selected hunk or selected lines. Review the staged section so the commit contains exactly the intended changes.
@@ -25,10 +25,10 @@ from the saved configuration.
 
 ## Opening, Cloning, and Initializing Repositories
 
-Use the toolbar to open an existing repository, clone a remote repository, or
-initialize a new repository. Recently opened repositories are persisted and shown
-for quick access. The chevron beside the repository name opens a scrollable list
-with repository names, parent paths, and a marker for the current repository.
+Use the + menu at the end of the repository tabs to open an existing repository,
+clone a remote repository, or initialize a new repository. Recently opened
+repositories are persisted and listed in the same menu, with repository names,
+parent paths, and a marker for the current repository.
 The same list is available under **File → Recent Repositories**. Hover over a row
 to see its full path. The × button removes an entry from recent history; it does
 not delete any files. Use **Open another repository…** to browse for a folder.
@@ -102,7 +102,7 @@ include:
 - Stage or unstage individual files.
 - Stage all or unstage all.
 - Stage, unstage, or discard individual hunks.
-- Stage selected lines from a hunk.
+- Stage selected lines from a hunk: click a line's code to select it (Ctrl adds a line, Shift selects a range), or click its line number to stage that one line at once. Hovering a changed line shows which action a click will take.
 - Discard a file or hunk after confirmation.
 - Commit with an optional sign-off.
 - Amend the previous commit.

@@ -46,6 +46,8 @@ pub struct Sidebar {
     open: HashMap<&'static str, bool>,
     /// Case-insensitive branch and tag filter. Matching sections expand.
     filter: String,
+    /// Mirrors the graph's colour-blind lane palette for branch dots.
+    colorblind: bool,
 }
 
 impl Sidebar {
@@ -60,7 +62,12 @@ impl Sidebar {
             state,
             open,
             filter: String::new(),
+            colorblind: false,
         }
+    }
+
+    pub fn set_colorblind(&mut self, enabled: bool) {
+        self.colorblind = enabled;
     }
 
     pub fn show(&mut self, ui: &mut Ui) -> Option<SidebarAction> {
@@ -74,6 +81,7 @@ impl Sidebar {
             Stroke::new(1.0, theme::border()),
         );
 
+        let repo_path = self.state.lock().unwrap().repo_path.clone();
         let (graph_opt, head, stashes, ab_map, merged_set, deleted, worktrees, selected_commit) = {
             let s = self.state.lock().unwrap();
             (
@@ -95,17 +103,13 @@ impl Sidebar {
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 ui.set_width(ui.available_width().min(sidebar_width));
-                ui.add_space(16.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(16.0);
-                    ui.label(
-                        RichText::new("Repository")
-                            .size(17.0)
-                            .strong()
-                            .color(theme::text_primary()),
-                    );
-                });
-                ui.add_space(12.0);
+                // No "Repository" heading: the tab, toolbar and status bar already
+                // name the repository, so the branch filter leads the sidebar.
+                ui.add_space(kit::space::MD);
+                let saved_count={let s=self.state.lock().unwrap();s.saved_work.len()+s.saved_work_warnings.len()};
+                if saved_count>0 && ui.button(format!("Saved work ({saved_count})")).clicked() {
+                    self.state.lock().unwrap().show_saved_work=true;
+                }
                 let Some(ref graph) = graph_opt else {
                     ui.add_space(20.0);
                     ui.horizontal(|ui| {
@@ -131,12 +135,15 @@ impl Sidebar {
                     };
                     let field_width =
                         (ui.available_width() - clear_width - kit::space::SM).max(1.0);
+                    // The search icon says "filter"; a short hint fits the default
+                    // sidebar width without truncating, and the tooltip names both.
                     ui.add_sized(
-                        [field_width, 24.0],
-                        egui::TextEdit::singleline(&mut self.filter)
-                            .hint_text("Filter branches and tags")
+                        [field_width, 28.0],
+                        crate::ui::kit::compact_text_field(&mut self.filter)
+                            .hint_text("Branches and tags")
                             .desired_width(field_width),
-                    );
+                    )
+                    .on_hover_text("Filter branches and tags by name");
                     if !self.filter.is_empty()
                         && widgets::icon_btn_mat(ui, crate::icons::CLOSE, 16.0, "Clear filter")
                             .clicked()
@@ -165,6 +172,20 @@ impl Sidebar {
                     .filter(|stash| !filtering || stash.message.to_lowercase().contains(&needle))
                     .collect();
 
+                // The current branch's dot uses its graph lane colour, so a branch
+                // has the same colour here as on its graph chip.
+                let head_color = graph
+                    .ref_targets
+                    .get(&format!("refs/heads/{head}"))
+                    .and_then(|oid| graph.oid_to_row.get(oid))
+                    .map(|&row| {
+                        let order = theme::graph_color_order(repo_path.as_deref());
+                        theme::lane_color_for_palette(
+                            order[graph.nodes[row].lane % order.len()],
+                            self.colorblind,
+                        )
+                    });
+
                 // ── LOCAL BRANCHES ────────────────────────────────────
                 {
                     let open = self.open.entry("LOCAL").or_insert(true);
@@ -175,7 +196,8 @@ impl Sidebar {
                             let is_head = *name == head.as_str();
                             let is_merged = merged_set.contains(*name);
                             let ab = ab_map.get(*name).copied();
-                            let resp = branch_row(ui, name, is_head, false, ab, is_merged)
+                            let identity = if is_head { head_color } else { None };
+                            let resp = branch_row(ui, name, is_head, false, ab, is_merged, identity)
                                 .on_hover_text(
                                     "Click to show in graph, double-click to check out, right-click for options",
                                 );
@@ -323,7 +345,7 @@ impl Sidebar {
                                 .open(if filtering { Some(true) } else { None })
                                 .show(ui, |ui| {
                         for name in &branches {
-                            let resp = branch_row(ui, name, false, true, None, false)
+                            let resp = branch_row(ui, name, false, true, None, false, None)
                                 .on_hover_text(
                                     "Click to show in graph, double-click to check out, right-click for options",
                                 );
@@ -781,6 +803,7 @@ fn branch_row(
     is_remote: bool,
     ahead_behind: Option<(usize, usize)>,
     is_merged: bool,
+    lane_color: Option<Color32>,
 ) -> egui::Response {
     let row_h = 26.0;
     let avail = (ui.available_width() - kit::space::SM).max(1.0);
@@ -805,7 +828,7 @@ fn branch_row(
     );
     ui.painter().rect_filled(row_rect, 0.0, bg);
 
-    // Teal left accent bar for current branch
+    // Accent bar marks the current branch, like selected navigation elsewhere.
     if is_head {
         ui.painter().rect_filled(
             Rect::from_min_size(row_rect.left_top(), Vec2::new(3.0, row_h)),
@@ -816,7 +839,9 @@ fn branch_row(
 
     // Branch icon dot
     let dot_x = row_rect.left() + 16.0;
-    let dot_color = if is_head {
+    let dot_color = if let Some(color) = lane_color {
+        color
+    } else if is_head {
         theme::accent_teal()
     } else if is_remote {
         theme::accent_blue().gamma_multiply(0.7)

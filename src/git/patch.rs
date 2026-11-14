@@ -56,6 +56,44 @@ pub fn multi_selection_patch(
     selected: &[(usize, usize)],
     reverse: bool,
 ) -> Result<String, String> {
+    if let Some(hunks) = &diff.canonical_hunks {
+        let mut coordinates = std::collections::HashMap::new();
+        for (h, hunk) in hunks.iter().enumerate() {
+            for (l, line) in hunk
+                .lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| matches!(line.origin, '+' | '-'))
+            {
+                coordinates
+                    .entry((
+                        line.origin,
+                        line.old_lineno,
+                        line.new_lineno,
+                        line.content.as_str(),
+                    ))
+                    .and_modify(|value| *value = None)
+                    .or_insert(Some((h, l)));
+            }
+        }
+        let mut mapped = Vec::with_capacity(selected.len());
+        for &(h, l) in selected {
+            let visible = diff
+                .hunks
+                .get(h)
+                .and_then(|h| h.lines.get(l))
+                .ok_or("Invalid display selection. Refresh the diff.")?;
+            let coordinate = coordinates.get(&(visible.origin, visible.old_lineno, visible.new_lineno, visible.content.as_str()))
+                .copied().flatten().ok_or("This comparison cannot safely map the selected change. Turn off Ignore whitespace and refresh.")?;
+            mapped.push(coordinate);
+        }
+        let canonical = crate::state::FileDiff {
+            hunks: hunks.clone(),
+            canonical_hunks: None,
+            ..diff.clone()
+        };
+        return multi_selection_patch(&canonical, &mapped, reverse);
+    }
     if diff.is_binary || diff.is_rename {
         return Err("Use a whole-file operation for binary or renamed files.".into());
     }

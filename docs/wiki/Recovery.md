@@ -20,6 +20,10 @@ Commit or stash later work where appropriate, or copy it outside the repository 
 
 Ignored files are excluded from snapshots. Recovery is not a backup of build outputs, ignored secrets, external tools, repository configuration, provider actions or remote state. It does not undo a push, remote branch deletion, posted comment or merged pull request. Restore and review local work before deciding whether to publish a corrective commit.
 
+Before merges, rebases and Git Flow Finish, Recorde checks ignored paths against a conservative set of names from the history Git may materialize. Unrelated ignored build caches remain usable. An overlapping name can cause a refusal even when that particular operation would not overwrite it. Protect or move the named ignored path outside the repository before retrying, or use Git manually after safeguarding it. Ordinary stash does not include ignored files.
+
+Continue, Skip and Abort check again for ignored files created while an operation was paused. Incomplete history, unsupported custom strategies, legacy grafts, ambiguous paths or safety-scan limits require a manual Git workflow. Recorde never automatically deletes, moves or stashes ignored contents. Hooks, filters, merge drivers and explicitly executed programs remain trusted code; this protection does not sandbox them.
+
 ## Browse and retain snapshots
 
 Open Settings > Repository > Recovery snapshots to see saved entries. Restore opens a confirmation; successful restore saves an inverse snapshot for redo. The original saved data remains available.
@@ -63,5 +67,7 @@ Copy the exact reference printed for the desired stash. Apply it to the current 
 ## Recover a branch or inspect previous tips
 
 Use Recently deleted in the sidebar to restore a deleted local branch. Use the reflog to inspect earlier reference tips after an unexpected checkout or history change. Creating a new branch at a known commit can preserve that history while you decide the next step.
+
+Remote branch deletion uses the reviewed expected tip as a push lease. Its local tip backup is best effort after the remote push succeeds; a backup failure cannot reverse that push. Restoring a retained tip creates a local branch and does not recreate the remote branch. Local branch restoration also does not recreate removed branch configuration or the old branch's reflog.
 
 See [Advanced history](Advanced-History.md) for sparse-checkout recovery and interactive rebase limits.

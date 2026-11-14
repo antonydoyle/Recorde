@@ -413,7 +413,7 @@ pub fn avatar(painter: &egui::Painter, center: Pos2, radius: f32, name: &str) {
         center,
         egui::Align2::CENTER_CENTER,
         &theme::author_initials(name),
-        FontId::proportional(radius * 0.75),
+        FontId::proportional(radius * 0.82),
         theme::contrast_text(color),
     );
 }

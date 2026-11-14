@@ -127,13 +127,15 @@ impl StatusBar {
                         }
 
                         if dirty > 0 {
-                            let changed = format!("{} changed", counted(dirty, "file", "files"));
                             ui.label(
-                                RichText::new(format!("● {changed}"))
+                                RichText::new(format!("● Uncommitted changes ({dirty})"))
                                     .color(theme::accent_yellow())
                                     .size(12.0),
                             )
-                            .on_hover_text(format!("{changed} — open Changes to review"));
+                            .on_hover_text(format!(
+                                "Uncommitted changes in {}. Open Changes to review them.",
+                                counted(dirty, "file", "files")
+                            ));
                             ui.add_space(8.0);
                         } else if error.is_none()
                             && remote_op.is_none()

@@ -61,9 +61,10 @@ mod scroll_tests {
         let mut tab = Node::new(Role::Button);
         tab.set_label("Changes");
         tab.set_bounds(Rect::new(821.0, 154.0, 901.8, 186.0));
+        // The title-bar panel toggle sits at the right edge, in the same column.
         let mut toolbar = Node::new(Role::Button);
         toolbar.set_label("Changes");
-        toolbar.set_bounds(Rect::new(587.7, 3.5, 660.0, 35.5));
+        toolbar.set_bounds(Rect::new(1060.0, 3.5, 1130.0, 35.5));
         let mut tree = TreeUpdate {
             tree_id: TreeId::ROOT,
             nodes: vec![
@@ -242,8 +243,10 @@ fn changes_list_viewport(
             })
         })
         .collect();
-    let [tab] = tabs.as_slice() else {
-        return Err("Expected one Changes panel tab above the commit composer".into());
+    // The title bar's Changes panel toggle can share this column; the panel tab
+    // is the nearest Changes button above the composer.
+    let Some(tab) = tabs.iter().max_by(|a, b| a.y1.total_cmp(&b.y1)) else {
+        return Err("Expected a Changes panel tab above the commit composer".into());
     };
     // This egui ScrollArea does not expose clips_children in AccessKit. Its
     // covered descendants still have bounds. Derive a conservative interior
@@ -526,11 +529,11 @@ pub(super) fn review(
         .nodes
         .iter()
         .filter_map(|(_, node)| node.label())
-        .filter(|label| label.starts_with("Working changes ("))
+        .filter(|label| label.starts_with("Changes ("))
         .filter(|label| clickable_bounds(&current, label).ok().flatten().is_some())
         .collect();
     if working.len() != 1 {
-        return Err("Expected one visible Working changes control".into());
+        return Err("Expected one visible Changes (N) control".into());
     }
     click_label(stream, working[0])?;
     let deadline = Instant::now() + Duration::from_secs(3);

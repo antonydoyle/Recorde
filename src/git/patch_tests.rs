@@ -2,6 +2,76 @@ use super::*;
 use crate::git::{operations::compute_workdir_diff, test_support::TestRepo};
 
 #[test]
+fn diff_controls_hidden_whitespace_maps_partial_stage_unstage_without_hidden_changes() {
+    let repo = TestRepo::new();
+    let base = "same\r\nwhite space\r\nsame\r\nold\r\nsame\r\n";
+    let working = "same\r\nwhite   space\r\nsame\r\ninserted\r\nnew\r\nsame\r\n";
+    repo.commit("file", base.as_bytes());
+    repo.write("file", working.as_bytes());
+    let comparison = crate::config::DiffComparison {
+        diff_context_lines: 1,
+        ignore_whitespace: true,
+        full_file: false,
+    };
+    let changes = |diff: &crate::state::FileDiff| {
+        diff.hunks
+            .iter()
+            .enumerate()
+            .flat_map(|(h, hunk)| {
+                hunk.lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| matches!(l.origin, '+' | '-'))
+                    .map(move |(l, _)| (h, l))
+            })
+            .collect::<Vec<_>>()
+    };
+    let display = super::super::operations::compute_workdir_comparison(
+        repo.path(),
+        "file",
+        false,
+        comparison,
+    )
+    .unwrap();
+    assert!(display.canonical_hunks.is_some());
+    let selected = changes(&display);
+    let patch = multi_selection_patch(&display, &selected, false).unwrap();
+    apply_to_index(repo.path(), &patch).unwrap();
+    assert_eq!(
+        repo.index_bytes("file"),
+        working.replace("white   space", "white space").as_bytes()
+    );
+    // Staging the entire file makes whitespace visible only in the canonical
+    // staged patch; unstaging visible lines must retain that whitespace in index.
+    repo.git_ok(&["add", "file"]);
+    let display =
+        super::super::operations::compute_workdir_comparison(repo.path(), "file", true, comparison)
+            .unwrap();
+    let patch = multi_selection_patch(&display, &changes(&display), true).unwrap();
+    remove_from_index(repo.path(), &patch).unwrap();
+    assert_eq!(
+        repo.index_bytes("file"),
+        base.replace("white space", "white   space").as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join("file")).unwrap(),
+        working.as_bytes()
+    );
+    // Pure whitespace differences have no selectable displayed changes.
+    repo.write("file", base.as_bytes());
+    let hidden = super::super::operations::compute_workdir_comparison(
+        repo.path(),
+        "file",
+        false,
+        comparison,
+    )
+    .unwrap();
+    assert!(hidden.hunks.is_empty());
+    assert!(!hidden.raw_patch.is_empty());
+    assert!(multi_selection_patch(&hidden, &[], false).is_err());
+}
+
+#[test]
 fn selection_across_hunks_recalculates_offsets_and_round_trips_both_directions() {
     let repo = TestRepo::new();
     let base: String = (0..40).map(|i| format!("line {i}\r\n")).collect();

@@ -58,36 +58,18 @@ fn merge_tool(repo: &git2::Repository, configured: &str) -> Result<Option<String
 
 /// Launch the configured merge tool without occupying the mutation queue.
 pub fn open_mergetool(file_path: &str, repo_path: &Path, state: SharedState) {
-    let result = (|| {
-        super::safe_path::relative(file_path)?;
-        let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let file_path = file_path.to_owned();
+    let path = repo_path.to_path_buf();
+    let work_path = path.clone();
+    let result = crate::external::launch_git_tool(path, state.clone(), "Merge", true, move || {
+        super::safe_path::relative(&file_path)?;
+        let repo = git2::Repository::open(&work_path).map_err(|e| e.to_string())?;
         let tool = merge_tool(&repo, &crate::config::Config::load().merge_tool)?;
-        let args = crate::external::merge_tool_args(tool.as_deref(), file_path);
-        crate::external::spawn_git_tool(repo_path, &args)
-    })();
-    match result {
-        Ok(mut child) => {
-            let path = repo_path.to_path_buf();
-            std::thread::spawn(move || {
-                let result = child.wait();
-                let current = state.lock().unwrap().repo_path.as_ref() == Some(&path);
-                if current {
-                    match result {
-                        Err(error) => {
-                            state.lock().unwrap().error =
-                                Some(format!("Merge tool failed: {error}"));
-                        }
-                        Ok(status) if !status.success() => {
-                            state.lock().unwrap().error =
-                                Some(format!("Merge tool exited with {status}."));
-                        }
-                        Ok(_) => {}
-                    }
-                    crate::git::operations::refresh_worktree(state);
-                }
-            });
-        }
-        Err(error) => state.lock().unwrap().error = Some(error),
+        let args = crate::external::merge_tool_args(tool.as_deref(), &file_path);
+        crate::external::spawn_git_tool(&work_path, &args)
+    });
+    if let Err(error) = result {
+        state.lock().unwrap().error = Some(error);
     }
 }
 

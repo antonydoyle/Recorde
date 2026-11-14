@@ -110,7 +110,7 @@ impl HelpBrowser {
                     close = ui.button("Close").clicked();
                 });
                 let search = ui.add(
-                    egui::TextEdit::singleline(&mut self.query)
+                    crate::ui::kit::text_field(&mut self.query)
                         .hint_text("Search help")
                         .desired_width(f32::INFINITY),
                 );

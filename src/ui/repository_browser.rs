@@ -235,7 +235,7 @@ impl RepositoryBrowser {
                 let mut search = false;
                 ui.add_enabled_ui(!busy, |ui| {
                     ui.horizontal(|ui| {
-                        let response = ui.add(egui::TextEdit::singleline(&mut self.query)
+                        let response = ui.add(crate::ui::kit::text_field(&mut self.query)
                             .hint_text(if matches!(account.provider, crate::auth::ProviderKind::GitHubCom | crate::auth::ProviderKind::GitHubEnterprise) {
                                 "Repository name or GitHub search query"
                             } else { "Project name or path" })

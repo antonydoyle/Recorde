@@ -116,7 +116,7 @@ pub fn run(stream: &mut TcpStream, directory: &Path) -> Result<(), Box<dyn Error
         &mut log,
         "wip",
         (|| {
-            click_prefix(stream, "Working tree: uncommitted changes")?;
+            click_prefix(stream, "Uncommitted changes (")?;
             capture(stream, directory, "tour-02-wip-selected")
         })(),
     );

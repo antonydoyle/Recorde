@@ -146,7 +146,7 @@ impl ProviderEditor {
                             egui::ComboBox::from_label(label).selected_text(project.as_str()).show_ui(ui, |ui| {
                                 for choice in &context.projects { ui.selectable_value(project, choice.clone(), choice); }
                             });
-                            ui.add(egui::TextEdit::singleline(project).desired_width(f32::INFINITY))
+                            ui.add(crate::ui::kit::text_field(project).desired_width(f32::INFINITY))
                                 .on_hover_text("Enter the provider project that contains this branch.");
                         }
                         if azure { ui.small("Use organization/project/repository names. Forks must belong to the same Azure organization."); } else { ui.small("Projects must share this provider host and belong to a compatible fork network."); }

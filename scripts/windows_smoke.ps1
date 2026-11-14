@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Artifacts,
     [switch]$InspectAccessibility,
     [string]$Inspector,
-    [ValidateSet('classic','siege')][string]$ThemePalette = 'classic',
+    [ValidateSet('classic','siege','monokai','tokyo_night','dracula','one_dark_pro','nord','gruvbox_dark','synthwave_84','github_light','solarized_light','catppuccin_latte')][string]$ThemePalette = 'classic',
     [ValidateRange(0.75,2.0)][double]$FontScale = 1.0,
     [switch]$Light,
     [switch]$HighContrast,

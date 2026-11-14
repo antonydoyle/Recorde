@@ -110,16 +110,19 @@ pub(crate) fn do_merge(
         return Err("Stash or commit changes to tracked files before merging.".into());
     }
     let message = message.map(str::trim).filter(|m| !m.is_empty());
+    let ignored = super::ignored::Guard::prepare(path, &[branch])?;
+    let target = ignored.operand(0);
     let label = if mode == MergeMode::Squash {
         "Squash merge"
     } else {
         "Merge"
     };
     super::recovery::protect_sequence(path, label, || {
+        ignored.validate()?;
         if mode == MergeMode::Squash {
             write_squash_state(&repo, message)?;
         }
-        let mut args = vec!["merge"];
+        let mut args = vec!["merge", "--no-overwrite-ignore"];
         match mode {
             MergeMode::Default => args.push("--no-edit"),
             MergeMode::NoFastForward => args.extend(["--no-ff", "--no-edit"]),
@@ -129,7 +132,7 @@ pub(crate) fn do_merge(
         if let (Some(message), MergeMode::NoFastForward) = (message, mode) {
             args.extend(["-m", message]);
         }
-        args.extend(["--", branch]);
+        args.extend(["--", &target]);
         if let Err(error) = run_git_seq(path, &args) {
             if mode == MergeMode::Squash
                 && !repo.path().join("SQUASH_MSG").exists()
@@ -467,7 +470,17 @@ fn seq_op(
         if matches!(label, "cherry-pick" | "revert") {
             super::recovery::protect_sequence(path, label, || f(path).map_err(|e| e.user_message()))
         } else {
-            super::recovery::continue_sequence(path, || f(path).map_err(|e| e.user_message()))
+            let ignored = if label.starts_with("merge") || label.starts_with("rebase") {
+                Some(super::ignored::SequenceGuard::prepare(path)?)
+            } else {
+                None
+            };
+            super::recovery::continue_sequence(path, || {
+                if let Some(ignored) = &ignored {
+                    ignored.validate()?;
+                }
+                f(path).map_err(|e| e.user_message())
+            })
         }
     });
 }
@@ -762,7 +775,9 @@ mod tests {
     fn fast_forward_only_refuses_diverged_history_without_changes() {
         let (repo, _, _) = topic();
         let main = repo.commit("main.txt", b"main\n");
+        let before = crate::git::test_support::snapshot(repo.path());
         assert!(do_merge(repo.path(), "topic", MergeMode::FastForwardOnly, None).is_err());
+        assert_eq!(crate::git::test_support::snapshot(repo.path()), before);
         assert_eq!(head_commit(&repo), main);
         assert_eq!(repo.open().state(), git2::RepositoryState::Clean);
         // A successful merge can be undone as one step.

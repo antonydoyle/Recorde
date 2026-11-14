@@ -38,8 +38,17 @@ fn main() -> eframe::Result<()> {
     } else {
         None
     };
+    if std::env::args().nth(1).as_deref() == Some("--diagnostics") {
+        let _logging = recorde::diagnostics::start_logging();
+        let destination = std::env::args_os().nth(2).map(std::path::PathBuf::from);
+        if let Err(message) = recorde::diagnostics::cli(destination.as_deref()) {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    let _logging = recorde::diagnostics::start_logging();
     crash::install();
-    env_logger::init();
     #[cfg(feature = "ui-inspection")]
     if let Some(address) = egui_inspection::bind_addr_from_env() {
         validate_inspection_address(&address)

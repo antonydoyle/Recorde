@@ -235,7 +235,7 @@ impl RecordeApp {
                 });
             ui.add_space(8.0);
             for mode in MergeMode::ALL {
-                ui.radio_value(&mut self.repo_ui.merge_mode, mode, mode.label());
+                crate::ui::kit::radio_value(ui, &mut self.repo_ui.merge_mode, mode, mode.label());
             }
             if self.repo_ui.merge_mode.takes_message() {
                 ui.add_space(4.0);
@@ -406,14 +406,19 @@ impl RecordeApp {
                     ui.label(styled_label("Start"));
                     ui.horizontal(|ui| {
                         for kind in Kind::ALL {
-                            ui.radio_value(&mut self.repo_ui.flow_kind, kind, kind.label());
+                            crate::ui::kit::radio_value(
+                                ui,
+                                &mut self.repo_ui.flow_kind,
+                                kind,
+                                kind.label(),
+                            );
                         }
                     });
                     let kind = self.repo_ui.flow_kind;
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(kind.prefix(flow)).monospace());
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.repo_ui.flow_name)
+                            crate::ui::kit::text_field(&mut self.repo_ui.flow_name)
                                 .desired_width(220.0)
                                 .hint_text(if kind == Kind::Feature {
                                     "name"
@@ -525,7 +530,7 @@ impl RecordeApp {
         let options = &mut self.init_options;
         ui.horizontal(|ui| {
             ui.label(styled_label("Default branch"));
-            ui.add(egui::TextEdit::singleline(&mut options.default_branch).desired_width(160.0));
+            ui.add(crate::ui::kit::text_field(&mut options.default_branch).desired_width(160.0));
         });
         egui::ComboBox::from_label(".gitignore template")
             .selected_text(
@@ -552,7 +557,7 @@ impl RecordeApp {
         if options.license.is_some() {
             ui.horizontal(|ui| {
                 ui.label(styled_label("Copyright holder"));
-                ui.add(egui::TextEdit::singleline(&mut options.author).desired_width(220.0));
+                ui.add(crate::ui::kit::text_field(&mut options.author).desired_width(220.0));
             });
         }
         ui.checkbox(&mut options.readme, "Add README.md");
@@ -755,7 +760,7 @@ impl RecordeApp {
                         "A label such as Work or Personal.",
                         |ui| {
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.profile_input.name)
+                                crate::ui::kit::text_field(&mut self.profile_input.name)
                                     .desired_width(ui.available_width()),
                             );
                         },
@@ -766,7 +771,7 @@ impl RecordeApp {
                         "Written into each new commit.",
                         |ui| {
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.profile_input.git_name)
+                                crate::ui::kit::text_field(&mut self.profile_input.git_name)
                                     .desired_width(ui.available_width()),
                             );
                         },
@@ -777,7 +782,7 @@ impl RecordeApp {
                         "Use an email linked to your hosting account.",
                         |ui| {
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.profile_input.git_email)
+                                crate::ui::kit::text_field(&mut self.profile_input.git_email)
                                     .desired_width(ui.available_width()),
                             );
                         },
@@ -788,7 +793,7 @@ impl RecordeApp {
                         "Identifies your commit signing key. Leave blank to keep the current key.",
                         |ui| {
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.profile_input.signing_key)
+                                crate::ui::kit::text_field(&mut self.profile_input.signing_key)
                                     .desired_width(ui.available_width()),
                             );
                         },
@@ -942,7 +947,7 @@ impl RecordeApp {
                     "Full path for the private key; a .pub file is also created.",
                     |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.ssh_key_path)
+                            crate::ui::kit::text_field(&mut self.ssh_key_path)
                                 .desired_width(ui.available_width()),
                         );
                     },
@@ -953,7 +958,7 @@ impl RecordeApp {
                     "Usually your email, to help you recognize the key.",
                     |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.ssh_key_comment)
+                            crate::ui::kit::text_field(&mut self.ssh_key_comment)
                                 .desired_width(ui.available_width()),
                         );
                     },
@@ -964,7 +969,7 @@ impl RecordeApp {
                     "Encrypts the private key on disk. Recorde does not store this passphrase.",
                     |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.ssh_key_passphrase)
+                            crate::ui::kit::text_field(&mut self.ssh_key_passphrase)
                                 .password(true)
                                 .desired_width(ui.available_width()),
                         );

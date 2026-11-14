@@ -179,6 +179,7 @@ fn spawn_repo_load(path: PathBuf, id: u64, state: SharedState) {
         };
         let history = crate::git::recovery::undo_history(&path);
         let flow = crate::git::gitflow::config(&path);
+        let (saved_work, saved_work_warnings) = crate::git::switch::load(&path);
         let success = result.is_ok();
         let mut s = state.lock().unwrap();
         let switching = s.repo_path.as_ref() != Some(&path);
@@ -188,6 +189,10 @@ fn spawn_repo_load(path: PathBuf, id: u64, state: SharedState) {
             s.undo_step = history.next(false);
             s.redo_step = history.next(true);
             s.git_flow = flow;
+            s.show_saved_work |=
+                switching && (!saved_work.is_empty() || !saved_work_warnings.is_empty());
+            s.saved_work = saved_work;
+            s.saved_work_warnings = saved_work_warnings;
             if let Some(graph) = s.commit_graph.clone() {
                 // Rewritten or hidden commits leave the multi-selection.
                 s.selected_commits
@@ -214,6 +219,7 @@ fn spawn_repo_load(path: PathBuf, id: u64, state: SharedState) {
                     file,
                     s.selected_commit.clone(),
                     s.diff_context,
+                    s.diff_comparison,
                 )
             })
         } else {
@@ -228,16 +234,16 @@ fn spawn_repo_load(path: PathBuf, id: u64, state: SharedState) {
         if let Some(oid) = detail {
             load_commit_detail(&oid, state.clone());
         }
-        if let Some((scope, request, file, commit, context)) = selection {
+        if let Some((scope, request, file, commit, context, comparison)) = selection {
             let result = match (context, commit.as_deref()) {
                 (crate::state::DiffContext::CommitDiff, Some(oid)) => {
-                    compute_diff(&scope.path, oid, &file)
+                    compute_commit_comparison(&scope.path, oid, &file, comparison)
                 }
                 (crate::state::DiffContext::StagedFile, _) => {
-                    compute_workdir_diff(&scope.path, &file, true)
+                    compute_workdir_comparison(&scope.path, &file, true, comparison)
                 }
                 (crate::state::DiffContext::UnstagedFile, _) => {
-                    compute_workdir_diff(&scope.path, &file, false)
+                    compute_workdir_comparison(&scope.path, &file, false, comparison)
                 }
                 _ => return,
             };
@@ -246,6 +252,7 @@ fn spawn_repo_load(path: PathBuf, id: u64, state: SharedState) {
                 && s.diff_load_id == request
                 && s.selected_file.as_deref() == Some(&file)
                 && s.diff_context == context
+                && s.diff_comparison == comparison
                 && s.selected_commit == commit
             {
                 match result {
@@ -711,7 +718,7 @@ pub fn load_workdir_diff(file_path: &str, staged: bool, state: SharedState) {
     } else {
         crate::state::DiffContext::UnstagedFile
     };
-    let (scope, id) = {
+    let (scope, id, comparison) = {
         let mut s = state.lock().unwrap();
         let Some(path) = s.repo_path.clone() else {
             return;
@@ -725,14 +732,16 @@ pub fn load_workdir_diff(file_path: &str, staged: bool, state: SharedState) {
                 epoch: s.repo_epoch,
             },
             s.diff_load_id,
+            s.diff_comparison,
         )
     };
 
     std::thread::spawn(move || {
-        let result = compute_workdir_diff(&scope.path, &fp, staged);
+        let result = compute_workdir_comparison(&scope.path, &fp, staged, comparison);
         let mut s = state.lock().unwrap();
         if scope.is_current(&s)
             && s.diff_load_id == id
+            && s.diff_comparison == comparison
             && s.diff_context == context
             && s.selected_file.as_deref() == Some(&fp)
         {
@@ -749,6 +758,30 @@ pub(crate) fn compute_workdir_diff(
     file_path: &str,
     staged: bool,
 ) -> Result<FileDiff, git2::Error> {
+    compute_workdir_comparison(repo_path, file_path, staged, Default::default())
+}
+
+pub(crate) fn compute_workdir_comparison(
+    repo_path: &Path,
+    file_path: &str,
+    staged: bool,
+    comparison: crate::config::DiffComparison,
+) -> Result<FileDiff, git2::Error> {
+    let mut display = workdir_diff_inner(repo_path, file_path, staged, comparison)?;
+    if comparison != Default::default() {
+        let canonical = workdir_diff_inner(repo_path, file_path, staged, Default::default())?;
+        display.raw_patch = canonical.raw_patch;
+        display.canonical_hunks = Some(canonical.hunks);
+    }
+    Ok(display)
+}
+
+fn workdir_diff_inner(
+    repo_path: &Path,
+    file_path: &str,
+    staged: bool,
+    comparison: crate::config::DiffComparison,
+) -> Result<FileDiff, git2::Error> {
     let repo = git2::Repository::open(repo_path)?;
     if !super::replacement::refs(&repo)?.is_empty()
         && (staged || repo.index()?.get_path(Path::new(file_path), 0).is_some())
@@ -764,20 +797,32 @@ pub(crate) fn compute_workdir_diff(
         if staged {
             args.push("--cached");
         }
+        let context = format!("-U{}", comparison.context_lines());
+        args.push(&context);
+        if comparison.ignore_whitespace {
+            args.push("--ignore-all-space");
+        }
         args.push("--");
         let output =
             super::process::git(repo_path, &args, &std::sync::atomic::AtomicBool::new(false))
                 .map_err(|e| git2::Error::from_str(&e.user_message()))?;
-        return parse_diff(
-            &repo,
-            git2::Diff::from_buffer(&output.stdout)?,
-            "",
-            file_path,
-            !staged,
+        return bounded_comparison(
+            parse_diff(
+                &repo,
+                git2::Diff::from_buffer(&output.stdout)?,
+                "",
+                file_path,
+                !staged,
+            )?,
+            comparison,
         );
     }
     let mut opts = git2::DiffOptions::new();
-    opts.show_binary(true).disable_pathspec_match(true);
+    opts.show_binary(comparison == Default::default())
+        .disable_pathspec_match(true)
+        .max_size(1024 * 1024)
+        .context_lines(comparison.context_lines())
+        .ignore_whitespace(comparison.ignore_whitespace);
     if !staged {
         opts.pathspec(file_path)
             .include_untracked(true)
@@ -801,7 +846,27 @@ pub(crate) fn compute_workdir_diff(
     if staged {
         diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
     }
-    parse_diff(&repo, diff, "", file_path, !staged)
+    bounded_comparison(parse_diff(&repo, diff, "", file_path, !staged)?, comparison)
+}
+
+fn bounded_comparison(
+    diff: FileDiff,
+    comparison: crate::config::DiffComparison,
+) -> Result<FileDiff, git2::Error> {
+    if comparison.full_file
+        && (diff.is_binary
+            || diff.hunks.iter().map(|h| h.lines.len()).sum::<usize>() > 10_000
+            || diff
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .map(|l| l.content.len())
+                .sum::<usize>()
+                > 1024 * 1024)
+    {
+        return Err(git2::Error::from_str("Full-file view is limited to text files up to 1 MiB and 10,000 diff lines. Turn off Show full file to view changes, or use an external viewer."));
+    }
+    Ok(diff)
 }
 
 fn parse_diff(
@@ -844,15 +909,21 @@ fn parse_diff(
         d.old_file().path() == old_path.as_deref() && d.new_file().path() == new_path.as_deref()
     };
     let mut raw_patch = Vec::new();
-    diff.print(git2::DiffFormat::Patch, |delta, _, line| {
+    let printed = diff.print(git2::DiffFormat::Patch, |delta, _, line| {
         if matches(&delta) {
             if matches!(line.origin(), '+' | '-' | ' ') {
                 raw_patch.push(line.origin() as u8);
             }
             raw_patch.extend_from_slice(line.content());
         }
-        true
-    })?;
+        raw_patch.len() <= 4 * 1024 * 1024
+    });
+    if raw_patch.len() > 4 * 1024 * 1024 {
+        return Err(git2::Error::from_str(
+            "Diff exceeds the 4 MiB display limit. Use an external viewer for this file.",
+        ));
+    }
+    printed?;
     let is_binary = Rc::new(RefCell::new(false));
     let is_binary_cb = Rc::clone(&is_binary);
     let hunks_rc: Rc<RefCell<Vec<(String, Vec<DiffLine>)>>> = Rc::new(RefCell::new(Vec::new()));
@@ -930,6 +1001,7 @@ fn parse_diff(
         None
     };
     Ok(FileDiff {
+        canonical_hunks: None,
         binary_preview,
         raw_patch,
         old_path: old_path.map(|p| p.to_string_lossy().into_owned()),
@@ -1039,7 +1111,7 @@ fn compute_commit_detail(path: &Path, oid_str: &str) -> Result<CommitDetail, git
 pub fn load_diff(commit_oid: &str, file_path: &str, state: SharedState) {
     let commit_oid = commit_oid.to_string();
     let file_path = file_path.to_string();
-    let (scope, id) = {
+    let (scope, id, comparison) = {
         let mut s = state.lock().unwrap();
         let Some(path) = s.repo_path.clone() else {
             return;
@@ -1053,15 +1125,17 @@ pub fn load_diff(commit_oid: &str, file_path: &str, state: SharedState) {
                 epoch: s.repo_epoch,
             },
             s.diff_load_id,
+            s.diff_comparison,
         )
     };
 
     std::thread::spawn(move || {
-        let result = compute_diff(&scope.path, &commit_oid, &file_path);
+        let result = compute_commit_comparison(&scope.path, &commit_oid, &file_path, comparison);
         let mut s = state.lock().unwrap();
         // Only apply if this file is still selected
         if scope.is_current(&s)
             && s.diff_load_id == id
+            && s.diff_comparison == comparison
             && s.diff_context == crate::state::DiffContext::CommitDiff
             && s.selected_commit.as_deref() == Some(&commit_oid)
             && s.selected_file.as_deref() == Some(&file_path)
@@ -1074,10 +1148,35 @@ pub fn load_diff(commit_oid: &str, file_path: &str, state: SharedState) {
     });
 }
 
+#[cfg(test)]
 fn compute_diff(
     repo_path: &Path,
     commit_oid: &str,
     file_path: &str,
+) -> Result<FileDiff, git2::Error> {
+    compute_commit_comparison(repo_path, commit_oid, file_path, Default::default())
+}
+
+fn compute_commit_comparison(
+    repo_path: &Path,
+    commit_oid: &str,
+    file_path: &str,
+    comparison: crate::config::DiffComparison,
+) -> Result<FileDiff, git2::Error> {
+    let mut display = commit_diff_inner(repo_path, commit_oid, file_path, comparison)?;
+    if comparison != Default::default() {
+        let canonical = commit_diff_inner(repo_path, commit_oid, file_path, Default::default())?;
+        display.raw_patch = canonical.raw_patch;
+        display.canonical_hunks = Some(canonical.hunks);
+    }
+    Ok(display)
+}
+
+fn commit_diff_inner(
+    repo_path: &Path,
+    commit_oid: &str,
+    file_path: &str,
+    comparison: crate::config::DiffComparison,
 ) -> Result<FileDiff, git2::Error> {
     let repo = git2::Repository::open(repo_path)?;
     let oid = git2::Oid::from_str(commit_oid)?;
@@ -1090,19 +1189,25 @@ fn compute_diff(
         .and_then(|p| p.tree().ok());
 
     let mut opts = git2::DiffOptions::new();
-    opts.show_binary(true);
+    opts.show_binary(comparison == Default::default())
+        .max_size(1024 * 1024)
+        .context_lines(comparison.context_lines())
+        .ignore_whitespace(comparison.ignore_whitespace);
 
     let mut diff = if super::replacement::refs(&repo)?.is_empty() {
         repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?
     } else {
         let parent = commit.parent_id(0).ok().map(|id| id.to_string());
-        super::replacement::diff(&repo, parent.as_deref(), commit_oid)?
+        super::replacement::diff_with_comparison(&repo, parent.as_deref(), commit_oid, comparison)?
     };
 
     if super::replacement::refs(&repo)?.is_empty() {
         diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
     }
-    parse_diff(&repo, diff, commit_oid, file_path, false)
+    bounded_comparison(
+        parse_diff(&repo, diff, commit_oid, file_path, false)?,
+        comparison,
+    )
 }
 
 // ── Phase 7 operations ────────────────────────────────────────────────────────

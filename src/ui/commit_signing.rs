@@ -93,7 +93,7 @@ impl CommitSigning {
                         ui.add_space(kit::space::SM);
                         ui.label("Signing key");
                         ui.add(
-                            egui::TextEdit::singleline(&mut values.key)
+                            crate::ui::kit::text_field(&mut values.key)
                                 .hint_text(key_placeholder(&values.format))
                                 .desired_width(ui.available_width().min(430.0)),
                         );

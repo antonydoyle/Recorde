@@ -88,6 +88,7 @@ pub struct DiffView {
     split_view: bool,
     show_whitespace: bool,
     show_blame: bool,
+    comparison: crate::config::DiffComparison,
 }
 
 impl DiffView {
@@ -97,6 +98,7 @@ impl DiffView {
 
     pub fn preferences(&self) -> crate::config::DiffPreferences {
         crate::config::DiffPreferences {
+            comparison: self.comparison,
             whitespace: self.show_whitespace,
             split: self.split_view,
             search_open: self.search_open,
@@ -105,6 +107,9 @@ impl DiffView {
     }
 
     pub fn restore_preferences(&mut self, preferences: &crate::config::DiffPreferences) {
+        self.comparison = preferences.comparison;
+        self.state.lock().unwrap().diff_comparison = self.comparison;
+        self.reload_comparison();
         self.split_view = preferences.split;
         self.show_whitespace = preferences.whitespace;
         self.search_open = preferences.search_open;
@@ -132,6 +137,30 @@ impl DiffView {
             split_view: false,
             show_whitespace: false,
             show_blame: false,
+            comparison: Default::default(),
+        }
+    }
+
+    fn reload_comparison(&self) {
+        let (file, commit, context) = {
+            let mut state = self.state.lock().unwrap();
+            state.diff_comparison = self.comparison;
+            (
+                state.selected_file.clone(),
+                state.selected_commit.clone(),
+                state.diff_context,
+            )
+        };
+        if let Some(file) = file {
+            match context {
+                DiffContext::CommitDiff => {
+                    if let Some(oid) = commit {
+                        load_diff(&oid, &file, self.state.clone());
+                    }
+                }
+                DiffContext::StagedFile => load_workdir_diff(&file, true, self.state.clone()),
+                DiffContext::UnstagedFile => load_workdir_diff(&file, false, self.state.clone()),
+            }
         }
     }
 
@@ -271,7 +300,7 @@ impl DiffView {
                                     ui.add_space(8.0);
                                     ui.label(
                                         egui::RichText::new(format!(
-                                            "Working tree ({})",
+                                            "Uncommitted changes ({})",
                                             workdir_files.len()
                                         ))
                                         .color(theme::text_muted())
@@ -338,7 +367,7 @@ impl DiffView {
                                 ui.horizontal(|ui| {
                                     ui.add_space(12.0);
                                     ui.label(
-                                        egui::RichText::new("Working tree clean")
+                                        egui::RichText::new("No uncommitted changes")
                                             .color(theme::text_muted())
                                             .size(12.0),
                                     );
@@ -366,6 +395,11 @@ impl DiffView {
             repo_epoch,
         );
 
+        // A settings change invalidates the displayed snapshot before any action.
+        if self.state.lock().unwrap().diff_comparison != self.comparison {
+            self.reload_comparison();
+            return;
+        }
         // Apply actions from the diff renderer
         for action in actions {
             match action {
@@ -433,10 +467,11 @@ impl DiffView {
                     .is_some_and(|previous| Arc::ptr_eq(previous, diff))
             {
                 if !same_selection
-                    || !self
-                        .last_diff
-                        .as_ref()
-                        .is_some_and(|old| old.raw_patch == diff.raw_patch)
+                    || !self.last_diff.as_ref().is_some_and(|old| {
+                        old.raw_patch == diff.raw_patch
+                            && old.canonical_hunks.is_none()
+                            && diff.canonical_hunks.is_none()
+                    })
                 {
                     self.selected_rows.clear();
                     self.selection_anchor = None;
@@ -546,6 +581,16 @@ impl DiffView {
                             ui.close();
                         }
                         ui.checkbox(&mut self.show_whitespace, "Show whitespace");
+                        ui.separator();
+                        ui.label("Context lines");
+                        ui.horizontal(|ui| {
+                            for lines in [1, 3, 5, 10] {
+                                ui.selectable_value(&mut self.comparison.diff_context_lines, lines, lines.to_string());
+                            }
+                        });
+                        ui.checkbox(&mut self.comparison.ignore_whitespace, "Ignore whitespace");
+                        ui.checkbox(&mut self.comparison.full_file, "Show full file")
+                            .on_hover_text("Bounded to 10,000 lines and 1 MiB. Larger files require an external viewer.");
                         if ui.button("Find in diff").clicked() {
                             self.search_open = true;
                             ui.close();
@@ -646,6 +691,18 @@ impl DiffView {
         );
 
         let mut scroll_to = None;
+        if self.comparison.ignore_whitespace || self.comparison.full_file {
+            let notice = if self.comparison.ignore_whitespace {
+                "Whitespace-only changes hidden. Selections affect visible changed lines only."
+            } else {
+                "Full file view (maximum 10,000 lines / 1 MiB)."
+            };
+            let rect = Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 32.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.label(notice);
+            });
+            content_rect.min.y += 32.0;
+        }
         if !self.show_console && !self.show_blame {
             let search_id = ui.id().with("diff_search_reveal");
             let search_height = 36.0
@@ -664,7 +721,7 @@ impl DiffView {
                         ui.label("Find in diff");
                         let changed = ui
                             .add(
-                                egui::TextEdit::singleline(&mut self.search_query)
+                                crate::ui::kit::text_field(&mut self.search_query)
                                     .hint_text("Find in diff")
                                     .desired_width(180.0),
                             )
@@ -776,21 +833,6 @@ impl DiffView {
                             }
                         });
                     });
-                    ui.add_space(kit::space::XS);
-                });
-                motion::reveal(ui, id.with("hint"), !has_selection, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(12, 0))
-                        .show(ui, |ui| {
-                            kit::hint(
-                                ui,
-                                "Tip: click line numbers to select lines to stage or discard.",
-                            )
-                            .on_hover_text(concat!(
-                                "Ctrl/Cmd toggles a line, Shift selects a range. ",
-                                "The gutter stages or unstages one line."
-                            ));
-                        });
                     ui.add_space(kit::space::XS);
                 });
             });
@@ -959,14 +1001,33 @@ impl DiffView {
             });
             return Vec::new();
         }
-        if let Some(diff) = diff_opt
-            .as_ref()
-            .filter(|d| !d.is_binary && d.hunks.is_empty() && !d.raw_patch.is_empty())
-        {
+        if let Some(diff) = diff_opt.as_ref().filter(|d| {
+            !d.is_binary
+                && d.hunks.is_empty()
+                && !d.raw_patch.is_empty()
+                && (!d.canonical_hunks.as_ref().is_some_and(|h| !h.is_empty())
+                    || d.is_rename
+                    || d.old_mode != d.new_mode)
+        }) {
             ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                 egui::ScrollArea::both().show(ui, |ui| {
                     ui.label("File metadata changed");
-                    ui.monospace(String::from_utf8_lossy(&diff.raw_patch));
+                    if diff.is_rename {
+                        ui.label(format!(
+                            "Renamed: {} → {}",
+                            diff.old_path.as_deref().unwrap_or("?"),
+                            diff.file_path
+                        ));
+                    }
+                    if diff.old_mode != diff.new_mode {
+                        ui.label(format!(
+                            "File mode: {:06o} → {:06o}",
+                            diff.old_mode, diff.new_mode
+                        ));
+                    }
+                    if !self.comparison.ignore_whitespace {
+                        ui.monospace(String::from_utf8_lossy(&diff.raw_patch));
+                    }
                 });
             });
             return Vec::new();
@@ -979,6 +1040,8 @@ impl DiffView {
             })
         } else if diff_opt.as_ref().map_or(false, |d| d.is_binary) {
             Some("Binary file — no diff available.")
+        } else if self.items.is_empty() && self.comparison.ignore_whitespace {
+            Some("No visible changes. Whitespace-only changes may be hidden.")
         } else if self.items.is_empty() {
             Some("No changes.")
         } else {
@@ -1093,6 +1156,9 @@ fn render_unified(
                     None
                 };
                 let hover_pos = resp.hover_pos();
+                // How to stage single lines is explained where it applies: a
+                // tooltip on the changed line under the pointer.
+                let mut line_hint: Option<&str> = None;
 
                 let first = ((clip.top() - origin.y) / ROW_HEIGHT).floor().max(0.0) as usize;
                 let last = (((clip.bottom() - origin.y) / ROW_HEIGHT).ceil() as usize + 1)
@@ -1144,10 +1210,21 @@ fn render_unified(
 
                                 let btn_w = 94.0;
                                 let btn_h = ROW_HEIGHT - 4.0;
+                                // Extra space keeps Discard from sitting flush against
+                                // Stage, so a slip of the pointer lands on nothing.
+                                let discard_gap = 16.0;
+                                let gaps = if btns.iter().any(|(_, _, discard)| *discard) {
+                                    discard_gap
+                                } else {
+                                    0.0
+                                };
                                 let mut btn_x =
-                                    clip.right() - (btns.len() as f32 * (btn_w + 4.0)) - 4.0;
+                                    clip.right() - (btns.len() as f32 * (btn_w + 4.0)) - gaps - 4.0;
 
                                 for (label, col, is_discard) in btns {
+                                    if *is_discard {
+                                        btn_x += discard_gap;
+                                    }
                                     let btn_rect = Rect::from_min_size(
                                         Pos2::new(btn_x, y + 2.0),
                                         Vec2::new(btn_w, btn_h),
@@ -1294,6 +1371,9 @@ fn render_unified(
                             if is_workdir && (*ch == '+' || *ch == '-') {
                                 let is_hovered = hover_pos.map_or(false, |p| row_rect.contains(p));
                                 if is_hovered {
+                                    let over_numbers =
+                                        hover_pos.is_some_and(|p| p.x < origin.x + U_GUTTER);
+                                    line_hint = Some(line_hint_text(over_numbers, is_staged));
                                     let gutter_rect = Rect::from_min_size(
                                         Pos2::new(origin.x, y),
                                         Vec2::new(BAR_W + 4.0, ROW_HEIGHT),
@@ -1357,10 +1437,25 @@ fn render_unified(
                 });
                 copy_menu(ui, &resp, items, selected, pointer_row);
                 copy_shortcut(ui, items, selected, resp.hovered());
+                if let Some(hint) = line_hint {
+                    resp.on_hover_text_at_pointer(hint);
+                }
             });
     });
 
     actions.into_inner()
+}
+
+/// Tooltip for a changed line in a working-tree diff. Clicking the line numbers
+/// stages (or unstages) that one line at once; clicking the code selects it.
+fn line_hint_text(over_numbers: bool, staged: bool) -> &'static str {
+    match (over_numbers, staged) {
+        (true, false) => "Click to stage this line now.",
+        (true, true) => "Click to unstage this line now.",
+        (false, _) => {
+            "Click to select this line, then stage or discard the selection.              Ctrl/Cmd adds a line; Shift selects a range."
+        }
+    }
 }
 
 // ── Split renderer ────────────────────────────────────────────────────────────
@@ -1938,6 +2033,7 @@ mod tests {
 
     fn diff(lines: &[(char, &str)]) -> FileDiff {
         FileDiff {
+            canonical_hunks: None,
             binary_preview: None,
             raw_patch: Vec::new(),
             old_path: None,
@@ -1962,6 +2058,64 @@ mod tests {
             is_binary: false,
             additions: lines.iter().filter(|(origin, _)| *origin == '+').count(),
             deletions: lines.iter().filter(|(origin, _)| *origin == '-').count(),
+        }
+    }
+
+    #[test]
+    fn diff_controls_hidden_whitespace_notice_never_renders_canonical_text() {
+        for metadata in [false, true] {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::icons::font_definitions());
+            let mut view = DiffView::new(crate::state::new_shared_state());
+            view.comparison.ignore_whitespace = true;
+            let mut hidden = diff(&[('-', "sentinel hidden old"), ('+', "sentinel hidden new")]);
+            hidden.canonical_hunks = Some(hidden.hunks.clone());
+            hidden.hunks.clear();
+            hidden.raw_patch = b"sentinel canonical whitespace patch".to_vec();
+            if metadata {
+                hidden.new_mode = 0o100755;
+                hidden.is_rename = true;
+                hidden.old_path = Some("before.rs".into());
+            }
+            let file_diff = Some(Arc::new(hidden));
+            let selected = Some("example.rs".into());
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 500.0));
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            });
+            let mut ui = Ui::new(
+                ctx.clone(),
+                egui::Id::new("hidden_whitespace"),
+                egui::UiBuilder::new().max_rect(rect),
+            );
+            let actions = view.show_diff_area(
+                &mut ui,
+                &file_diff,
+                &selected,
+                &[],
+                DiffContext::UnstagedFile,
+                &[],
+                0,
+            );
+            assert!(actions.is_empty());
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            let text = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("Whitespace-only changes hidden"));
+            assert!(!text.contains("sentinel"));
+            assert_eq!(text.contains("File metadata changed"), metadata);
+            assert_eq!(text.contains("File mode: 100644"), metadata);
+            assert_eq!(text.contains("100755"), metadata);
+            assert_eq!(text.contains("Renamed: before.rs"), metadata);
         }
     }
 
@@ -2111,20 +2265,29 @@ mod tests {
                 matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
             })
         };
-        let hint = "Tip: click line numbers to select lines to stage or discard.";
+        // Guidance is a pointer tooltip on changed lines, never a banner.
         let output = draw(&mut view);
-        assert!(has_text(&output, hint));
+        assert!(!output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.text().starts_with("Tip:")
+        )));
         assert!(!has_text(&output, "Discard selected lines…"));
         view.selected_rows.insert(1);
         let output = draw(&mut view);
         assert!(has_text(&output, "Stage selected lines (1)"));
         assert!(has_text(&output, "Discard selected lines…"));
         assert!(!has_text(&output, "Discard"));
-        assert!(!has_text(&output, hint));
         view.selected_rows.clear();
         let output = draw(&mut view);
-        assert!(has_text(&output, hint));
         assert!(!has_text(&output, "Discard selected lines…"));
+    }
+
+    #[test]
+    fn line_tooltips_match_what_a_click_does() {
+        // Line numbers stage or unstage immediately; the code area selects.
+        assert!(line_hint_text(true, false).contains("stage this line"));
+        assert!(line_hint_text(true, true).contains("unstage this line"));
+        assert!(line_hint_text(false, false).starts_with("Click to select"));
     }
 
     #[test]
@@ -2219,7 +2382,7 @@ mod tests {
             );
             if focus_text {
                 let mut text = "editor text".to_string();
-                ui.add(egui::TextEdit::singleline(&mut text))
+                ui.add(crate::ui::kit::text_field(&mut text))
                     .request_focus();
                 assert!(ctx.egui_wants_keyboard_input());
             }

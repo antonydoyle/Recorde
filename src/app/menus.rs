@@ -261,28 +261,39 @@ impl RecordeApp {
                     ui.close();
                 }
                 ui.separator();
-                if ui
-                    .checkbox(&mut self.config.show_sidebar, "Show Sidebar")
+                if crate::ui::kit::menu_check(ui, &mut self.config.show_sidebar, "Show Sidebar")
                     .on_hover_text("Show or hide the repository list.")
                     .changed()
                 {
                     self.save_config();
                 }
-                if ui
-                    .checkbox(
-                        &mut self.config.show_right_panel,
-                        "Show Changes / Details Panel",
-                    )
-                    .on_hover_text("Show or hide the Changes and commit details panel.")
-                    .changed()
+                if crate::ui::kit::menu_check(
+                    ui,
+                    &mut self.config.show_right_panel,
+                    "Show Changes / Details Panel",
+                )
+                .on_hover_text("Show or hide the Changes and commit details panel.")
+                .changed()
                 {
                     self.save_config();
                 }
-                if ui
-                    .checkbox(&mut self.config.show_diff_panel, "Show Diff Panel")
-                    .on_hover_text("Show or hide the selected file's changes.")
+                if crate::ui::kit::menu_check(
+                    ui,
+                    &mut self.config.show_diff_panel,
+                    "Show Diff Panel",
+                )
+                .on_hover_text("Show or hide the selected file's changes.")
+                .changed()
+                {
+                    self.save_config();
+                }
+                if crate::ui::kit::menu_check(ui, &mut self.config.show_terminal, "Show Terminal")
+                    .on_hover_text("Show or hide the integrated terminal.")
                     .changed()
                 {
+                    if self.config.show_terminal {
+                        self.terminal.focus();
+                    }
                     self.save_config();
                 }
                 if menu_entry(
@@ -299,16 +310,18 @@ impl RecordeApp {
                     ui.close();
                 }
                 ui.separator();
-                for (label, pane) in [
-                    ("Focus Sidebar", 1),
-                    ("Focus Commit Graph", 2),
-                    ("Focus Changes", 3),
-                    ("Focus Diff", 4),
+                // Name each entry's command so the menu shows its effective
+                // shortcut (Ctrl+1 to Ctrl+4 by default), like the other menus.
+                for (label, pane, command) in [
+                    ("Focus Sidebar", 1, crate::commands::Command::Sidebar),
+                    ("Focus Commit Graph", 2, crate::commands::Command::Graph),
+                    ("Focus Changes", 3, crate::commands::Command::Changes),
+                    ("Focus Diff", 4, crate::commands::Command::Diff),
                 ] {
                     if menu_entry(
                         ui,
                         label,
-                        None,
+                        Some(command),
                         &self.state,
                         &self.config.shortcuts,
                         "Move keyboard focus to this part of the window.",
@@ -640,6 +653,18 @@ impl RecordeApp {
             });
 
             ui.menu_button("Help", |ui| {
+                if ui.button("Offline support report…").clicked() {
+                    self.support.open = true;
+                    ui.close();
+                }
+                if let Some(value) = &self.git_readiness.value {
+                    ui.label(value.summary());
+                }
+                if ui.button("Git readiness…").clicked() {
+                    self.open_settings(SettingsTab::Git);
+                    ui.close();
+                }
+                ui.separator();
                 for (label, page) in [
                     ("User Guide", "User-Guide"),
                     ("Feature Reference", "Feature-Reference"),

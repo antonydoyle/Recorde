@@ -99,7 +99,7 @@ impl BrowserLogin {
                     let label = ui.label("Client ID");
                     ui.add_enabled(
                         editing,
-                        egui::TextEdit::singleline(client_id)
+                        crate::ui::kit::text_field(client_id)
                             .desired_width(ui.available_width())
                             .hint_text("Registered public client ID"),
                     )

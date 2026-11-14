@@ -1,5 +1,11 @@
 # Accounts, identities and tools
 
+## Installed Git and Git LFS
+
+Open Help > Git readiness or Settings > Git to see the exact system Git executable and version, Git LFS availability, and the bundled libgit2 version. Git 2.36 or newer is required for repository commands: Recorde uses NUL-delimited worktree safety checks and merge-preserving history introduced in [Git 2.36](https://github.com/git/git/blob/master/Documentation/RelNotes/2.36.0.adoc). Repository browsing uses bundled libgit2 independently. Recorde does not bundle Git.
+
+Leave Git executable empty to discover Git on PATH, or enter its absolute path and choose Apply Git executable. After installing, updating or replacing Git or Git LFS, choose Retry Git check. Checks run in the background and refresh when the executable or configuration changes. Git LFS is optional and installed separately; its absence does not prevent ordinary Git operations.
+
 ## Commit identity and profiles
 
 Open Settings > Accounts & SSH to configure your Git name and email and save named profiles such as Work or Personal. A profile contains a commit name, email, optional signing key, saved provider-account selections and optional appearance/tool preferences.
@@ -34,7 +40,7 @@ Authentication using SSH depends on your SSH configuration and agent. A commit p
 
 ## Integrated terminal
 
-Toggle integrated terminal from the command palette or Ctrl+Backtick. The Terminal commands panel keeps separate command tabs for each repository or worktree. New tab creates another tab for the current repository, with up to eight tabs across the app. Each tab retains its own input, command history and output during the app session. Switching repositories selects that repository's tabs; commands already running keep their original directory.
+Toggle integrated terminal from the command palette or Ctrl+` (the backtick key). The Terminal commands panel keeps separate command tabs for each repository or worktree. New tab creates another tab for the current repository, with up to eight tabs across the app. Each tab retains its own input, command history and output during the app session. Switching repositories selects that repository's tabs; commands already running keep their original directory.
 
 Each command runs in the tab's repository folder in a fresh shell: cmd.exe on Windows, sh on Linux/macOS. A tab runs one command at a time and streams standard output and errors. Other tabs can run independently. These are retained command tabs, not persistent shell sessions.
 

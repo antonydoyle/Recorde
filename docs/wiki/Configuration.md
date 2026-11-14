@@ -50,7 +50,10 @@ The path is resolved with the `dirs` crate. On typical Linux systems this is
 The `Config` model contains:
 
 - `recent_repos`: up to ten recently opened repositories.
-- `dark_theme`: enabled by default.
+- `dark_theme`: enabled by default. Ignored while a single-mode theme is selected.
+- `theme_palette`: `classic` (default), `siege`, `monokai`, `tokyo_night`, `dracula`,
+  `one_dark_pro`, `nord`, `gruvbox_dark`, `synthwave_84`, `github_light`,
+  `solarized_light` or `catppuccin_latte`.
 - `high_contrast`: high contrast UI mode.
 - `motion`: `system` (default; follows the OS animation setting on Windows), `full` or `reduced`.
 - `default_editor`: external editor command.
@@ -108,7 +111,7 @@ wrappers are refused so repository paths cannot become command-interpreter input
 
 Panel visibility and sizes are saved separately for each repository. In-memory
 forms, conflict/rebase editors and provider forms follow their repository tab.
-The Workspaces menu saves named sets of open tabs and opens favorite repositories.
+The Workspaces menu saves named sets of open tabs and opens favorite repositories. Add or remove a repository from favorites at the top of the Workspaces menu or from its tab's right-click menu.
 
 Repository settings provide shallow-history expansion and cone-mode sparse
 checkout. Changing sparse directories requires a clean index/worktree, including

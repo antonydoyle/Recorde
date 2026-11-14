@@ -3,6 +3,130 @@ use crate::git::test_support::TestRepo;
 use crate::state::AppState;
 
 #[test]
+fn diff_controls_context_full_file_and_native_equivalence() {
+    let fixture = TestRepo::new();
+    let base: String = (1..=60).map(|i| format!("line {i}\n")).collect();
+    fixture.commit("file", base.as_bytes());
+    fixture.write(
+        "file",
+        base.replace("line 5\n", "line   5\n")
+            .replace("line 40\n", "changed\n")
+            .as_bytes(),
+    );
+    let options = |lines, ignore, full| crate::config::DiffComparison {
+        diff_context_lines: lines,
+        ignore_whitespace: ignore,
+        full_file: full,
+    };
+    let small = compute_workdir_comparison(fixture.path(), "file", false, options(1, false, false))
+        .unwrap();
+    assert_eq!(small.hunks.len(), 2);
+    assert!(small.hunks[0].header.starts_with("@@ -4,3 +4,3 @@"));
+    assert_eq!(small.hunks[0].lines.len(), 4);
+    let large =
+        compute_workdir_comparison(fixture.path(), "file", false, options(10, false, false))
+            .unwrap();
+    assert!(large.hunks[0].header.starts_with("@@ -1,15 +1,15 @@"));
+    assert!(large.hunks[0].lines.len() > small.hunks[0].lines.len());
+    let ignored =
+        compute_workdir_comparison(fixture.path(), "file", false, options(3, true, false)).unwrap();
+    assert_eq!(ignored.hunks.len(), 1);
+    assert_eq!(ignored.additions, 1);
+    let full =
+        compute_workdir_comparison(fixture.path(), "file", false, options(3, false, true)).unwrap();
+    assert_eq!(full.hunks.len(), 1);
+    assert_eq!(full.hunks[0].lines.first().unwrap().old_lineno, Some(1));
+    assert_eq!(full.hunks[0].lines.last().unwrap().new_lineno, Some(60));
+    // An unrelated replacement selects the existing native-Git fallback without
+    // changing the fixture's content. These simple fixtures have equivalent hunks.
+    let repo = fixture.open();
+    let a = repo.blob(b"unrelated old").unwrap();
+    let b = repo.blob(b"unrelated new").unwrap();
+    repo.reference(&format!("refs/replace/{a}"), b, true, "fixture")
+        .unwrap();
+    for (options, expected) in [
+        (options(1, false, false), small),
+        (options(10, false, false), large),
+        (options(3, true, false), ignored),
+        (options(3, false, true), full),
+    ] {
+        let native = compute_workdir_comparison(fixture.path(), "file", false, options).unwrap();
+        assert_eq!(native.hunks.len(), expected.hunks.len());
+        assert_eq!(
+            (native.additions, native.deletions),
+            (expected.additions, expected.deletions)
+        );
+    }
+}
+
+#[test]
+fn diff_controls_staged_commit_rename_and_limits() {
+    let fixture = TestRepo::new();
+    let text: String = (0..40).map(|i| format!("line {i}\n")).collect();
+    fixture.commit("old", text.as_bytes());
+    fixture.git_ok(&["mv", "old", "new"]);
+    fixture.write("new", text.replace("line 20", "change 20").as_bytes());
+    fixture.git_ok(&["add", "new"]);
+    let comparison = crate::config::DiffComparison {
+        full_file: true,
+        ..Default::default()
+    };
+    let staged = compute_workdir_comparison(fixture.path(), "new", true, comparison).unwrap();
+    assert!(staged.is_rename);
+    assert_eq!(staged.old_path.as_deref(), Some("old"));
+    assert!(super::super::patch::multi_selection_patch(&staged, &[(0, 21)], true).is_err());
+    fixture.git_ok(&["commit", "-m", "rename"]);
+    let committed = compute_commit_comparison(
+        fixture.path(),
+        &fixture.head().to_string(),
+        "new",
+        comparison,
+    )
+    .unwrap();
+    assert!(committed.is_rename);
+    assert_eq!(committed.hunks.len(), staged.hunks.len());
+    fixture.write("binary", b"a\0b");
+    assert!(compute_workdir_comparison(fixture.path(), "binary", false, comparison).is_err());
+    fixture.write("big", &vec![b'x'; 1024 * 1024 + 1]);
+    assert!(
+        compute_workdir_diff(fixture.path(), "big", false)
+            .unwrap()
+            .is_binary
+    );
+    assert!(compute_workdir_comparison(fixture.path(), "big", false, comparison).is_err());
+    fixture.write("many", "a\n".repeat(10_001).as_bytes());
+    assert!(
+        compute_workdir_comparison(fixture.path(), "many", false, comparison)
+            .unwrap_err()
+            .message()
+            .contains("10,000")
+    );
+}
+
+#[test]
+fn diff_controls_hidden_whitespace_preserves_mode_metadata() {
+    let fixture = TestRepo::new();
+    fixture.commit("file", b"white space\n");
+    fixture.write("file", b"white   space\n");
+    fixture.git_ok(&["add", "file"]);
+    fixture.git_ok(&["update-index", "--chmod=+x", "file"]);
+    let diff = compute_workdir_comparison(
+        fixture.path(),
+        "file",
+        true,
+        crate::config::DiffComparison {
+            ignore_whitespace: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(diff.hunks.is_empty());
+    assert_eq!(diff.old_mode, 0o100644);
+    assert_eq!(diff.new_mode, 0o100755);
+    assert!(diff.canonical_hunks.as_ref().is_some_and(|h| !h.is_empty()));
+}
+
+#[test]
 fn replacement_details_and_diffs_follow_effective_commit_and_tree() {
     let fixture = TestRepo::new();
     let base = fixture.commit("file", b"base\n");

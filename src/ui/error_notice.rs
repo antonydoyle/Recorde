@@ -8,6 +8,7 @@ use crate::ui::{kit, motion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
+    GitReadiness,
     WorkflowScope,
     SignIn,
     HostKey,
@@ -29,6 +30,10 @@ fn details_open_by_default(kind: ErrorKind, message: &str) -> bool {
 pub fn classify(message: &str) -> ErrorKind {
     let message = message.to_ascii_lowercase();
     let rules: &[(ErrorKind, &[&str])] = &[
+        (
+            ErrorKind::GitReadiness,
+            &["system git readiness", "retry git check"],
+        ),
         (
             ErrorKind::WorkflowScope,
             &[
@@ -98,6 +103,7 @@ pub fn classify(message: &str) -> ErrorKind {
 impl ErrorKind {
     pub fn title(self) -> &'static str {
         match self {
+            Self::GitReadiness => "Git needs attention",
             Self::SignIn => "Sign-in needed",
             Self::WorkflowScope => "GitHub needs the workflow permission",
             Self::HostKey => "Unknown SSH host",
@@ -112,6 +118,7 @@ impl ErrorKind {
 
     pub fn guidance(self) -> &'static str {
         match self {
+            Self::GitReadiness => "Check the installed Git executable in Settings > Git, then retry the Git check. Repository browsing uses bundled libgit2.",
             Self::SignIn => {
                 "Check the account for this remote in Settings > Accounts & SSH, or sign in again."
             }
@@ -137,7 +144,7 @@ impl ErrorKind {
     }
 }
 
-pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) {
+pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) -> bool {
     let visible_id = egui::Id::new("error_overlay_visible");
     // The last dismissed notice, kept only while it fades out.
     let closing_id = egui::Id::new("error_overlay_closing");
@@ -150,7 +157,7 @@ pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) {
             Some(error) => (error, false),
             None => {
                 motion::progress(ctx, visible_id, false, motion::FAST);
-                return;
+                return false;
             }
         },
     };
@@ -158,11 +165,12 @@ pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) {
     let progress = motion::progress(ctx, visible_id, live, seconds);
     if !live && progress <= 0.0 {
         ctx.data_mut(|data| data.remove::<UserError>(closing_id));
-        return;
+        return false;
     }
     let error = &error;
     let mut dismiss = false;
     let mut dismiss_all = false;
+    let mut retry_git = false;
     egui::Area::new(egui::Id::new("error_overlay"))
         .anchor(egui::Align2::CENTER_TOP, [0.0, 146.0])
         .order(egui::Order::Foreground)
@@ -180,6 +188,9 @@ pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) {
                 .show(ui, |ui| {
                     ui.set_max_width(720.0);
                     ui.horizontal(|ui| {
+                        if error.kind == ErrorKind::GitReadiness {
+                            retry_git = ui.add(kit::secondary_button("Retry Git check")).clicked();
+                        }
                         ui.label(RichText::new("! ").color(theme::accent_red()).strong());
                         ui.label(
                             RichText::new(error.kind.title())
@@ -229,7 +240,7 @@ pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) {
                 });
         });
     if !live {
-        return;
+        return false;
     }
     if dismiss_all {
         errors.clear();
@@ -239,6 +250,7 @@ pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) {
     if (dismiss || dismiss_all) && errors.is_empty() {
         ctx.data_mut(|data| data.insert_temp(closing_id, error.clone()));
     }
+    retry_git
 }
 
 #[cfg(test)]
@@ -259,6 +271,10 @@ mod tests {
     #[test]
     fn classifies_git_failures_with_specific_rules_first() {
         let cases = [
+            (
+                "System Git readiness: install Git, then choose Retry Git check",
+                ErrorKind::GitReadiness,
+            ),
             (
                 "fatal: Authentication failed for 'https://github.com/o/r.git/'",
                 ErrorKind::SignIn,

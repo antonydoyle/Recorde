@@ -8,17 +8,119 @@ pub enum Palette {
     #[default]
     Classic,
     Siege,
+    Monokai,
+    TokyoNight,
+    Dracula,
+    OneDarkPro,
+    Nord,
+    GruvboxDark,
+    #[serde(rename = "synthwave_84")]
+    Synthwave84,
+    GithubLight,
+    SolarizedLight,
+    CatppuccinLatte,
 }
 
 impl Palette {
-    pub const ALL: [Self; 2] = [Self::Classic, Self::Siege];
+    pub const ALL: [Self; 12] = [
+        Self::Classic,
+        Self::Siege,
+        Self::Monokai,
+        Self::TokyoNight,
+        Self::Dracula,
+        Self::OneDarkPro,
+        Self::Nord,
+        Self::GruvboxDark,
+        Self::Synthwave84,
+        Self::GithubLight,
+        Self::SolarizedLight,
+        Self::CatppuccinLatte,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Classic => "Classic",
             Self::Siege => "Siege21",
+            Self::Monokai => "Monokai",
+            Self::TokyoNight => "Tokyo Night",
+            Self::Dracula => "Dracula",
+            Self::OneDarkPro => "One Dark Pro",
+            Self::Nord => "Nord",
+            Self::GruvboxDark => "Gruvbox Dark",
+            Self::Synthwave84 => "SynthWave '84",
+            Self::GithubLight => "GitHub Light",
+            Self::SolarizedLight => "Solarized Light",
+            Self::CatppuccinLatte => "Catppuccin Latte",
         }
     }
+
+    /// Colours for a single-mode theme. Classic and Siege21 have light and dark
+    /// variants chosen by the Dark theme preference, so they return `None`.
+    pub fn tokens(self) -> Option<&'static ThemeTokens> {
+        Some(match self {
+            Self::Classic | Self::Siege => return None,
+            Self::Monokai => &vscode::MONOKAI,
+            Self::TokyoNight => &vscode::TOKYO_NIGHT,
+            Self::Dracula => &vscode::DRACULA,
+            Self::OneDarkPro => &vscode::ONE_DARK_PRO,
+            Self::Nord => &vscode::NORD,
+            Self::GruvboxDark => &vscode::GRUVBOX_DARK,
+            Self::Synthwave84 => &vscode::SYNTHWAVE,
+            Self::GithubLight => &vscode::GITHUB_LIGHT,
+            Self::SolarizedLight => &vscode::SOLARIZED_LIGHT,
+            Self::CatppuccinLatte => &vscode::CATPPUCCIN_LATTE,
+        })
+    }
+
+    /// `Some(dark)` when the theme decides light or dark itself, overriding the
+    /// Dark theme preference.
+    pub fn fixed_dark(self) -> Option<bool> {
+        self.tokens().map(|tokens| tokens.dark)
+    }
+
+    fn from_index(index: u8) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|palette| *palette as u8 == index)
+            .unwrap_or_default()
+    }
+}
+
+mod vscode;
+
+/// Every colour role for a single-mode theme, mirroring how Siege21 is built:
+/// layered surfaces, one interactive accent (`accent`, readable as small text)
+/// with its button fill, accent-tinted selection, theme-coloured diffs and
+/// graph lanes from the theme's palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThemeTokens {
+    pub dark: bool,
+    pub bg_app: Color32,
+    pub bg_titlebar: Color32,
+    pub bg_toolbar: Color32,
+    pub bg_panel: Color32,
+    pub bg_panel_alt: Color32,
+    pub bg_hover: Color32,
+    pub bg_selected: Color32,
+    pub bg_elevated: Color32,
+    pub border: Color32,
+    pub border_strong: Color32,
+    pub text_primary: Color32,
+    pub text_secondary: Color32,
+    pub text_muted: Color32,
+    pub bg_diff_add: Color32,
+    pub bg_diff_del: Color32,
+    pub bg_diff_hunk: Color32,
+    pub accent: Color32,
+    pub primary_fill: Color32,
+    pub on_primary: Color32,
+    pub green: Color32,
+    pub red: Color32,
+    pub yellow: Color32,
+    pub purple: Color32,
+    pub orange: Color32,
+    pub teal: Color32,
+    pub lanes: [Color32; 8],
 }
 
 static DARK_MODE: AtomicBool = AtomicBool::new(true);
@@ -31,6 +133,23 @@ pub fn set_palette(palette: Palette) {
 
 fn siege() -> bool {
     PALETTE.load(Ordering::Relaxed) == Palette::Siege as u8
+}
+
+/// The active single-mode theme's colours. High contrast keeps its own
+/// surfaces, so it bypasses theme colours.
+fn themed() -> Option<&'static ThemeTokens> {
+    if high_contrast() {
+        None
+    } else {
+        Palette::from_index(PALETTE.load(Ordering::Relaxed)).tokens()
+    }
+}
+
+/// True when the active theme decides light or dark itself.
+pub fn mode_is_fixed() -> bool {
+    Palette::from_index(PALETTE.load(Ordering::Relaxed))
+        .fixed_dark()
+        .is_some()
 }
 
 // Siege21's published identity, sampled from https://siege21.com/assets/css/styles.css.
@@ -178,6 +297,9 @@ fn pick(
 // ── Dynamic colour accessors — use these in UI paint calls ────────────────────
 #[inline]
 pub fn bg_app() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_app;
+    }
     pick(
         BG_APP,
         light::BG_APP,
@@ -189,6 +311,9 @@ pub fn bg_app() -> Color32 {
 }
 #[inline]
 pub fn bg_titlebar() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_titlebar;
+    }
     pick(
         BG_TITLEBAR,
         light::BG_TITLEBAR,
@@ -200,6 +325,9 @@ pub fn bg_titlebar() -> Color32 {
 }
 #[inline]
 pub fn bg_toolbar() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_toolbar;
+    }
     pick(
         BG_TOOLBAR,
         light::BG_TOOLBAR,
@@ -211,6 +339,9 @@ pub fn bg_toolbar() -> Color32 {
 }
 #[inline]
 pub fn bg_panel() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_panel;
+    }
     pick(
         BG_PANEL,
         light::BG_PANEL,
@@ -222,6 +353,9 @@ pub fn bg_panel() -> Color32 {
 }
 #[inline]
 pub fn bg_panel_alt() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_panel_alt;
+    }
     pick(
         BG_PANEL_ALT,
         light::BG_PANEL_ALT,
@@ -233,6 +367,9 @@ pub fn bg_panel_alt() -> Color32 {
 }
 #[inline]
 pub fn bg_hover() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_hover;
+    }
     pick(
         BG_HOVER,
         light::BG_HOVER,
@@ -244,6 +381,9 @@ pub fn bg_hover() -> Color32 {
 }
 #[inline]
 pub fn bg_selected() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_selected;
+    }
     pick(
         BG_SELECTED,
         light::BG_SELECTED,
@@ -255,6 +395,9 @@ pub fn bg_selected() -> Color32 {
 }
 #[inline]
 pub fn bg_elevated() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_elevated;
+    }
     pick(
         BG_ELEVATED,
         light::BG_ELEVATED,
@@ -274,6 +417,9 @@ pub fn bg_base() -> Color32 {
 }
 #[inline]
 pub fn border() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.border;
+    }
     pick(
         BORDER,
         light::BORDER,
@@ -285,6 +431,9 @@ pub fn border() -> Color32 {
 }
 #[inline]
 pub fn border_strong() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.border_strong;
+    }
     pick(
         BORDER_STRONG,
         light::BORDER_STRONG,
@@ -296,6 +445,9 @@ pub fn border_strong() -> Color32 {
 }
 #[inline]
 pub fn text_primary() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.text_primary;
+    }
     pick(
         TEXT_PRIMARY,
         light::TEXT_PRIMARY,
@@ -307,6 +459,9 @@ pub fn text_primary() -> Color32 {
 }
 #[inline]
 pub fn text_secondary() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.text_secondary;
+    }
     pick(
         TEXT_SECONDARY,
         light::TEXT_SECONDARY,
@@ -318,6 +473,9 @@ pub fn text_secondary() -> Color32 {
 }
 #[inline]
 pub fn text_muted() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.text_muted;
+    }
     pick(
         TEXT_MUTED,
         light::TEXT_MUTED,
@@ -329,6 +487,9 @@ pub fn text_muted() -> Color32 {
 }
 #[inline]
 pub fn bg_diff_add() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_diff_add;
+    }
     pick(
         BG_DIFF_ADD,
         light::BG_DIFF_ADD,
@@ -340,6 +501,9 @@ pub fn bg_diff_add() -> Color32 {
 }
 #[inline]
 pub fn bg_diff_del() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_diff_del;
+    }
     pick(
         BG_DIFF_DEL,
         light::BG_DIFF_DEL,
@@ -351,6 +515,9 @@ pub fn bg_diff_del() -> Color32 {
 }
 #[inline]
 pub fn bg_diff_hunk() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.bg_diff_hunk;
+    }
     pick(
         BG_DIFF_HUNK,
         light::BG_DIFF_HUNK,
@@ -408,6 +575,9 @@ fn siege_accent() -> Color32 {
 }
 
 pub fn accent_blue() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.accent;
+    }
     if siege() {
         siege_accent()
     } else if dark() {
@@ -416,16 +586,17 @@ pub fn accent_blue() -> Color32 {
         Color32::from_rgb(49, 88, 198)
     }
 }
+/// The interactive accent: focus, current item, selected navigation and active
+/// tabs. Every palette uses one accent for this role, matching its selection
+/// surfaces and primary button, so Classic resolves to its blue and Siege21 to
+/// its orange. `ACCENT_TEAL` remains for badges and other fixed hues.
 pub fn accent_teal() -> Color32 {
-    if siege() {
-        siege_accent()
-    } else if dark() {
-        ACCENT_TEAL
-    } else {
-        Color32::from_rgb(13, 115, 94)
-    }
+    accent_blue()
 }
 pub fn accent_purple() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.purple;
+    }
     if dark() {
         ACCENT_PURPLE
     } else {
@@ -433,6 +604,9 @@ pub fn accent_purple() -> Color32 {
     }
 }
 pub fn accent_orange() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.orange;
+    }
     if siege() {
         siege_accent()
     } else if dark() {
@@ -442,6 +616,9 @@ pub fn accent_orange() -> Color32 {
     }
 }
 pub fn accent_green() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.green;
+    }
     if dark() {
         ACCENT_GREEN
     } else {
@@ -449,6 +626,9 @@ pub fn accent_green() -> Color32 {
     }
 }
 pub fn accent_red() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.red;
+    }
     if dark() {
         ACCENT_RED
     } else {
@@ -456,6 +636,9 @@ pub fn accent_red() -> Color32 {
     }
 }
 pub fn accent_yellow() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.yellow;
+    }
     if dark() {
         ACCENT_YELLOW
     } else {
@@ -463,6 +646,9 @@ pub fn accent_yellow() -> Color32 {
     }
 }
 pub fn primary_fill() -> Color32 {
+    if let Some(theme) = themed() {
+        return theme.primary_fill;
+    }
     if siege() {
         SIEGE_ORANGE
     } else if dark() {
@@ -472,7 +658,7 @@ pub fn primary_fill() -> Color32 {
     }
 }
 pub fn on_primary() -> Color32 {
-    Color32::WHITE
+    themed().map_or(Color32::WHITE, |theme| theme.on_primary)
 }
 
 /// Choose a readable label for opaque coloured badges and semantic buttons.
@@ -506,6 +692,9 @@ pub const BG_DIFF_ADD_LINE: Color32 = Color32::from_rgb(171, 224, 171);
 pub const BG_DIFF_DEL_LINE: Color32 = Color32::from_rgb(240, 160, 160);
 
 // ── Font sizes ────────────────────────────────────────────────────────────────
+/// Height of standard buttons and text fields (egui's interaction height).
+pub const CONTROL_HEIGHT: f32 = 32.0;
+
 pub mod font_size {
     pub const TITLE: f32 = 18.0;
     pub const SECTION: f32 = 12.0;
@@ -565,9 +754,18 @@ pub const LANE_COLORS_COLORBLIND: &[Color32] = &[
 ];
 
 pub fn lane_color(lane: usize) -> Color32 {
+    // A fixed teal keeps eight distinct hues now that the interactive accent
+    // (`accent_teal`) resolves to the same colour as `accent_blue`.
+    let teal = if let Some(theme) = themed() {
+        theme.teal
+    } else if dark() {
+        ACCENT_TEAL
+    } else {
+        Color32::from_rgb(13, 115, 94)
+    };
     let colors = [
         accent_blue(),
-        accent_teal(),
+        teal,
         accent_purple(),
         accent_orange(),
         accent_green(),
@@ -588,6 +786,8 @@ pub fn lane_color_for_palette(lane: usize, colorblind: bool) -> Color32 {
         } else {
             color
         }
+    } else if let Some(theme) = themed() {
+        theme.lanes[lane % theme.lanes.len()]
     } else {
         let colors = if dark() {
             LANE_COLORS
@@ -676,6 +876,8 @@ pub fn apply(ctx: &egui::Context, dark: bool, contrast: bool) {
 }
 
 pub fn apply_palette(ctx: &egui::Context, dark: bool, contrast: bool, palette: Palette) {
+    // Single-mode themes (Monokai, GitHub Light and so on) decide light or dark.
+    let dark = palette.fixed_dark().unwrap_or(dark);
     set_palette(palette);
     set_dark(dark);
     set_high_contrast(contrast);
@@ -738,7 +940,7 @@ pub fn apply_palette(ctx: &egui::Context, dark: bool, contrast: bool, palette: P
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);
         s.spacing.window_margin = egui::Margin::same(16);
         s.spacing.button_padding = egui::vec2(12.0, 7.0);
-        s.spacing.interact_size.y = 32.0;
+        s.spacing.interact_size.y = CONTROL_HEIGHT;
         // Reveals, collapsing headers and windows share one duration (zero when
         // reduced motion is in effect).
         s.animation_time = crate::ui::motion::duration(crate::ui::motion::NORMAL);
@@ -846,6 +1048,109 @@ mod typography_tests {
         assert_eq!(
             super::SIEGE_ORANGE,
             egui::Color32::from_rgb(0xd5, 0x43, 0x29)
+        );
+    }
+
+    #[test]
+    fn single_mode_themes_keep_text_controls_and_lanes_readable() {
+        for palette in super::Palette::ALL {
+            let Some(t) = palette.tokens() else {
+                continue;
+            };
+            let name = palette.label();
+            let surfaces = [
+                t.bg_app,
+                t.bg_panel,
+                t.bg_panel_alt,
+                t.bg_hover,
+                t.bg_selected,
+                t.bg_elevated,
+            ];
+            for (role, text) in [
+                ("primary text", t.text_primary),
+                ("secondary text", t.text_secondary),
+                ("muted text", t.text_muted),
+                ("accent", t.accent),
+            ] {
+                for surface in surfaces {
+                    assert!(
+                        contrast(text, surface) >= 4.5,
+                        "{name}: {role} {text:?} on {surface:?} is below 4.5:1"
+                    );
+                }
+            }
+            for surface in [t.bg_app, t.bg_panel, t.bg_hover] {
+                for status in [t.green, t.red, t.yellow, t.purple, t.orange, t.teal] {
+                    assert!(
+                        contrast(status, surface) >= 4.5,
+                        "{name}: status colour {status:?} on {surface:?} is below 4.5:1"
+                    );
+                }
+            }
+            for surface in surfaces {
+                assert!(
+                    contrast(t.border_strong, surface) >= 3.0,
+                    "{name}: control outlines must reach 3:1"
+                );
+            }
+            assert!(
+                contrast(t.primary_fill, t.on_primary) >= 4.5,
+                "{name}: primary button label is below 4.5:1"
+            );
+            for lane in t.lanes {
+                assert!(
+                    contrast(lane, t.bg_app) >= 3.0,
+                    "{name}: graph lane {lane:?} is below 3:1"
+                );
+            }
+            // Light themes are lighter than their text, dark themes darker.
+            assert_eq!(
+                t.dark,
+                super::relative_luminance(t.bg_panel) < super::relative_luminance(t.text_primary),
+                "{name}: mode does not match its surfaces"
+            );
+        }
+    }
+
+    #[test]
+    fn single_mode_themes_decide_light_or_dark() {
+        let ctx = egui::Context::default();
+        for palette in super::Palette::ALL {
+            for preference in [false, true] {
+                super::apply_palette(&ctx, preference, false, palette);
+                let expected = palette.fixed_dark().unwrap_or(preference);
+                assert_eq!(
+                    super::is_dark(),
+                    expected,
+                    "{palette:?} with dark={preference}"
+                );
+                assert_eq!(super::mode_is_fixed(), palette.fixed_dark().is_some());
+                if let Some(t) = palette.tokens() {
+                    assert_eq!(super::bg_panel(), t.bg_panel);
+                    assert_eq!(super::accent_blue(), t.accent);
+                    assert_eq!(super::lane_color_for_palette(0, false), t.lanes[0]);
+                }
+            }
+        }
+        // High contrast keeps its own surfaces under any theme.
+        super::apply_palette(&ctx, false, true, super::Palette::Monokai);
+        assert!(super::is_dark());
+        assert_eq!(super::bg_app(), super::high_contrast_dark::BG_APP);
+        super::apply_palette(&ctx, true, false, super::Palette::Classic);
+    }
+
+    #[test]
+    fn theme_names_round_trip_through_settings() {
+        for palette in super::Palette::ALL {
+            let json = serde_json::to_string(&palette).unwrap();
+            assert_eq!(
+                serde_json::from_str::<super::Palette>(&json).unwrap(),
+                palette
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&super::Palette::Synthwave84).unwrap(),
+            "\"synthwave_84\""
         );
     }
 
