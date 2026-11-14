@@ -50,7 +50,9 @@ Recorde is organized around four primary areas:
 - Sidebar: branches, tags, stashes, conflicts, submodules, worktrees, and related
   contextual actions.
 - Commit graph: commit history, branch labels, search, file history highlighting,
-  and commit context actions.
+  and commit context actions. Each commit is shown as its author's initials in
+  the branch colour, outlined in a colour unique to that author, so you can follow
+  both a branch and a person through the history.
 - Right and bottom panels: changes, commit details, staging controls, and diffs.
 
 The Changes panel spans the window height, with a separately scrolling file list
@@ -262,8 +264,10 @@ builds Git's disposable history index when requested.
 
 ## Appearance and updates
 
-Settings > Appearance includes light and dark themes, beige/orange and dark
-orange-accented alternatives, high contrast, scale and colour-blind graph colours.
+Settings > Appearance offers twelve themes: Classic and Siege21 in light and
+dark, and ten themes based on popular VS Code themes, from Monokai and Tokyo Night
+to Solarized Light. It also has high contrast, UI scale, motion and colour-blind
+graph colours.
 See [Themes and accessibility](Themes-and-Accessibility.md) for layout and
 keyboard guidance.
 

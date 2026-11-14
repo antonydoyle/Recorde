@@ -113,10 +113,14 @@ current validation limits.
 
 ## UI and Accessibility
 
-- Dark theme by default.
-- Classic light/dark and orange-accented light/dark theme choices.
+- Twelve themes: Classic and Siege21, each in light and dark (dark by default),
+  plus ten single-mode themes based on popular VS Code themes (Monokai, Tokyo
+  Night, Dracula, One Dark Pro, Nord, Gruvbox Dark, SynthWave '84, GitHub Light,
+  Solarized Light and Catppuccin Latte), adjusted to meet WCAG AA contrast.
+- Graph nodes show each author's initials in the branch colour, outlined in a
+  colour unique to that author. Optional Gravatar author pictures.
 - High contrast mode.
-- Font scaling.
+- Font scaling and reduced motion.
 - Colorblind graph option.
 - Toggleable sidebar, right panel, and diff panel.
 - Persisted graph column widths per repository. Until you resize it, the graph
