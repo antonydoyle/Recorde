@@ -223,6 +223,17 @@ the main window, working-tree and file selection, batch selection, a selected co
 every top-level menu and every Settings page (with scrolled captures) into the artifact
 directory, and writes `tour.log` listing any step that could not be reached.
 
+For marketing screenshots and large-repository checks, generate fictional busy
+repositories outside the source tree with
+`python scripts/generate_showcase_repos.py <external-directory>`. It writes
+`atlas-web` (about 2,600 commits, 80 local and 100 remote branches, tags and a
+dirty working tree), `atlas-api` and `design-system`, deterministically for a
+given `--seed`. Pass them to `windows_smoke.ps1 -Fixture <atlas-web> <atlas-api>
+<design-system>`, which copies each into the artifact directory and opens them as
+tabs, and set `RECORDE_UI_SHOWCASE=1` for the inspector. It captures the overview,
+a selected commit with its diff and a deep-history view, and writes
+`showcase.log` with graph load time, selection and scroll latency.
+
 ## Development Workflow
 
 1. Make focused changes in the relevant module.

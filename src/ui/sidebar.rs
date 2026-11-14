@@ -893,11 +893,21 @@ fn branch_row(
         Pos2::new(dot_x + 12.0, row_rect.min.y),
         Pos2::new(right_edge - ab_width - right_margin, row_rect.max.y),
     );
-    ui.painter_at(text_rect).text(
-        Pos2::new(text_rect.left() + 4.0, text_rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        name,
-        egui::FontId::proportional(13.0),
+    // Long names end in an ellipsis rather than being cut mid-letter; the full
+    // name is shown on hover.
+    let mut job = egui::text::LayoutJob::single_section(
+        name.to_owned(),
+        egui::TextFormat::simple(egui::FontId::proportional(13.0), text_color),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((text_rect.width() - 4.0).max(1.0));
+    let galley = ui.painter().layout_job(job);
+    let elided = galley.elided;
+    ui.painter_at(text_rect).galley(
+        Pos2::new(
+            text_rect.left() + 4.0,
+            text_rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
         text_color,
     );
 
@@ -922,7 +932,11 @@ fn branch_row(
         );
     }
 
-    resp
+    if elided {
+        resp.on_hover_text(name)
+    } else {
+        resp
+    }
 }
 
 fn tag_row(ui: &mut Ui, name: &str) -> egui::Response {

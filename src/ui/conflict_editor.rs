@@ -100,7 +100,13 @@ impl ConflictEditor {
         }
         let mut open = true;
         let mut save = false;
+        // Centred and framed like the other dialogs; it stays movable and resizable.
         egui::Window::new(format!("Resolve {}", self.file)).open(&mut open).default_width(1000.0)
+            .collapsible(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .max_size(ctx.content_rect().size() * 0.94)
+            .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)))
             .show(ctx, |ui| {
                 if self.saving.is_some() { ui.disable(); }
                 if let Some(error) = &self.error { ui.colored_label(crate::theme::accent_red(), error); }

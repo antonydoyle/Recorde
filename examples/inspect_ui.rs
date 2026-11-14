@@ -19,6 +19,8 @@ mod gitflow;
 mod graph_actions;
 #[path = "inspection/recovery.rs"]
 mod recovery;
+#[path = "inspection/showcase.rs"]
+mod showcase;
 #[path = "inspection/tour.rs"]
 mod tour;
 
@@ -370,6 +372,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Design review: RECORDE_UI_TOUR=1 captures screens instead of acceptance checks.
     if std::env::var_os("RECORDE_UI_TOUR").is_some() {
         return tour::run(&mut stream, &directory);
+    }
+    // Marketing captures of a generated busy repository: RECORDE_UI_SHOWCASE=1.
+    if std::env::var_os("RECORDE_UI_SHOWCASE").is_some() {
+        return showcase::run(&mut stream, &directory);
     }
     let mut focused = HashSet::new();
     for step in 0..7 {

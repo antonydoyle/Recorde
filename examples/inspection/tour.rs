@@ -30,7 +30,7 @@ fn press(stream: &mut TcpStream, key: egui::Key) -> Result<(), Box<dyn Error>> {
     )
 }
 
-fn click_at(stream: &mut TcpStream, pos: egui::Pos2) -> Result<(), Box<dyn Error>> {
+pub fn click_at(stream: &mut TcpStream, pos: egui::Pos2) -> Result<(), Box<dyn Error>> {
     for pressed in [true, false] {
         apply_events(
             stream,
@@ -87,7 +87,11 @@ fn click_lowest(stream: &mut TcpStream, label: &str) -> Result<(), Box<dyn Error
     )
 }
 
-fn scroll_at(stream: &mut TcpStream, pos: egui::Pos2, delta: f32) -> Result<(), Box<dyn Error>> {
+pub fn scroll_at(
+    stream: &mut TcpStream,
+    pos: egui::Pos2,
+    delta: f32,
+) -> Result<(), Box<dyn Error>> {
     apply_events(
         stream,
         vec![

@@ -119,7 +119,9 @@ current validation limits.
 - Font scaling.
 - Colorblind graph option.
 - Toggleable sidebar, right panel, and diff panel.
-- Persisted graph column widths per repository.
+- Persisted graph column widths per repository. Until you resize it, the graph
+  column widens to fit the loaded lanes (up to 264 pixels; drag for more), so busy
+  histories do not hide lanes under commit messages.
 - Embedded Material Icons font for installed binaries.
 - Embedded Noto Symbols and monochrome emoji fallbacks on every platform.
 - Native AccessKit accessibility with commit and branch labels, selected rows,

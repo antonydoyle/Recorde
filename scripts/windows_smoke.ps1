@@ -8,9 +8,16 @@ param(
     [switch]$Light,
     [switch]$HighContrast,
     [switch]$Review,
-    [switch]$CleanTracked
+    [switch]$CleanTracked,
+    # Repositories to copy and open instead of the built-in two-commit fixture,
+    # for example from scripts/generate_showcase_repos.py. The first is active;
+    # the others open as extra tabs. Copies keep each source repository unchanged.
+    [string[]]$Fixture
 )
 $ErrorActionPreference = 'Stop'
+if ($Fixture -and ($CleanTracked -or $Review)) {
+    throw 'Fixture repositories are for screenshots; Review and CleanTracked need the built-in fixture.'
+}
 if ($CleanTracked -and (-not $Review -or -not $Inspector)) {
     throw 'CleanTracked acceptance requires Review and Inspector.'
 }
@@ -24,7 +31,7 @@ if (Test-Path -LiteralPath (Join-Path (Split-Path $executable) '.recorde-update-
     throw 'Refusing startup smoke while this installation has a pending update recovery marker.'
 }
 $smokeRoot = Join-Path ([IO.Path]::GetFullPath($Artifacts)) ([Guid]::NewGuid().ToString('N'))
-$repo = Join-Path $smokeRoot 'repo'
+$repo = if ($Fixture) { Join-Path $smokeRoot (Split-Path -Leaf $Fixture[0]) } else { Join-Path $smokeRoot 'repo' }
 New-Item -ItemType Directory -Path $smokeRoot | Out-Null
 # Artifact drives can grant write access to all authenticated users. The
 # isolated application-data fixture must model a private user profile so the
@@ -36,7 +43,8 @@ $acl.SetAccessRuleProtection($true, $false)
 $rule = New-Object Security.AccessControl.FileSystemAccessRule($owner, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
 $acl.AddAccessRule($rule)
 Set-Acl -LiteralPath $smokeRoot -AclObject $acl
-New-Item -ItemType Directory -Path $repo, "$smokeRoot\appdata" | Out-Null
+New-Item -ItemType Directory -Path "$smokeRoot\appdata" | Out-Null
+if (-not $Fixture) { New-Item -ItemType Directory -Path $repo | Out-Null }
 $environmentNames = @('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT', 'APPDATA', 'EGUI_INSPECTION', 'EGUI_INSPECTION_ADDR')
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
@@ -65,49 +73,63 @@ try {
     }
     # Config/account metadata are isolated; OS-vault/repository/update locks
     # intentionally keep their stable native per-user locations.
-    git -C $repo init -b main *> "$smokeRoot\fixture.log"
-    if ($LASTEXITCODE -ne 0) { throw 'Fixture initialization failed.' }
-    git -C $repo config user.name 'Recorde Smoke'
-    git -C $repo config user.email 'smoke@example.invalid'
-    Set-Content -LiteralPath "$repo\hello.txt" -Value 'initial'
-    git -C $repo add -- hello.txt
-    git -C $repo -c commit.gpgsign=false commit -m fixture >> "$smokeRoot\fixture.log"
-    if ($LASTEXITCODE -ne 0) { throw 'Fixture commit failed.' }
-    # More than one row is required for native graph keyboard-navigation checks.
-    Set-Content -LiteralPath "$repo\second.txt" -Value 'second'
-    git -C $repo add -- second.txt
-    git -C $repo -c commit.gpgsign=false commit -m 'second fixture' >> "$smokeRoot\fixture.log"
-    if ($LASTEXITCODE -ne 0) { throw 'Second fixture commit failed.' }
-    if ($CleanTracked) {
-        # Keep a file available to the editor without blocking reviewed history
-        # operations, which correctly refuse dirty tracked files.
-        Set-Content -LiteralPath "$repo\file.txt" -Value 'untracked editor fixture'
-        # A second isolated tab and a workspace excluding the primary repository
-        # let native acceptance cancel navigation while a primary draft is dirty.
-        $workspaceRepo = Join-Path $smokeRoot 'workspace-repo'
-        New-Item -ItemType Directory -Path $workspaceRepo | Out-Null
-        git -C $workspaceRepo init -b main >> "$smokeRoot\fixture.log"
-        if ($LASTEXITCODE -ne 0) { throw 'Workspace fixture initialization failed.' }
-        git -C $workspaceRepo config user.name 'Recorde Smoke'
-        git -C $workspaceRepo config user.email 'smoke@example.invalid'
-        Set-Content -LiteralPath "$workspaceRepo\workspace.txt" -Value 'isolated workspace fixture'
-        git -C $workspaceRepo add -- workspace.txt
-        git -C $workspaceRepo -c commit.gpgsign=false commit -m 'workspace fixture' >> "$smokeRoot\fixture.log"
-        if ($LASTEXITCODE -ne 0) { throw 'Workspace fixture commit failed.' }
-        # Rust canonicalizes Windows worktree paths to their extended form.
-        # Match those keys so restoring the primary tab cannot create a duplicate.
-        $primaryConfigPath = if ($repo.StartsWith('\\?\')) { $repo } elseif ($repo.StartsWith('\\')) { '\\?\UNC\' + $repo.Substring(2) } else { '\\?\' + $repo }
-        $workspaceConfigPath = if ($workspaceRepo.StartsWith('\\?\')) { $workspaceRepo } elseif ($workspaceRepo.StartsWith('\\')) { '\\?\UNC\' + $workspaceRepo.Substring(2) } else { '\\?\' + $workspaceRepo }
-        $workspaceName = 'Recorde native workspace ' + (Split-Path -Leaf $smokeRoot)
-        $primaryToml = ConvertTo-Json -InputObject $primaryConfigPath -Compress
-        $workspaceToml = ConvertTo-Json -InputObject $workspaceConfigPath -Compress
-        $workspaceNameToml = ConvertTo-Json -InputObject $workspaceName -Compress
-        $fixtureConfig += "active_repo = $primaryToml`nopen_repos = [$primaryToml, $workspaceToml]`n[workspaces]`n$workspaceNameToml = [$workspaceToml]`n"
+    if ($Fixture) {
+        $openPaths = @()
+        foreach ($source in $Fixture) {
+            $copy = Join-Path $smokeRoot (Split-Path -Leaf $source)
+            if (Test-Path -LiteralPath $copy) { throw "Fixture names must be unique: $source" }
+            Copy-Item -LiteralPath (Resolve-Path -LiteralPath $source).Path -Destination $copy -Recurse
+            # Rust canonicalizes Windows worktree paths to their extended form.
+            $extended = if ($copy.StartsWith('\\?\')) { $copy } elseif ($copy.StartsWith('\\')) { '\\?\UNC\' + $copy.Substring(2) } else { '\\?\' + $copy }
+            $openPaths += ConvertTo-Json -InputObject $extended -Compress
+        }
+        $fixtureConfig += "active_repo = $($openPaths[0])`nopen_repos = [$($openPaths -join ', ')]`n"
         [IO.File]::WriteAllText((Join-Path $profile 'config.toml'), $fixtureConfig, (New-Object Text.UTF8Encoding($false)))
-        $navigationFixture = @{ workspace_name=$workspaceName; primary_repository=$primaryConfigPath; secondary_repository=$workspaceConfigPath } | ConvertTo-Json
-        [IO.File]::WriteAllText((Join-Path $smokeRoot 'navigation-fixture.json'), $navigationFixture, (New-Object Text.UTF8Encoding($false)))
     } else {
-        Set-Content -LiteralPath "$repo\hello.txt" -Value 'edited'
+        git -C $repo init -b main *> "$smokeRoot\fixture.log"
+        if ($LASTEXITCODE -ne 0) { throw 'Fixture initialization failed.' }
+        git -C $repo config user.name 'Recorde Smoke'
+        git -C $repo config user.email 'smoke@example.invalid'
+        Set-Content -LiteralPath "$repo\hello.txt" -Value 'initial'
+        git -C $repo add -- hello.txt
+        git -C $repo -c commit.gpgsign=false commit -m fixture >> "$smokeRoot\fixture.log"
+        if ($LASTEXITCODE -ne 0) { throw 'Fixture commit failed.' }
+        # More than one row is required for native graph keyboard-navigation checks.
+        Set-Content -LiteralPath "$repo\second.txt" -Value 'second'
+        git -C $repo add -- second.txt
+        git -C $repo -c commit.gpgsign=false commit -m 'second fixture' >> "$smokeRoot\fixture.log"
+        if ($LASTEXITCODE -ne 0) { throw 'Second fixture commit failed.' }
+        if ($CleanTracked) {
+            # Keep a file available to the editor without blocking reviewed history
+            # operations, which correctly refuse dirty tracked files.
+            Set-Content -LiteralPath "$repo\file.txt" -Value 'untracked editor fixture'
+            # A second isolated tab and a workspace excluding the primary repository
+            # let native acceptance cancel navigation while a primary draft is dirty.
+            $workspaceRepo = Join-Path $smokeRoot 'workspace-repo'
+            New-Item -ItemType Directory -Path $workspaceRepo | Out-Null
+            git -C $workspaceRepo init -b main >> "$smokeRoot\fixture.log"
+            if ($LASTEXITCODE -ne 0) { throw 'Workspace fixture initialization failed.' }
+            git -C $workspaceRepo config user.name 'Recorde Smoke'
+            git -C $workspaceRepo config user.email 'smoke@example.invalid'
+            Set-Content -LiteralPath "$workspaceRepo\workspace.txt" -Value 'isolated workspace fixture'
+            git -C $workspaceRepo add -- workspace.txt
+            git -C $workspaceRepo -c commit.gpgsign=false commit -m 'workspace fixture' >> "$smokeRoot\fixture.log"
+            if ($LASTEXITCODE -ne 0) { throw 'Workspace fixture commit failed.' }
+            # Rust canonicalizes Windows worktree paths to their extended form.
+            # Match those keys so restoring the primary tab cannot create a duplicate.
+            $primaryConfigPath = if ($repo.StartsWith('\\?\')) { $repo } elseif ($repo.StartsWith('\\')) { '\\?\UNC\' + $repo.Substring(2) } else { '\\?\' + $repo }
+            $workspaceConfigPath = if ($workspaceRepo.StartsWith('\\?\')) { $workspaceRepo } elseif ($workspaceRepo.StartsWith('\\')) { '\\?\UNC\' + $workspaceRepo.Substring(2) } else { '\\?\' + $workspaceRepo }
+            $workspaceName = 'Recorde native workspace ' + (Split-Path -Leaf $smokeRoot)
+            $primaryToml = ConvertTo-Json -InputObject $primaryConfigPath -Compress
+            $workspaceToml = ConvertTo-Json -InputObject $workspaceConfigPath -Compress
+            $workspaceNameToml = ConvertTo-Json -InputObject $workspaceName -Compress
+            $fixtureConfig += "active_repo = $primaryToml`nopen_repos = [$primaryToml, $workspaceToml]`n[workspaces]`n$workspaceNameToml = [$workspaceToml]`n"
+            [IO.File]::WriteAllText((Join-Path $profile 'config.toml'), $fixtureConfig, (New-Object Text.UTF8Encoding($false)))
+            $navigationFixture = @{ workspace_name=$workspaceName; primary_repository=$primaryConfigPath; secondary_repository=$workspaceConfigPath } | ConvertTo-Json
+            [IO.File]::WriteAllText((Join-Path $smokeRoot 'navigation-fixture.json'), $navigationFixture, (New-Object Text.UTF8Encoding($false)))
+        } else {
+            Set-Content -LiteralPath "$repo\hello.txt" -Value 'edited'
+        }
     }
     $smokeProcess = Start-Process -FilePath $executable -ArgumentList ('"' + $repo + '"') -WindowStyle Hidden -PassThru -RedirectStandardOutput "$smokeRoot\stdout.log" -RedirectStandardError "$smokeRoot\stderr.log"
     Start-Sleep -Seconds 8

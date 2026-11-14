@@ -805,6 +805,45 @@ pub fn author_color(name: &str) -> Color32 {
     lane_color(h as usize)
 }
 
+/// A distinct outline colour per author for graph nodes. The hue is hashed
+/// across the whole colour wheel (not the eight lane colours, which several
+/// people would share), then stepped lighter or darker until it has 3:1
+/// contrast with the app background, so every theme keeps it visible.
+pub fn author_ring_color(name: &str) -> Color32 {
+    author_ring_color_on(name, bg_app())
+}
+
+fn author_ring_color_on(name: &str, background: Color32) -> Color32 {
+    let hash = name.bytes().fold(0x811c_9dc5u32, |a, b| {
+        (a ^ b as u32).wrapping_mul(0x0100_0193)
+    });
+    let hue = (hash % 360) as f32 / 360.0;
+    let dark_background = relative_luminance(background) < 0.18;
+    let ratio = |color: Color32| {
+        let (a, b) = (relative_luminance(color), relative_luminance(background));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    };
+    let (mut saturation, mut value) = if dark_background {
+        (0.62, 0.82)
+    } else {
+        (0.70, 0.62)
+    };
+    for _ in 0..40 {
+        let color: Color32 = egui::ecolor::Hsva::new(hue, saturation, value, 1.0).into();
+        if ratio(color) >= 3.0 {
+            return color;
+        }
+        if !dark_background {
+            value = (value - 0.04).max(0.0);
+        } else if value < 1.0 {
+            value = (value + 0.04).min(1.0);
+        } else {
+            saturation = (saturation - 0.05).max(0.0);
+        }
+    }
+    contrast_text(background)
+}
+
 pub fn author_initials(name: &str) -> String {
     let mut w = name.split_whitespace();
     let f = w.next().and_then(|s| s.chars().next());
@@ -996,6 +1035,48 @@ mod typography_tests {
         let a = super::relative_luminance(a);
         let b = super::relative_luminance(b);
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn author_rings_are_distinct_and_visible_on_every_background() {
+        let mut backgrounds = vec![super::BG_APP, super::light::BG_APP];
+        backgrounds.extend(
+            super::Palette::ALL
+                .iter()
+                .filter_map(|p| p.tokens())
+                .map(|t| t.bg_app),
+        );
+        let names: Vec<String> = (0..400).map(|i| format!("Author {i}")).collect();
+        for background in backgrounds {
+            for name in &names {
+                let ring = super::author_ring_color_on(name, background);
+                assert!(
+                    contrast(ring, background) >= 3.0,
+                    "{name} on {background:?}"
+                );
+            }
+        }
+        let team = [
+            "Maya Chen",
+            "Tom\u{e1}s Herrera",
+            "Priya Natarajan",
+            "Jonas Weber",
+            "Amara Okafor",
+            "Liam Byrne",
+            "Sofia Rossi",
+            "Kenji Watanabe",
+            "Hannah Lindqvist",
+            "Daniel Mensah",
+        ];
+        let rings: std::collections::HashSet<_> = team
+            .iter()
+            .map(|name| super::author_ring_color_on(name, super::BG_APP))
+            .collect();
+        assert_eq!(
+            rings.len(),
+            team.len(),
+            "each person gets their own outline"
+        );
     }
 
     #[test]

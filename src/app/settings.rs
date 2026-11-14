@@ -578,6 +578,9 @@ impl RecordeApp {
                     let previous = self.config.theme_palette;
                     let response = egui::ComboBox::from_id_salt("settings_colour_palette")
                         .selected_text(previous.label())
+                        // Tall enough to show every theme and group heading
+                        // without scrolling; egui's default fits about four.
+                        .height(560.0)
                         .show_ui(ui, |ui| {
                             // Grouped by mode: Classic and Siege21 follow the Dark
                             // theme setting; the others are always light or dark.

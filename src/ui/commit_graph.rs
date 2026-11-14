@@ -4,7 +4,6 @@ use egui::{Color32, FontId, Key, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use crate::git::operations::load_commit_detail;
 use crate::state::SharedState;
 use crate::theme;
-use crate::ui::widgets;
 
 // Layout
 const ROW_H: f32 = 36.0;
@@ -14,17 +13,25 @@ const REFS_W_MAX: f32 = 320.0;
 const GRAPH_W_MIN: f32 = 80.0;
 const GRAPH_W_MAX: f32 = 340.0;
 const GRAPH_W_DEF: f32 = 100.0;
+/// Until the user sizes the graph column it widens to fit the loaded lanes,
+/// up to this width so busy histories leave room for commit messages.
+const GRAPH_W_AUTO_MAX: f32 = 264.0;
 const COMMIT_W_DEF: f32 = 380.0;
 const COMMIT_W_MIN: f32 = 180.0;
 const TIME_W_DEF: f32 = 60.0;
 const TIME_W_MIN: f32 = 46.0;
 const HASH_W_DEF: f32 = 62.0;
 const HASH_W_MIN: f32 = 54.0;
-const LANE_W: f32 = 18.0;
-const DOT_R: f32 = 6.0;
-const DOT_R_SEL: f32 = 8.0;
-const AVATAR_R: f32 = 11.0;
-const GRAPH_LEFT: f32 = 10.0;
+// Each commit node is filled with its lane colour and shows the author's initials
+// (9 px text), outlined in a colour unique to that author.
+const LANE_W: f32 = 24.0;
+const AVATAR_R: f32 = 10.5;
+/// The author outline plus a one-pixel gap between it and the lane fill.
+const NODE_RING: f32 = 3.0;
+const NODE_R: f32 = AVATAR_R + NODE_RING;
+const NODE_R_SEL: f32 = NODE_R + 2.0;
+const WIP_R: f32 = AVATAR_R - 2.0;
+const GRAPH_LEFT: f32 = 17.0;
 const HEADER_H: f32 = 34.0;
 const NAVIGATION_H: f32 = 52.0;
 const RESIZE_HIT_W: f32 = 14.0;
@@ -150,12 +157,19 @@ fn cached_search<'a>(
     cache.as_ref().unwrap()
 }
 
+/// Width that shows every lane up to `max_lane`.
+fn graph_fit_width(max_lane: usize) -> f32 {
+    (GRAPH_LEFT + max_lane as f32 * LANE_W + NODE_R_SEL + 12.0).clamp(GRAPH_W_MIN, GRAPH_W_MAX)
+}
+
 pub struct CommitGraphView {
     state: SharedState,
     last_selected: Option<String>,
     scroll_to_oid: Option<String>,
     refs_w: f32,
     graph_w: f32,
+    /// The graph column follows its lanes until the user resizes it.
+    graph_w_auto: bool,
     commit_w: f32,
     time_w: f32,
     hash_w: f32,
@@ -193,6 +207,7 @@ impl CommitGraphView {
             scroll_to_oid: None,
             refs_w: REFS_W_DEF,
             graph_w: GRAPH_W_DEF,
+            graph_w_auto: true,
             commit_w: COMMIT_W_DEF,
             time_w: TIME_W_DEF,
             hash_w: HASH_W_DEF,
@@ -426,8 +441,12 @@ impl CommitGraphView {
         if let Some(w) = refs_w {
             self.refs_w = w.clamp(REFS_W_MIN, REFS_W_MAX);
         }
-        if let Some(w) = graph_w {
-            self.graph_w = w.clamp(GRAPH_W_MIN, GRAPH_W_MAX);
+        match graph_w {
+            Some(w) => {
+                self.graph_w = w.clamp(GRAPH_W_MIN, GRAPH_W_MAX);
+                self.graph_w_auto = false;
+            }
+            None => self.graph_w_auto = true,
         }
         if let Some(w) = time_w {
             self.time_w = w.clamp(TIME_W_MIN, 200.0);
@@ -445,6 +464,7 @@ impl CommitGraphView {
     pub fn reset_column_widths(&mut self) {
         self.refs_w = REFS_W_DEF;
         self.graph_w = GRAPH_W_DEF;
+        self.graph_w_auto = true;
         self.commit_w = COMMIT_W_DEF;
         self.time_w = TIME_W_DEF;
         self.hash_w = HASH_W_DEF;
@@ -682,6 +702,11 @@ impl CommitGraphView {
             Stroke::new(1.0, theme::border()),
         );
 
+        if self.graph_w_auto {
+            self.graph_w = graph_fit_width(graph.max_lane).clamp(GRAPH_W_DEF, GRAPH_W_AUTO_MAX);
+            // Following the lanes is not a user edit, so it is not saved.
+            self.last_saved_graph_w = self.graph_w;
+        }
         self.fit_columns(avail);
 
         let (column_starts, column_widths) = self.column_layout();
@@ -717,10 +742,7 @@ impl CommitGraphView {
                 GraphColumn::References => {
                     (graph.max_ref_chars as f32 * 6.5 + 40.0).clamp(REFS_W_MIN, REFS_W_MAX)
                 }
-                GraphColumn::Graph => {
-                    ((graph.max_lane as f32 + 1.0) * LANE_W + GRAPH_LEFT + DOT_R * 3.0 + 10.0)
-                        .clamp(GRAPH_W_MIN, GRAPH_W_MAX)
-                }
+                GraphColumn::Graph => graph_fit_width(graph.max_lane),
                 GraphColumn::Commit => COMMIT_W_DEF,
                 GraphColumn::Time => self.time_min_width(),
                 GraphColumn::Hash => HASH_W_DEF,
@@ -848,6 +870,7 @@ impl CommitGraphView {
                         Pos2::new(origin.x + graph_offset, painter.clip_rect().top()),
                         Pos2::new(origin.x + graph_offset + graph_w, painter.clip_rect().bottom()),
                     ).intersect(painter.clip_rect()));
+                    let mut wip_connector = None;
                     if show_wip {
                         let rect = Rect::from_min_size(resp.rect.min, Vec2::new(avail, ROW_H));
                         let response = ui
@@ -887,18 +910,15 @@ impl CommitGraphView {
                         let lane = head_row.map(|row| nodes[row].lane).unwrap_or(0);
                         let x = origin.x + graph_offset + GRAPH_LEFT + lane as f32 * LANE_W;
                         let center = Pos2::new(x, rect.center().y);
-                        if let Some(row) = head_row {
-                            graph_painter.line_segment(
-                                [
-                                    center,
-                                    Pos2::new(x, origin.y + row as f32 * ROW_H + ROW_H / 2.0),
-                                ],
-                                Stroke::new(2.0, theme::accent_yellow()),
-                            );
-                        }
+                        wip_connector = head_row.map(|row| {
+                            [
+                                Pos2::new(x, center.y + WIP_R),
+                                Pos2::new(x, origin.y + row as f32 * ROW_H + ROW_H / 2.0),
+                            ]
+                        });
                         graph_painter.circle_stroke(
                             center,
-                            DOT_R,
+                            WIP_R,
                             Stroke::new(2.0, theme::accent_yellow()),
                         );
                         // The hollow node already marks this row, so the refs
@@ -975,6 +995,9 @@ impl CommitGraphView {
                     }
 
                     // ── Draw edges (cubic bezier) ─────────────────────
+                    if let Some(segment) = wip_connector {
+                        graph_painter.line_segment(segment, Stroke::new(2.0, theme::accent_yellow()));
+                    }
                     for edge in graph.visible_edges(first.saturating_sub(1), last.saturating_add(1))
                     {
                         let from_y = origin.y + edge.from_row as f32 * ROW_H + ROW_H / 2.0;
@@ -1002,10 +1025,10 @@ impl CommitGraphView {
                             let strength = (dy * 0.45).max(12.0).min(60.0);
                             let shape = egui::epaint::CubicBezierShape::from_points_stroke(
                                 [
-                                    Pos2::new(from_x, from_y + DOT_R + 1.0),
+                                    Pos2::new(from_x, from_y + NODE_R),
                                     Pos2::new(from_x, from_y + strength),
                                     Pos2::new(to_x, to_y - strength),
-                                    Pos2::new(to_x, to_y - DOT_R - 1.0),
+                                    Pos2::new(to_x, to_y - NODE_R),
                                 ],
                                 false,
                                 Color32::TRANSPARENT,
@@ -1084,19 +1107,49 @@ impl CommitGraphView {
                         .gamma_multiply(fade);
                         let dot_x = origin.x + graph_offset + GRAPH_LEFT + node.lane as f32 * LANE_W;
 
-                        // Node circle
-                        graph_painter.circle_filled(Pos2::new(dot_x, cy), DOT_R, lane_col);
-                        graph_painter.circle_stroke(
-                            Pos2::new(dot_x, cy),
-                            DOT_R,
-                            Stroke::new(1.5, theme::bg_app()),
-                        );
+                        // Node: the lane colour with the author's initials, outlined in
+                        // that author's own colour. A thin background gap keeps the
+                        // outline readable when the two colours are similar.
+                        let node_pos = Pos2::new(dot_x, cy);
+                        graph_painter.circle_filled(node_pos, NODE_R, theme::author_ring_color(&node.author).gamma_multiply(fade));
+                        graph_painter.circle_filled(node_pos, NODE_R - 2.0, theme::bg_app());
+                        match crate::ui::avatars::texture(ui.ctx(), &node.author_email) {
+                            Some(texture) => {
+                                graph_painter.image(
+                                    texture,
+                                    Rect::from_center_size(node_pos, Vec2::splat(AVATAR_R * 2.0)),
+                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+                            }
+                            None => {
+                                graph_painter.circle_filled(node_pos, AVATAR_R, lane_col);
+                                graph_painter.text(
+                                    node_pos,
+                                    egui::Align2::CENTER_CENTER,
+                                    theme::author_initials(&node.author),
+                                    FontId::proportional(9.0),
+                                    theme::contrast_text(lane_col),
+                                );
+                            }
+                        }
+                        if dim {
+                            graph_painter.circle_filled(node_pos, NODE_R, theme::bg_app().gamma_multiply(0.75));
+                        }
                         if is_sel {
                             graph_painter.circle_stroke(
-                                Pos2::new(dot_x, cy),
-                                DOT_R_SEL,
+                                node_pos,
+                                NODE_R_SEL,
                                 Stroke::new(2.0, theme::text_primary()),
                             );
+                        }
+                        if graph_w > 0.0 {
+                            ui.interact(
+                                Rect::from_center_size(node_pos, Vec2::splat(NODE_R * 2.0)).intersect(graph_painter.clip_rect()),
+                                egui::Id::new(("author_avatar", &node.oid)),
+                                Sense::hover(),
+                            )
+                            .on_hover_text(&node.author);
                         }
 
                         // Right columns
@@ -1133,17 +1186,6 @@ impl CommitGraphView {
                             Sense::hover(),
                         )
                         .on_hover_text(format!("{} UTC", format_graph_date(node.time, GraphDateFormat::DateTime)));
-                        // Author indicator attached to the graph, icon-only.
-                        // Radius 11 keeps two initials legible (about 9 px text).
-                        let author_x = (dot_x + 22.0).min(origin.x + graph_offset + graph_w - 16.0);
-                        let author_pos = Pos2::new(author_x, cy);
-                        widgets::avatar_for(&graph_painter, author_pos, AVATAR_R, &node.author, &node.author_email);
-                        if graph_w > 0.0 { ui.interact(
-                            Rect::from_center_size(author_pos, Vec2::splat(AVATAR_R * 2.0 + 4.0)).intersect(graph_painter.clip_rect()),
-                            egui::Id::new(("author_avatar", &node.oid)),
-                            Sense::hover(),
-                        )
-                        .on_hover_text(&node.author); }
 
                         let ref_rects = draw_ref_column(
                             &painter,
@@ -1597,7 +1639,10 @@ impl CommitGraphView {
     fn set_width(&mut self, column: GraphColumn, width: f32) {
         match column {
             GraphColumn::References => self.refs_w = width.clamp(REFS_W_MIN, REFS_W_MAX),
-            GraphColumn::Graph => self.graph_w = width.clamp(GRAPH_W_MIN, GRAPH_W_MAX),
+            GraphColumn::Graph => {
+                self.graph_w = width.clamp(GRAPH_W_MIN, GRAPH_W_MAX);
+                self.graph_w_auto = false;
+            }
             GraphColumn::Commit => self.commit_w = width.max(COMMIT_W_MIN),
             GraphColumn::Time => self.time_w = width.clamp(self.time_min_width(), 240.0),
             GraphColumn::Hash => self.hash_w = width.clamp(HASH_W_MIN, 120.0),
@@ -2121,6 +2166,27 @@ mod interaction_tests {
             refs: Vec::new(),
         };
         assert!(!node_matches(&node, "after:2024-31-12"));
+    }
+
+    #[test]
+    fn graph_column_follows_lanes_until_the_user_sizes_it() {
+        let mut view = CommitGraphView::new(crate::state::new_shared_state());
+        assert!(view.graph_w_auto, "a fresh view fits its lanes");
+        assert!(graph_fit_width(10) > GRAPH_W_DEF && graph_fit_width(10) <= GRAPH_W_MAX);
+        assert_eq!(graph_fit_width(0), GRAPH_W_MIN.max(graph_fit_width(0)));
+        view.set_column_widths(None, Some(150.0), None, None);
+        assert!(!view.graph_w_auto, "a saved width is kept");
+        assert_eq!(view.graph_w, 150.0);
+        // Opening a repository with no saved width must not inherit the last one.
+        view.set_column_widths(None, None, None, None);
+        assert!(view.graph_w_auto);
+        view.set_width(GraphColumn::Graph, 200.0);
+        assert!(!view.graph_w_auto, "dragging the column pins its width");
+        view.reset_column_widths();
+        assert!(
+            view.graph_w_auto,
+            "resetting columns returns to fitting the lanes"
+        );
     }
 
     #[test]

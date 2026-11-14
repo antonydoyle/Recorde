@@ -44,6 +44,12 @@ No artwork from these references is shipped.
   authors, signing and reset controls are grouped under expandable headings.
 - Diff display options live in the sliders menu. Search remains directly available.
 - A welcome screen provides Open, Clone and Create actions.
+- Each commit node is filled with its lane colour and shows the author's initials
+  (or a cached picture), outlined in a colour unique to that author: a hue hashed
+  from their name, adjusted to 3:1 contrast with the background in every theme.
+  Lanes are 24 pixels apart so lines clear the nodes.
+  Edges, including the line from Uncommitted changes to HEAD, are drawn above row
+  highlights, so a selected row never hides a lane.
 - Commit graph topology, branching geometry and history actions are preserved.
   Neon lane and node colours use a stable shuffle based on the full repository
   path, cached when switching repositories. Refreshing or restarting keeps the
