@@ -575,9 +575,43 @@ fn fixture_acl(path: &Path, allow_everyone: bool) {
     assert_ne!(applied, 0, "Cannot set the fixture directory ACL.");
 }
 
+/// An elevated administrator's new folders are owned by the Administrators
+/// group, which the private-directory check refuses by design. GitHub's
+/// Windows runners run tests elevated; ordinary desktop sessions do not, so
+/// tests that need a user-owned private folder skip there.
+#[cfg(all(test, windows))]
+pub(super) fn creates_admin_owned_objects() -> bool {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut size = 0;
+        let read = GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        ) != 0;
+        CloseHandle(token);
+        read && elevation.TokenIsElevated != 0
+    }
+}
+
 #[cfg(all(test, windows))]
 #[test]
 fn private_creation_excludes_writable_parent_acl_and_preserves_existing_unsafe_state() {
+    if creates_admin_owned_objects() {
+        eprintln!("skipped: an elevated administrator's folders are owned by Administrators");
+        return;
+    }
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Security::{
         GetFileSecurityW, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
@@ -630,6 +664,10 @@ fn private_creation_excludes_writable_parent_acl_and_preserves_existing_unsafe_s
 #[cfg(all(test, windows))]
 #[test]
 fn private_staging_refuses_writable_inherited_acl_before_creating_payloads() {
+    if creates_admin_owned_objects() {
+        eprintln!("skipped: an elevated administrator's folders are owned by Administrators");
+        return;
+    }
     let directory = fixture_dir();
     let safe = private_tempdir(directory.path(), "safe-").unwrap();
     owned_directory(safe.path()).unwrap();

@@ -1023,6 +1023,11 @@ mod tests {
     }
     #[test]
     fn retries_use_fresh_attempts_and_preserve_verified_download() {
+        #[cfg(windows)]
+        if security::creates_admin_owned_objects() {
+            eprintln!("skipped: an elevated administrator's folders are owned by Administrators");
+            return;
+        }
         let root = security::fixture_dir();
         let source = root.path().join("download");
         std::fs::write(&source, b"verified bytes").unwrap();

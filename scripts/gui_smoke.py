@@ -249,10 +249,14 @@ t.XTestFakeButtonEvent(d, 1, 0, 20)
 x.XFlush(d)
 x.XCloseDisplay(d)
 '''
+                            # "1090, 258" is the template's placeholder; the sole working
+                            # file's row is at y=312 in the 1280x800 fixture.
+                            file_row = click.replace("1090, 258", "1090, 312")
                             if design_review:
                                 click = click.replace("1090, 258", f"{int(width - 190 * ui_scale * native_scale)}, {int(294 * ui_scale * native_scale)}")
+                                file_row = click
 
-                            subprocess.run([sys.executable, "-c", click], env=env, check=True)
+                            subprocess.run([sys.executable, "-c", file_row], env=env, check=True)
                             time.sleep(2)
                         if '--hover-review' in sys.argv[3:]:
                             assert design_review and not welcome and ui_scale == 1.0
@@ -327,7 +331,8 @@ def press(px, py):
     t.XTestFakeButtonEvent(d, 1, 0, 20)
     x.XFlush(d)
     time.sleep(0.3)
-press(600, 642)
+# The first line; selecting it reveals the action bar, which moves rows down.
+press(600, 608)
 control = x.XKeysymToKeycode(d, 0xffe3)
 t.XTestFakeKeyEvent(d, control, 1, 0)
 press(600, 686)
@@ -335,10 +340,10 @@ t.XTestFakeKeyEvent(d, control, 0, 0)
 press(250, 568)
 x.XCloseDisplay(d)'''
                             if split_selection:
-                                subprocess.run([sys.executable, "-c", click.replace("1090, 258", "858, 490")], env=env, check=True)
+                                subprocess.run([sys.executable, "-c", click.replace("1090, 258", "866, 493")], env=env, check=True)
                                 time.sleep(1)
                                 png_from_xwd(root / "Xvfb_screen0", artifacts / "split-menu.png")
-                                select = select.replace("press(600, 642)", "press(910, 590)\npress(700, 642)").replace("press(600, 686)", "press(700, 686)")
+                                select = select.replace("press(600, 608)", "press(895, 229)\npress(700, 608)").replace("press(600, 686)", "press(700, 686)")
                             subprocess.run([sys.executable, "-c", select], env=env, check=True)
                             time.sleep(2)
                             png_from_xwd(root / "Xvfb_screen0", artifacts / "gui-smoke.png")
