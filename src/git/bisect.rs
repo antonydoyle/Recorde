@@ -18,13 +18,22 @@ pub fn start(repo_path: &Path) -> Result<(), String> {
 }
 
 pub fn mark_bad(repo_path: &Path, oid: &str) -> Result<Option<String>, String> {
-    run(repo_path, &["bisect", "bad", &exact_commit(oid)?])?;
-    Ok(next_step(repo_path))
+    let output = run(repo_path, &["bisect", "bad", &exact_commit(oid)?])?;
+    Ok(next_step(repo_path).or_else(|| announced_first_bad(&output)))
 }
 
 pub fn mark_good(repo_path: &Path, oid: &str) -> Result<Option<String>, String> {
-    run(repo_path, &["bisect", "good", &exact_commit(oid)?])?;
-    Ok(next_step(repo_path))
+    let output = run(repo_path, &["bisect", "good", &exact_commit(oid)?])?;
+    Ok(next_step(repo_path).or_else(|| announced_first_bad(&output)))
+}
+
+/// Git prints "<id> is the first bad commit" when the search ends. Used when
+/// the session no longer records it, for example after an automatic reset.
+fn announced_first_bad(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let id = line.strip_suffix(" is the first bad commit")?.trim();
+        git2::Oid::from_str(id).ok().filter(|_| id.len() == 40).map(|oid| oid.to_string())
+    })
 }
 
 /// Only exact object IDs reach Git, never option-like or symbolic input.
@@ -101,6 +110,17 @@ mod tests {
     use super::*;
     use crate::git::reflog::{bisect_current, bisect_first_bad, bisect_is_active};
     use crate::git::test_support::TestRepo;
+
+    #[test]
+    fn announced_first_bad_commit_is_read_from_git_output() {
+        let id = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            announced_first_bad(&format!("{id} is the first bad commit\ncommit {id}")),
+            Some(id.to_string())
+        );
+        assert_eq!(announced_first_bad("Bisecting: 3 revisions left to test"), None);
+        assert_eq!(announced_first_bad("abc123 is the first bad commit"), None);
+    }
 
     #[test]
     fn bisect_marks_only_exact_commit_ids() {

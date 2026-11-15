@@ -102,11 +102,25 @@ fn regular_file(path: &Path) -> Result<bool, LogError> {
 struct RotatingLog {
     root: PathBuf,
 }
+/// Root-owned links such as macOS `/var` and `/tmp`, or `/home` on Fedora
+/// Atomic desktops, can only be created by an administrator, so they cannot
+/// redirect logs on another user's behalf. Any other link is refused.
+#[cfg(unix)]
+fn system_symlink(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.uid() == 0
+}
+
+#[cfg(not(unix))]
+fn system_symlink(_meta: &std::fs::Metadata) -> bool {
+    false
+}
+
 impl RotatingLog {
     fn new(root: PathBuf) -> Result<Self, LogError> {
         for ancestor in root.ancestors() {
             if let Ok(meta) = std::fs::symlink_metadata(ancestor) {
-                if meta.file_type().is_symlink() {
+                if meta.file_type().is_symlink() && !system_symlink(&meta) {
                     return Err(LogError::Unavailable);
                 }
                 #[cfg(windows)]
