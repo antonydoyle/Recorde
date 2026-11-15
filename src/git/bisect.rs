@@ -32,7 +32,10 @@ pub fn mark_good(repo_path: &Path, oid: &str) -> Result<Option<String>, String> 
 fn announced_first_bad(output: &str) -> Option<String> {
     output.lines().find_map(|line| {
         let id = line.strip_suffix(" is the first bad commit")?.trim();
-        git2::Oid::from_str(id).ok().filter(|_| id.len() == 40).map(|oid| oid.to_string())
+        git2::Oid::from_str(id)
+            .ok()
+            .filter(|_| id.len() == 40)
+            .map(|oid| oid.to_string())
     })
 }
 
@@ -118,7 +121,10 @@ mod tests {
             announced_first_bad(&format!("{id} is the first bad commit\ncommit {id}")),
             Some(id.to_string())
         );
-        assert_eq!(announced_first_bad("Bisecting: 3 revisions left to test"), None);
+        assert_eq!(
+            announced_first_bad("Bisecting: 3 revisions left to test"),
+            None
+        );
         assert_eq!(announced_first_bad("abc123 is the first bad commit"), None);
     }
 
