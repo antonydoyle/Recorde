@@ -1153,6 +1153,8 @@ impl RecordeApp {
             .frame(egui::Frame::NONE.fill(theme::bg_panel()))
             .show(root_ui, |ui| {
                 let r = ui.max_rect();
+                // Keep overflow in a short window inside this panel.
+                ui.shrink_clip_rect(r);
                 ui.painter().line_segment(
                     [r.left_top(), r.right_top()],
                     egui::Stroke::new(1.0, theme::border()),

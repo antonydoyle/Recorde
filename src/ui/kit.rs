@@ -423,25 +423,32 @@ pub fn callout(ui: &mut Ui, status: Status, text: &str) -> Response {
 
 // ── Empty states ─────────────────────────────────────────────────────────────
 
+/// Height below which an empty state shows only its title (and action), so a
+/// squeezed pane keeps its size instead of growing over its neighbours.
+pub const EMPTY_STATE_COMPACT_HEIGHT: f32 = 120.0;
+
 /// Centred empty state: icon, title, one-line explanation and an optional
 /// action. Returns true when the action was clicked.
 pub fn empty_state(ui: &mut Ui, icon: char, title: &str, body: &str, action: Option<&str>) -> bool {
     let mut clicked = false;
+    let compact = ui.available_height() < EMPTY_STATE_COMPACT_HEIGHT;
     ui.vertical_centered(|ui| {
-        ui.add_space(space::LG);
-        ui.label(
-            RichText::new(icon.to_string())
-                .font(icons::font(28.0))
-                .color(theme::text_muted()),
-        );
-        ui.add_space(space::XS);
+        ui.add_space(if compact { space::XS } else { space::LG });
+        if !compact {
+            ui.label(
+                RichText::new(icon.to_string())
+                    .font(icons::font(28.0))
+                    .color(theme::text_muted()),
+            );
+            ui.add_space(space::XS);
+        }
         ui.label(
             RichText::new(title)
                 .size(theme::font_size::BODY)
                 .strong()
                 .color(theme::text_secondary()),
         );
-        if !body.is_empty() {
+        if !body.is_empty() && !compact {
             ui.add(
                 egui::Label::new(
                     RichText::new(body)
@@ -455,7 +462,9 @@ pub fn empty_state(ui: &mut Ui, icon: char, title: &str, body: &str, action: Opt
             ui.add_space(space::SM);
             clicked = ui.add(secondary_button(action)).clicked();
         }
-        ui.add_space(space::LG);
+        if !compact {
+            ui.add_space(space::LG);
+        }
     });
     clicked
 }
@@ -719,6 +728,44 @@ mod tests {
         );
         add(&mut ui);
         ctx.end_pass().textures_delta.clear();
+    }
+
+    #[test]
+    fn empty_state_fits_a_short_pane() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::icons::font_definitions());
+        for (height, expect_icon) in [(60.0, false), (240.0, true)] {
+            let mut used = 0.0;
+            // Fonts apply from the next pass, so lay out twice.
+            for _ in 0..2 {
+                ctx.begin_pass(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(400.0, 400.0),
+                    )),
+                    ..Default::default()
+                });
+                let mut ui = egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("empty_state"),
+                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(400.0, height),
+                    )),
+                );
+                empty_state(
+                    &mut ui,
+                    'x',
+                    "No file selected",
+                    "Select a file to see it.",
+                    None,
+                );
+                used = ui.min_rect().height();
+                ctx.end_pass().textures_delta.clear();
+            }
+            assert!(used <= height, "{used} > {height}");
+            assert_eq!(used > 60.0, expect_icon, "height {height}");
+        }
     }
 
     #[test]

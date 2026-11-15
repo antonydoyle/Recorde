@@ -234,6 +234,10 @@ tabs, and set `RECORDE_UI_SHOWCASE=1` for the inspector. It captures the overvie
 a selected commit with its diff and a deep-history view, and writes
 `showcase.log` with graph load time, selection and scroll latency.
 
+Set `RECORDE_UI_WINDOW=1024x768` (any `WIDTHxHEIGHT`) for any inspector run to
+resize the window before its checks start. Hosted Windows runners have a
+1024x768 display, so this reproduces CI layouts on a larger local screen.
+
 ## Development Workflow
 
 1. Make focused changes in the relevant module.

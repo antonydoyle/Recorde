@@ -369,6 +369,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("Incompatible inspection protocol".into());
     }
+    // RECORDE_UI_WINDOW=WIDTHxHEIGHT reproduces a smaller screen, such as the
+    // 1024x768 display of hosted CI runners, before any check runs.
+    if let Ok(size) = std::env::var("RECORDE_UI_WINDOW") {
+        let (width, height) = size
+            .split_once('x')
+            .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+            .ok_or("RECORDE_UI_WINDOW must look like 1024x768")?;
+        match request(&mut stream, Request::Resize { width, height })? {
+            Response::Error { message } => return Err(message.into()),
+            _ => std::thread::sleep(Duration::from_millis(800)),
+        }
+    }
     // Design review: RECORDE_UI_TOUR=1 captures screens instead of acceptance checks.
     if std::env::var_os("RECORDE_UI_TOUR").is_some() {
         return tour::run(&mut stream, &directory);

@@ -2399,6 +2399,10 @@ impl eframe::App for RecordeApp {
                 .frame(egui::Frame::NONE.fill(theme::bg_app()))
                 .show_collapsible(root_ui, &mut diff_panel_shown, |ui| {
                     let r = ui.max_rect();
+                    // In a short window the diff can need more height than its
+                    // panel; clip it so it cannot cover (or take clicks from)
+                    // the terminal panel below.
+                    ui.shrink_clip_rect(r);
                     ui.painter().line_segment(
                         [r.left_top(), r.right_top()],
                         Stroke::new(1.0, theme::border()),
