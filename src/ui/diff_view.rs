@@ -199,10 +199,12 @@ impl DiffView {
         }
         self.show_blame = state_show_blame;
 
+        // The background covers the whole panel. No minimum height is set: it
+        // would pin the panel at its previous size, so it could not shrink when
+        // the terminal opens and would overlap it.
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, theme::bg_app());
 
-        ui.set_min_height(ui.available_height());
         let file_list_w = if ui.available_width() >= 1050.0 {
             176.0
         } else {
