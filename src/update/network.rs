@@ -333,6 +333,9 @@ mod tests {
                     match second.accept() {
                         Ok((mut stream, _)) => {
                             assert!(allow);
+                            // Windows sockets inherit the listener's non-blocking
+                            // mode; read the request with a blocking timeout.
+                            stream.set_nonblocking(false).unwrap();
                             stream
                                 .set_read_timeout(Some(Duration::from_secs(5)))
                                 .unwrap();

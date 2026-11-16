@@ -2410,7 +2410,12 @@ impl eframe::App for RecordeApp {
                     if self.commit_graph_view.has_pending_action() {
                         ui.disable();
                     }
-                    self.diff_view.show(ui);
+                    // Lay the diff out in a child that cannot resize the panel:
+                    // the panel keeps its own size, shrinking with the window,
+                    // and its content is clipped to it rather than growing it.
+                    let mut content = ui.new_child(egui::UiBuilder::new().max_rect(r));
+                    self.diff_view.show(&mut content);
+                    ui.advance_cursor_after_rect(r);
                     if self.state.lock().unwrap().focused_pane == 4 {
                         focus_ring(ui);
                     }
