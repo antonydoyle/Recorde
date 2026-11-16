@@ -397,12 +397,12 @@ mod tests {
         let probes = marker.with_extension("probes");
         #[cfg(windows)]
         let text = format!(
-            "@echo off\r\necho probe>>\"{}\"\r\nif \"%~1\"==\"--version\" goto version\r\nif \"%~1\"==\"lfs\" goto lfs\r\necho ran>>\"{}\"\r\nexit /b 0\r\n:version\r\necho git version {version}\r\nexit /b 0\r\n:lfs\r\n{}\r\n", probes.display(), marker.display(),
+            "@echo off\r\necho probe>>\"{}\"\r\nif \"%~1\"==\"--version\" goto version\r\nif \"%~1\"==\"lfs\" goto lfs\r\necho ran %*>>\"{}\"\r\nexit /b 0\r\n:version\r\necho git version {version}\r\nexit /b 0\r\n:lfs\r\n{}\r\n", probes.display(), marker.display(),
             if lfs { "echo git-lfs/3.7.0 (fixture)\r\nexit /b 0" } else { "exit /b 1" }
         );
         #[cfg(unix)]
         let text = format!(
-            "#!/bin/sh\necho probe >> '{}'\ncase \"$1\" in\n--version) echo 'git version {version}';;\nlfs) {};;\n*) echo ran >> '{}';;\nesac\n",
+            "#!/bin/sh\necho probe >> '{}'\ncase \"$1\" in\n--version) echo 'git version {version}';;\nlfs) {};;\n*) echo \"ran $*\" >> '{}';;\nesac\n",
             probes.display(), if lfs { "echo 'git-lfs/3.7.0 (fixture)'" } else { "exit 1" }, marker.display()
         );
         std::fs::write(path, text).unwrap();
@@ -630,6 +630,12 @@ mod tests {
             state.errors.back().unwrap().kind,
             crate::ui::error_notice::ErrorKind::GitReadiness
         );
-        assert!(!marker.exists());
+        // A refresh after the first launch may still run ordinary Git
+        // commands on a slow machine; only a tool launch must not happen.
+        let operations = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert!(
+            !operations.contains("difftool"),
+            "refused readiness must not launch the tool: {operations:?}"
+        );
     }
 }

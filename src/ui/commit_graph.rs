@@ -363,7 +363,10 @@ impl CommitGraphView {
                 && s.repo_path.as_ref() == Some(&preview.path)
                 && matches!(s.modal, crate::state::ModalKind::None)
                 && s.pending_discard.is_none()
-                && s.repo_load_path.is_none()
+                // A background refresh of this repository keeps the dialog:
+                // the operation re-checks repository, HEAD and targets when
+                // it starts. Loading another repository still cancels it.
+                && s.repo_load_path.as_ref().is_none_or(|loading| loading == &preview.path)
         };
         if !current {
             self.cancel_action();
@@ -2600,6 +2603,15 @@ mod interaction_tests {
                 index
             );
             assert!(view.state.lock().unwrap().local_jobs.is_empty());
+            // A background refresh of the same repository keeps the dialog open.
+            let path = view.state.lock().unwrap().repo_path.clone().unwrap();
+            view.state.lock().unwrap().repo_load_path = Some(path.clone());
+            frame(&ctx, &mut view, vec![], true);
+            assert!(
+                view.pending_action.is_some(),
+                "a refresh must not close {label}"
+            );
+            view.state.lock().unwrap().repo_load_path = None;
             frame(&ctx, &mut view, vec![key(Key::Escape)], true);
             assert!(view.pending_action.is_none());
             assert_eq!(repo.head(), base);
