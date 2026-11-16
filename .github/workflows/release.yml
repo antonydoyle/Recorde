@@ -10,10 +10,27 @@ permissions:
   contents: read
 
 jobs:
+  # The full test suite is not repeated here. A manual CI run (every
+  # platform) must already have passed on this exact commit.
   validate-code:
-    uses: ./.github/workflows/ci.yml
+    name: Require passing CI for this commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
+    steps:
+      - name: Find a successful manual CI run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+            --event workflow_dispatch --status success --json databaseId --jq 'length')
+          if [ "${count:-0}" -eq 0 ]; then
+            echo "::error::No passing CI run on all platforms for ${GITHUB_SHA}. Run Actions > CI > Run workflow on this commit, wait for it to pass, then tag." >&2
+            exit 1
+          fi
+          echo "Found ${count} passing CI run(s) for ${GITHUB_SHA}."
   # ── Semver tag validation ─────────────────────────────────────────────────────
   validate-tag:
     name: Validate semver tag

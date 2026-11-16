@@ -1,12 +1,19 @@
 # Packaging
 
-The Release workflow can also be run manually from a branch to validate and build
-every platform without publishing. After that run passes, push the matching
-`vX.Y.Z` tag to publish; the tag must match `Cargo.toml` and point to a commit on
-`main`. Pushing or merging to `main` does not start a build by itself; CI runs for
-pull requests, manual runs and release tags. Publishing waits for all platform
-builds and the shared CI/security checks. Installer upgrade checks install the
-newest published release first and are skipped when there is none. Font licences are included in
+To release:
+
+1. Run CI on `main` by hand (Actions > CI > Run workflow). Manual runs test
+   Linux, Windows and macOS; pull requests run only the Linux checks and the
+   dependency audit, to save Actions minutes.
+2. When that run passes, push the matching `vX.Y.Z` tag. The tag must match
+   `Cargo.toml` and point to a commit on `main`.
+
+The Release workflow does not repeat the test suite: it refuses to build unless
+a manual CI run has passed on the tagged commit, then builds every platform's
+packages and publishes them. It can also be run by hand from a branch to build
+without publishing, under the same rule. Pushing or merging to `main` starts no
+build by itself. Installer upgrade checks install the newest published release
+first and are skipped when there is none. Font licences are included in
 portable archives and installers as well as the application's About panel.
 
 Recorde includes packaging metadata for Linux desktop integration, Debian-style

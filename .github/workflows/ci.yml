@@ -1,7 +1,9 @@
 name: CI
 
-# Builds run for pull requests, manual runs and release tags (release.yml calls
-# this workflow), not for every push or merge to main.
+# Pull requests run the Linux checks and the dependency audit. Windows and macOS
+# (billed at 2x and 10x on private repositories) run on manual runs: use
+# Actions > CI > Run workflow on a branch or main. Releases require a passing
+# manual run for the tagged commit instead of running the suite again.
 on:
   pull_request:
   workflow_call:
@@ -9,6 +11,11 @@ on:
 
 permissions:
   contents: read
+
+# A newer push to the same pull request replaces its unfinished run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   security:
@@ -41,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-latest]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-24.04"]' || '["ubuntu-24.04", "windows-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
