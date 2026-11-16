@@ -81,15 +81,32 @@ fn pointer(
     )
 }
 
+/// Polls like `expect_label`: after an action the app may still be
+/// refreshing, with rows briefly disabled or a dialog not yet laid out.
+fn eventually<T>(
+    stream: &mut TcpStream,
+    mut check: impl FnMut(&Tree) -> Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match check(&tree(stream)?) {
+            Ok(value) => return Ok(value),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
 fn click_row(
     stream: &mut TcpStream,
     row: &Row,
     button: egui::PointerButton,
     modifiers: egui::Modifiers,
 ) -> Result<(), Box<dyn Error>> {
-    let current = tree(stream)?;
-    let bounds = clickable_bounds(&current, &row.label)?
-        .ok_or("Selected fixture commit is no longer visible or enabled")?;
+    let bounds = eventually(stream, |current| {
+        clickable_bounds(current, &row.label)?
+            .ok_or_else(|| "Selected fixture commit is no longer visible or enabled".into())
+    })?;
     pointer(stream, bounds, button, modifiers)
 }
 
@@ -304,7 +321,7 @@ pub(super) fn review(
         if require_clean {
             expect_label(stream, &question, true)?;
             expect_label(stream, "Uncommitted changes are in the way", false)?;
-            let detail = unique_text(&tree(stream)?, "Repository: ")?;
+            let detail = eventually(stream, |current| unique_text(current, "Repository: "))?;
             let lines: Vec<_> = detail.lines().collect();
             if lines.len() != 3 || lines[0] == "Repository: " {
                 return Err(
@@ -357,25 +374,41 @@ pub(super) fn review(
         selected(stream, &[&first.oid, &second.oid])?;
     }
 
-    click_row(
-        stream,
-        second,
-        egui::PointerButton::Primary,
-        egui::Modifiers::NONE,
-    )?;
-    selected(stream, &[&second.oid])?;
+    // A plain click is idempotent, so retry it if the app dropped it while
+    // still settling after the dismissed notice.
+    for attempt in 0..3 {
+        click_row(
+            stream,
+            second,
+            egui::PointerButton::Primary,
+            egui::Modifiers::NONE,
+        )?;
+        match selected(stream, &[&second.oid]) {
+            Ok(()) => break,
+            Err(error) if attempt == 2 => return Err(error),
+            Err(_) => {}
+        }
+    }
     let mut single_details = Vec::new();
     for (action, label, name) in [
         ("Cherry-pick", "Cherry-pick", "cherry-pick"),
         ("Revert Commit", "Revert", "revert"),
     ] {
-        context_action(stream, second, action)?;
-        expect_label(stream, "Confirm graph operation", true)?;
+        // Opening a preview never applies it, so a dropped menu click can be
+        // retried safely.
+        for attempt in 0..3 {
+            context_action(stream, second, action)?;
+            match expect_label(stream, "Confirm graph operation", true) {
+                Ok(()) => break,
+                Err(error) if attempt == 2 => return Err(error),
+                Err(_) => {}
+            }
+        }
         expect_label(stream, &format!("Confirm {label}"), true)?;
         expect_label(stream, &format!("From: {}", &second.oid[..12]), true)?;
         expect_label(stream, &format!("Destination: {head_ref}"), true)?;
+        let repository = eventually(stream, |current| unique_text(current, "Repository: "))?;
         let current = tree(stream)?;
-        let repository = unique_text(&current, "Repository: ")?;
         let head = unique_text(&current, "Expected HEAD: ")?;
         if !initial_rows
             .iter()
@@ -399,6 +432,18 @@ pub(super) fn review(
                 return Err("Single and bulk previews disagree about destination HEAD".into());
             }
         }
+        // The dialog focuses Cancel on its next frame; arrow keys must reach
+        // it rather than the action choices, which they would change.
+        eventually(stream, |current| {
+            current
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == current.focus)
+                .and_then(|(_, node)| node.label())
+                .filter(|label| *label == "Cancel")
+                .map(|_| ())
+                .ok_or_else(|| "Cancel does not have keyboard focus".into())
+        })?;
         key(stream, egui::Key::ArrowDown)?;
         for text in [&repository, &head, &format!("From: {}", &second.oid[..12])] {
             expect_label(stream, text, true)?;

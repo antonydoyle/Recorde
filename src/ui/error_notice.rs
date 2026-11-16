@@ -144,6 +144,12 @@ impl ErrorKind {
     }
 }
 
+/// Gap from the window's right edge and the notice's widest text column.
+const NOTICE_MARGIN: f32 = 16.0;
+const NOTICE_WIDTH: f32 = 440.0;
+/// Clears the status bar along the bottom of the window.
+const NOTICE_BOTTOM: f32 = 40.0;
+
 pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) -> bool {
     let visible_id = egui::Id::new("error_overlay_visible");
     // The last dismissed notice, kept only while it fades out.
@@ -171,12 +177,19 @@ pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) -> bool {
     let mut dismiss = false;
     let mut dismiss_all = false;
     let mut retry_git = false;
+    // A toast in the bottom-right corner, above the status bar. Anchored over
+    // the window's top it covered the commit rows an error usually refers to.
     egui::Area::new(egui::Id::new("error_overlay"))
-        .anchor(egui::Align2::CENTER_TOP, [0.0, 146.0])
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            [
+                -NOTICE_MARGIN,
+                -NOTICE_BOTTOM + motion::slide(progress, 12.0),
+            ],
+        )
         .order(egui::Order::Foreground)
         .interactable(live)
         .show(ctx, |ui| {
-            ui.add_space(motion::slide(progress, -12.0));
             if progress < 1.0 {
                 ui.multiply_opacity(progress);
             }
@@ -186,7 +199,7 @@ pub fn show(ctx: &egui::Context, errors: &mut VecDeque<UserError>) -> bool {
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::symmetric(16, 12))
                 .show(ui, |ui| {
-                    ui.set_max_width(720.0);
+                    ui.set_max_width(NOTICE_WIDTH);
                     ui.horizontal(|ui| {
                         if error.kind == ErrorKind::GitReadiness {
                             retry_git = ui.add(kit::secondary_button("Retry Git check")).clicked();
