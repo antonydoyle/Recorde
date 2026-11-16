@@ -974,8 +974,13 @@ pub fn apply_palette(ctx: &egui::Context, dark: bool, contrast: bool, palette: P
         spread: 0,
         color: Color32::from_black_alpha(if dark { 80 } else { 24 }),
     };
-    ctx.set_visuals(v);
-    ctx.global_style_mut(|s| {
+    // egui keeps separate dark and light styles and picks one from the
+    // operating system's theme. Install Recorde's look in both, so a system in
+    // light mode (or a theme change while running) never falls back to egui's
+    // default widgets and spacing.
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
+    ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);
         s.spacing.window_margin = egui::Margin::same(16);
         s.spacing.button_padding = egui::vec2(12.0, 7.0);
@@ -1027,6 +1032,28 @@ pub fn apply_ui_scale(ctx: &egui::Context, scale: f32) {
     } else {
         1.0
     });
+}
+
+#[cfg(test)]
+mod style_tests {
+    #[test]
+    fn style_survives_the_operating_system_theme() {
+        for dark in [true, false] {
+            let ctx = egui::Context::default();
+            super::apply_palette(&ctx, dark, false, super::Palette::Classic);
+            for system in [egui::Theme::Light, egui::Theme::Dark] {
+                ctx.set_theme(system);
+                let style = ctx.global_style();
+                assert_eq!(
+                    style.spacing.interact_size.y,
+                    super::CONTROL_HEIGHT,
+                    "{system:?}"
+                );
+                assert_eq!(style.visuals.panel_fill, super::bg_panel(), "{system:?}");
+                assert_eq!(style.visuals.dark_mode, dark, "{system:?}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

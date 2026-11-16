@@ -1910,7 +1910,7 @@ impl eframe::App for RecordeApp {
         {
             self.browser_login.cancel();
         }
-        ctx.global_style_mut(theme::kill_debug);
+        ctx.all_styles_mut(theme::kill_debug);
         ctx.options_mut(|o| o.warn_on_id_clash = false);
 
         let shortcuts = !crate::commands::text_input_has_focus(ctx)

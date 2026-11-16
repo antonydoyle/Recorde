@@ -49,7 +49,7 @@ pub fn apply(ctx: &Context, preference: MotionPreference) {
         MotionPreference::Full => false,
     };
     REDUCED.store(reduced, Ordering::Relaxed);
-    ctx.global_style_mut(|style| style.animation_time = duration(NORMAL));
+    ctx.all_styles_mut(|style| style.animation_time = duration(NORMAL));
 }
 
 pub fn reduced() -> bool {
